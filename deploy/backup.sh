@@ -20,5 +20,5 @@ git_commit=$git_commit
 postgres_dump=postgres.dump
 audio_archive=audio.tar.gz
 EOF
-sha256sum -c "$backup/SHA256SUMS"
+sha256sum -c "$backup/SHA256SUMS" >&2
 printf '%s\n' "$backup"
