@@ -18,7 +18,7 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 3 || os.Args[1] != "sender" {
+	if len(os.Args) < 2 {
 		usage()
 	}
 	databaseURL := os.Getenv("CALL_RECORDER_DATABASE_URL")
@@ -32,6 +32,13 @@ func main() {
 	defer pool.Close()
 	if err := pool.Ping(context.Background()); err != nil {
 		fatal(err)
+	}
+	if os.Args[1] == "retention" {
+		retention(pool, os.Args[2:])
+		return
+	}
+	if os.Args[1] != "sender" || len(os.Args) < 3 {
+		usage()
 	}
 	switch os.Args[2] {
 	case "create":
