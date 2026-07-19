@@ -14,3 +14,11 @@ tests/integration.sh
 ```
 
 It starts a separate Compose project on port 18080, uses `.test-runtime`, sends synthetic WAV metadata/audio, verifies duplicate prevention and a `206` range response, then removes the test project and temporary runtime state.
+
+Run the Chromium sequential-playback acceptance test against the same isolated deployment:
+
+```bash
+tests/browser-sequential.sh
+```
+
+It injects a controlled media `play()` stub in Chromium, dispatches actual `ended` events, and verifies that the page’s playback handler advances through synthetic calls. The production duplicate resend is deferred to the real Trunk Recorder host; see `docs/production-duplicate-test.md`.

@@ -14,3 +14,5 @@ CONFIRM_RESTORE=YES deploy/restore.sh /secure/backup-directory/call-recorder-TIM
 ```
 
 The active data paths are `runtime/postgres` and `runtime/audio`. Never restore over a live deployment without a current verified backup and maintenance window.
+
+The isolated restore acceptance procedure uses a temporary PostgreSQL container, temporary audio extraction, and a temporary backend on a non-production port. It verifies a restored call-list page plus normal and HTTP range media responses before tearing those resources down.
