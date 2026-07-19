@@ -37,6 +37,10 @@ func main() {
 		retention(pool, os.Args[2:])
 		return
 	}
+	if os.Args[1] == "aliases" {
+		aliases(pool, os.Args[2:])
+		return
+	}
 	if os.Args[1] != "sender" || len(os.Args) < 3 {
 		usage()
 	}
