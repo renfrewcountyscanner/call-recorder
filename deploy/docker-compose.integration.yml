@@ -7,6 +7,8 @@ services:
     volumes:
       - ../.test-runtime/audio:/var/lib/call-recorder/audio
   backend:
+    environment:
+      CALL_RECORDER_TEST_FAIL_FINALIZE: ${CALL_RECORDER_TEST_FAIL_FINALIZE:-false}
     ports:
       - "18080:8080"
     volumes:
