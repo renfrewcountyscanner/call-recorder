@@ -1,0 +1,60 @@
+# Reverse-engineering and evidence material
+*.msi
+*.exe
+*.dll
+*.sys
+*.pdb
+input/
+extracted/
+decompiled/
+analysis/
+reports/private/
+
+# Databases and call data
+*.db
+*.sqlite
+*.sqlite3
+*.mdb
+*.sqlitedb
+postgres-data/
+data/
+audio/
+uploads/
+recordings/
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+*.srt
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.crt
+*.cer
+secrets/
+credentials/
+id_*
+!id_*.example
+
+# Build/runtime output
+node_modules/
+dist/
+build/
+coverage/
+bin/
+obj/
+tmp/
+logs/
+*.log
+
+# Editor/OS files
+.DS_Store
+.idea/
+.vscode/
