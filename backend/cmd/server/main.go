@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -14,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -39,6 +41,9 @@ type config struct {
 	DurationTolMS    int64
 	BootstrapSender  string
 	BootstrapKey     string
+	LegacyEnabled    bool
+	LegacyAuthID     string
+	LegacyAPIKey     string
 }
 
 type server struct {
@@ -126,6 +131,12 @@ func main() {
 		slog.Error("bootstrap sender", "error", err)
 		os.Exit(2)
 	}
+	if cfg.LegacyEnabled {
+		if err := s.bootstrapLegacySender(context.Background()); err != nil {
+			slog.Error("bootstrap legacy sender", "error", err)
+			os.Exit(2)
+		}
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /", s.callsPage)
@@ -133,6 +144,10 @@ func main() {
 	mux.HandleFunc("GET /media/", s.media)
 	mux.HandleFunc("POST /api/v1/uploads", s.createUpload)
 	mux.HandleFunc("POST /api/v1/uploads/", s.receiveAudio)
+	if cfg.LegacyEnabled {
+		mux.HandleFunc("POST /api/callupload", s.legacyCreateUpload)
+		mux.HandleFunc("POST /api/callaudioupload/", s.legacyReceiveAudio)
+	}
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: s.securityHeaders(mux), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 60 * time.Second}
 	s.logger.Info("starting call recorder", "listen", cfg.ListenAddr)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
@@ -142,7 +157,7 @@ func main() {
 }
 
 func loadConfig() config {
-	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY")}
+	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY")}
 }
 func env(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {
@@ -181,6 +196,111 @@ func (s *server) bootstrapSender(ctx context.Context) error {
 	}
 	_, err = s.db.Exec(ctx, `INSERT INTO remote_senders (sender_id,key_hash,enabled) VALUES ($1,$2,true) ON CONFLICT (sender_id) DO NOTHING`, s.cfg.BootstrapSender, []byte(hash))
 	return err
+}
+
+func (s *server) bootstrapLegacySender(ctx context.Context) error {
+	if s.cfg.LegacyAuthID == "" || s.cfg.LegacyAPIKey == "" {
+		return errors.New("legacy sender ID and key are required when legacy ingestion is enabled")
+	}
+	hash, err := hashAPIKey(s.cfg.LegacyAPIKey)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `INSERT INTO remote_senders (sender_id,key_hash,enabled) VALUES ($1,$2,true) ON CONFLICT (sender_id) DO NOTHING`, s.cfg.LegacyAuthID, []byte(hash))
+	return err
+}
+
+// legacyCreateUpload is intentionally separate from /api/v1. It only accepts
+// body credentials; it never accepts modern API headers on this route.
+func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		AuthID       string `json:"apiAuthID"`
+		APIKey       string `json:"apiKey"`
+		AudioFormat  string `json:"callAudioFormat"`
+		RecordedCall struct {
+			StartTime     string  `json:"startTime"`
+			Duration      float64 `json:"callDuration"`
+			TalkGroupInfo struct {
+				CallTargets []struct {
+					ID    json.Number `json:"targetid"`
+					Label string      `json:"targetlabel"`
+					Tag   string      `json:"targettag"`
+				} `json:"callTargets"`
+				Receiver     string `json:"receiver"`
+				Frequency    any    `json:"frequency"`
+				SourceID     any    `json:"sourceid"`
+				SourceLabel  string `json:"sourcelabel"`
+				SourceTag    string `json:"sourcetag"`
+				LCN          any    `json:"lcn"`
+				VoiceService string `json:"voiceservice"`
+				SystemID     any    `json:"systemid"`
+				SystemLabel  string `json:"systemlabel"`
+				SiteID       any    `json:"siteid"`
+				SiteLabel    string `json:"sitelabel"`
+				CallType     any    `json:"calltype"`
+			} `json:"talkGroupInfo"`
+		} `json:"recordedCall"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	decoder := json.NewDecoder(r.Body)
+	decoder.UseNumber()
+	if err := decoder.Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"Status": 400, "StatusMessage": "invalid JSON"})
+		return
+	}
+	if request.AuthID != s.cfg.LegacyAuthID || subtle.ConstantTimeCompare([]byte(request.APIKey), []byte(s.cfg.LegacyAPIKey)) != 1 {
+		writeJSON(w, http.StatusOK, map[string]any{"Status": 403, "StatusMessage": "authentication failed"})
+		return
+	}
+	if len(request.RecordedCall.TalkGroupInfo.CallTargets) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"Status": 400, "StatusMessage": "missing call target"})
+		return
+	}
+	start, err := time.Parse(time.RFC3339Nano, request.RecordedCall.StartTime)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"Status": 400, "StatusMessage": "invalid start time"})
+		return
+	}
+	target := request.RecordedCall.TalkGroupInfo.CallTargets[0]
+	info := request.RecordedCall.TalkGroupInfo
+	call := callMetadata{StartTime: start, DurationMS: int64(request.RecordedCall.Duration * 1000), ReceiverID: info.Receiver, SystemID: fmt.Sprint(info.SystemID), SystemName: info.SystemLabel, SiteID: fmt.Sprint(info.SiteID), SiteName: info.SiteLabel, TalkgroupID: target.ID.String(), TalkgroupName: target.Label, TalkgroupTag: target.Tag, RadioID: fmt.Sprint(info.SourceID), RadioName: info.SourceLabel, RadioTag: info.SourceTag, Frequency: fmt.Sprint(info.Frequency), LCN: fmt.Sprint(info.LCN), VoiceService: info.VoiceService, CallType: fmt.Sprint(info.CallType)}
+	body, _ := json.Marshal(createUploadRequest{SenderID: s.cfg.LegacyAuthID, IdempotencyKey: "legacy-" + request.RecordedCall.StartTime + "-" + target.ID.String(), AudioFormat: strings.ToLower(request.AudioFormat), Call: call})
+	forward := r.Clone(r.Context())
+	forward.Body = io.NopCloser(bytes.NewReader(body))
+	forward.ContentLength = int64(len(body))
+	forward.Header = make(http.Header)
+	forward.Header.Set("X-Call-Recorder-Key", s.cfg.LegacyAPIKey)
+	recorded := httptest.NewRecorder()
+	s.createUpload(recorded, forward)
+	var response createUploadResponse
+	_ = json.Unmarshal(recorded.Body.Bytes(), &response)
+	status := 200
+	message := "accepted"
+	if response.Error != "" {
+		status = recorded.Code
+		message = response.Error
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"Status": status, "StatusMessage": message, "Duplicate": response.Duplicate, "CallAudioID": response.UploadToken})
+}
+
+func (s *server) legacyReceiveAudio(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimPrefix(r.URL.Path, "/api/callaudioupload/")
+	forward := r.Clone(r.Context())
+	forward.URL.Path = "/api/v1/uploads/" + token
+	forward.Header = r.Header.Clone()
+	forward.Header.Set("X-Call-Recorder-Sender", s.cfg.LegacyAuthID)
+	forward.Header.Set("X-Call-Recorder-Key", s.cfg.LegacyAPIKey)
+	recorded := httptest.NewRecorder()
+	s.receiveAudio(recorded, forward)
+	var response createUploadResponse
+	_ = json.Unmarshal(recorded.Body.Bytes(), &response)
+	status := 200
+	message := "completed"
+	if response.Error != "" {
+		status = recorded.Code
+		message = response.Error
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"Status": status, "StatusMessage": message})
 }
 
 func (s *server) createUpload(w http.ResponseWriter, r *http.Request) {
