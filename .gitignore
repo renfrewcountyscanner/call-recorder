@@ -58,6 +58,7 @@ __pycache__/
 *.pyc
 backups/
 .restore.*
+.test-runtime/
 
 # Editor/OS files
 .DS_Store

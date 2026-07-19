@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+compose="docker-compose --project-name callrecorder_it --env-file $root/deploy/integration.env -f $root/deploy/docker-compose.yml -f $root/deploy/docker-compose.integration.yml"
+cleanup() { $compose down >/dev/null 2>&1 || true; rm -rf "$root/.test-runtime" "$work"; }
+work=$(mktemp -d)
+trap cleanup EXIT
+mkdir -p "$root/.test-runtime/postgres" "$root/.test-runtime/audio"
+$compose up -d --build
+for n in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/healthz >/dev/null && break; sleep 1; done
+cat > "$work/call.json" <<'EOF'
+{"sender_id":"integration-sender","idempotency_key":"fixture-1","audio_format":"wav","call":{"source_call_id":"fixture-1","start_time":"2026-01-02T03:04:05Z","duration_ms":1000,"system_id":"system-a","system_name":"System A","site_id":"site-a","site_name":"Site A","talkgroup_id":"100","talkgroup_name":"Dispatch","radio_id":"200","radio_name":"Unit 200","frequency":"851.0125","call_type":"group","patches":[{"talkgroup_id":"101","talkgroup_name":"Patch"}]}}
+EOF
+printf 'RIFF\044\000\000\000WAVEfmt \020\000\000\000\001\000\001\000\100\037\000\000\000\076\000\000\002\000\020\000data\000\000\000\000' > "$work/call.wav"
+response=$(curl -fsS -H 'Content-Type: application/json' -H 'X-Call-Recorder-Key: synthetic-integration-key' --data-binary "@$work/call.json" http://127.0.0.1:18080/api/v1/uploads)
+token=$(printf '%s' "$response" | sed -n 's/.*"upload_token":"\([^"]*\)".*/\1/p')
+test -n "$token"
+curl -fsS -H 'X-Call-Recorder-Sender: integration-sender' -H 'X-Call-Recorder-Key: synthetic-integration-key' -H 'Content-Type: audio/wav' --data-binary "@$work/call.wav" "http://127.0.0.1:18080/api/v1/uploads/$token" >/dev/null
+count=$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc 'SELECT count(*) FROM calls')
+test "$count" = 1
+id=$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc 'SELECT id FROM calls LIMIT 1')
+test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Range: bytes=0-3' "http://127.0.0.1:18080/media/$id")" = 206
+duplicate=$(curl -fsS -H 'Content-Type: application/json' -H 'X-Call-Recorder-Key: synthetic-integration-key' --data-binary "@$work/call.json" http://127.0.0.1:18080/api/v1/uploads)
+printf '%s' "$duplicate" | grep -q '"duplicate":true'
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc 'SELECT count(*) FROM calls')" = 1
+echo 'integration tests passed'
