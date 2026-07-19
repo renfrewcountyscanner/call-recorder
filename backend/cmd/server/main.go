@@ -45,6 +45,8 @@ type config struct {
 	LegacyAuthID     string
 	LegacyAPIKey     string
 	TestFailFinalize bool
+	AdminEnabled     bool
+	AdminToken       string
 }
 
 type server struct {
@@ -143,6 +145,10 @@ func main() {
 	mux.HandleFunc("GET /", s.callsPage)
 	mux.HandleFunc("GET /calls", s.callsFragment)
 	mux.HandleFunc("GET /call/", s.callDetail)
+	if cfg.AdminEnabled && cfg.AdminToken != "" {
+		mux.HandleFunc("GET /admin/talkgroups", s.adminTalkgroups)
+		mux.HandleFunc("GET /admin/radios", s.adminRadios)
+	}
 	mux.HandleFunc("GET /media/", s.media)
 	mux.HandleFunc("POST /api/v1/uploads", s.createUpload)
 	mux.HandleFunc("POST /api/v1/uploads/", s.receiveAudio)
@@ -159,7 +165,7 @@ func main() {
 }
 
 func loadConfig() config {
-	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true"}
+	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN")}
 }
 func env(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {
@@ -521,6 +527,71 @@ func (s *server) callDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.render(w, "detail.html", map[string]any{"Call": c, "Patches": patches, "Metadata": string(raw)})
+}
+func (s *server) adminAuthorized(w http.ResponseWriter, r *http.Request) bool {
+	if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Call-Recorder-Admin")), []byte(s.cfg.AdminToken)) != 1 {
+		http.Error(w, "administration authorization required", http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+func (s *server) adminTalkgroups(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	q := r.URL.Query().Get("q")
+	rows, err := s.db.Query(r.Context(), `SELECT a.system_id,a.talkgroup_id,coalesce(a.alias,''),coalesce(a.description,''),coalesce(a.category,''),a.priority,a.enabled,a.source,count(c.id),max(c.start_time) FROM talkgroup_aliases a LEFT JOIN calls c ON c.system_id=a.system_id AND c.talkgroup_id=a.talkgroup_id WHERE $1='' OR a.system_id ILIKE '%'||$1||'%' OR a.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(a.alias,'') ILIKE '%'||$1||'%' GROUP BY a.system_id,a.talkgroup_id,a.alias,a.description,a.category,a.priority,a.enabled,a.source ORDER BY a.system_id,a.talkgroup_id LIMIT 500`, q)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	defer rows.Close()
+	type row struct {
+		System, ID, Alias, Description, Category, Source string
+		Priority                                         int
+		Enabled                                          bool
+		Calls                                            int
+		Latest                                           *time.Time
+	}
+	list := []row{}
+	for rows.Next() {
+		var x row
+		if err := rows.Scan(&x.System, &x.ID, &x.Alias, &x.Description, &x.Category, &x.Priority, &x.Enabled, &x.Source, &x.Calls, &x.Latest); err != nil {
+			s.internal(w, err)
+			return
+		}
+		list = append(list, x)
+	}
+	s.render(w, "admin_aliases.html", map[string]any{"Title": "Talkgroup aliases", "Kind": "talkgroups", "Aliases": list})
+}
+func (s *server) adminRadios(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	q := r.URL.Query().Get("q")
+	rows, err := s.db.Query(r.Context(), `SELECT a.system_id,a.radio_id,coalesce(a.alias,''),coalesce(a.description,''),coalesce(a.category,''),a.enabled,a.source,count(c.id),max(c.start_time) FROM radio_aliases a LEFT JOIN calls c ON c.system_id=a.system_id AND c.radio_id=a.radio_id WHERE $1='' OR a.system_id ILIKE '%'||$1||'%' OR a.radio_id ILIKE '%'||$1||'%' OR coalesce(a.alias,'') ILIKE '%'||$1||'%' GROUP BY a.system_id,a.radio_id,a.alias,a.description,a.category,a.enabled,a.source ORDER BY a.system_id,a.radio_id LIMIT 500`, q)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	defer rows.Close()
+	type row struct {
+		System, ID, Alias, Description, Category, Source string
+		Enabled                                          bool
+		Calls                                            int
+		Latest                                           *time.Time
+		Priority                                         int
+	}
+	list := []row{}
+	for rows.Next() {
+		var x row
+		if err := rows.Scan(&x.System, &x.ID, &x.Alias, &x.Description, &x.Category, &x.Enabled, &x.Source, &x.Calls, &x.Latest); err != nil {
+			s.internal(w, err)
+			return
+		}
+		list = append(list, x)
+	}
+	s.render(w, "admin_aliases.html", map[string]any{"Title": "Radio aliases", "Kind": "radios", "Aliases": list})
 }
 func (s *server) queryCalls(ctx context.Context, q url.Values) ([]completedCall, error) {
 	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,'') FROM calls c LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE ($1='' OR c.system_id ILIKE '%'||$1||'%' OR c.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(ta.alias,c.talkgroup_name,'') ILIKE '%'||$1||'%' OR coalesce(c.radio_id,'') ILIKE '%'||$1||'%' OR coalesce(ra.alias,c.radio_name,'') ILIKE '%'||$1||'%' OR coalesce(c.transcript,'') ILIKE '%'||$1||'%') AND ($2='' OR c.sender_id=$2) AND ($3='' OR c.system_id=$3) AND ($4='' OR c.talkgroup_id=$4) AND ($5='' OR c.radio_id=$5) AND ($6='' OR c.start_time::date=$6::date) ORDER BY c.start_time DESC LIMIT 100`
