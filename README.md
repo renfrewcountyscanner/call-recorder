@@ -1,5 +1,9 @@
 # Call Recorder
 
+## v0.1.0
+
+Call Recorder is an initial working Linux-native release for receiving completed calls from Linux Trunk Recorder installations. It uses Go, PostgreSQL, Docker Compose, bind-mounted Linux audio storage, durable sender spooling, browser playback, and verified backup/restore tooling. See [CHANGELOG.md](CHANGELOG.md) and [known limitations](docs/known-limitations.md).
+
 A clean-room Linux call logger for completed radio calls. The initial scope is deliberately narrow: ingest completed calls from Trunk Recorder and remote recorder sources, store normalized metadata and audio in PostgreSQL-backed storage, and provide secure browser search and playback.
 
 This project does not include radio decoding, SDR control, trunking-system control, proprietary installer material, decompiled code, vendor artwork, or call recordings.
