@@ -21,6 +21,7 @@ data/
 audio/
 uploads/
 recordings/
+runtime/
 *.wav
 *.mp3
 *.flac
@@ -53,6 +54,11 @@ obj/
 tmp/
 logs/
 *.log
+__pycache__/
+*.pyc
+backups/
+.restore.*
+.test-runtime/
 
 # Editor/OS files
 .DS_Store

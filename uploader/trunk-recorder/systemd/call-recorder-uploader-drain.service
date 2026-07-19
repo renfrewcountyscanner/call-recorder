@@ -1,0 +1,6 @@
+[Unit]
+Description=Drain Call Recorder uploader spool
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/call-recorder-uploader/upload_call.py --env /etc/call-recorder-uploader.env --drain

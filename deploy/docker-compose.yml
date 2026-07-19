@@ -1,2 +1,43 @@
-# Deployment services will be added after the application implementation begins.
-# Do not place production credentials or call recordings in this repository.
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-call_recorder}
+      POSTGRES_USER: ${POSTGRES_USER:-call_recorder}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in a private .env file}
+    volumes:
+      - ../runtime/postgres:/var/lib/postgresql/data
+      - ../backend/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  audio-init:
+    image: alpine:3.21
+    command: ["sh", "-c", "install -d -m 0750 /var/lib/call-recorder/audio && chown 10001:10001 /var/lib/call-recorder/audio && chmod 0750 /var/lib/call-recorder/audio"]
+    volumes:
+      - ../runtime/audio:/var/lib/call-recorder/audio
+  backend:
+    build: ../backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      audio-init:
+        condition: service_completed_successfully
+    environment:
+      CALL_RECORDER_LISTEN_ADDRESS: 0.0.0.0
+      CALL_RECORDER_LISTEN_PORT: 8080
+      CALL_RECORDER_DATABASE_URL: postgresql://${POSTGRES_USER:-call_recorder}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-call_recorder}?sslmode=disable
+      CALL_RECORDER_AUDIO_ROOT: /var/lib/call-recorder/audio
+      CALL_RECORDER_BOOTSTRAP_SENDER_ID: ${CALL_RECORDER_BOOTSTRAP_SENDER_ID:-example-sender}
+      CALL_RECORDER_BOOTSTRAP_SENDER_KEY: ${CALL_RECORDER_BOOTSTRAP_SENDER_KEY:?set a non-example sender key in private .env}
+      CALL_RECORDER_LEGACY_INGESTION_ENABLED: ${CALL_RECORDER_LEGACY_INGESTION_ENABLED:-false}
+      CALL_RECORDER_LEGACY_AUTH_ID: ${CALL_RECORDER_LEGACY_AUTH_ID:-}
+      CALL_RECORDER_LEGACY_API_KEY: ${CALL_RECORDER_LEGACY_API_KEY:-}
+    ports:
+      - "${CALL_RECORDER_PORT:-8080}:8080"
+    volumes:
+      - ../runtime/audio:/var/lib/call-recorder/audio
