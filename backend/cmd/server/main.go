@@ -463,6 +463,12 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if err == nil && call.TalkgroupName != "" {
+		_, err = tx.Exec(r.Context(), `INSERT INTO talkgroup_aliases (system_id,talkgroup_id,alias,source) VALUES ($1,$2,$3,'received') ON CONFLICT (system_id,talkgroup_id) DO UPDATE SET alias=EXCLUDED.alias,updated_at=now() WHERE talkgroup_aliases.source='received'`, call.SystemID, call.TalkgroupID, call.TalkgroupName)
+	}
+	if err == nil && call.RadioID != "" && call.RadioName != "" {
+		_, err = tx.Exec(r.Context(), `INSERT INTO radio_aliases (system_id,radio_id,alias,source) VALUES ($1,$2,$3,'received') ON CONFLICT (system_id,radio_id) DO UPDATE SET alias=EXCLUDED.alias,updated_at=now() WHERE radio_aliases.source='received'`, call.SystemID, call.RadioID, call.RadioName)
+	}
 	if err == nil {
 		_, err = tx.Exec(r.Context(), `UPDATE pending_uploads SET status='completed',completed_at=now(),completed_call_id=$2 WHERE id=$1`, pending.ID, callID)
 	}
@@ -491,7 +497,7 @@ func (s *server) callsFragment(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "calls.html", map[string]any{"Calls": rows})
 }
 func (s *server) queryCalls(ctx context.Context, q url.Values) ([]completedCall, error) {
-	query := `SELECT id,sender_id,coalesce(receiver_id,''),system_id,coalesce(system_name,''),coalesce(site_id,''),coalesce(site_name,''),talkgroup_id,coalesce(talkgroup_name,''),coalesce(radio_id,''),coalesce(radio_name,''),coalesce(frequency,''),start_time,duration_ms,audio_path,audio_format,audio_size,coalesce(transcript,''),coalesce(notes,'') FROM calls WHERE ($1='' OR system_id ILIKE '%'||$1||'%' OR talkgroup_id ILIKE '%'||$1||'%' OR coalesce(talkgroup_name,'') ILIKE '%'||$1||'%' OR coalesce(radio_id,'') ILIKE '%'||$1||'%' OR coalesce(radio_name,'') ILIKE '%'||$1||'%' OR coalesce(transcript,'') ILIKE '%'||$1||'%') AND ($2='' OR sender_id=$2) AND ($3='' OR system_id=$3) AND ($4='' OR talkgroup_id=$4) AND ($5='' OR radio_id=$5) AND ($6='' OR start_time::date=$6::date) ORDER BY start_time DESC LIMIT 100`
+	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,'') FROM calls c LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE ($1='' OR c.system_id ILIKE '%'||$1||'%' OR c.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(ta.alias,c.talkgroup_name,'') ILIKE '%'||$1||'%' OR coalesce(c.radio_id,'') ILIKE '%'||$1||'%' OR coalesce(ra.alias,c.radio_name,'') ILIKE '%'||$1||'%' OR coalesce(c.transcript,'') ILIKE '%'||$1||'%') AND ($2='' OR c.sender_id=$2) AND ($3='' OR c.system_id=$3) AND ($4='' OR c.talkgroup_id=$4) AND ($5='' OR c.radio_id=$5) AND ($6='' OR c.start_time::date=$6::date) ORDER BY c.start_time DESC LIMIT 100`
 	result, err := s.db.Query(ctx, query, q.Get("q"), q.Get("sender"), q.Get("system"), q.Get("talkgroup"), q.Get("radio"), q.Get("date"))
 	if err != nil {
 		return nil, err
