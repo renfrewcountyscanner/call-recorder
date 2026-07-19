@@ -11,9 +11,24 @@ Run the isolated PostgreSQL-backed server smoke suite without touching `runtime/
 ```bash
 cd /app/call-recorder
 tests/integration.sh
+tests/retention.sh
+tests/administration.sh
+tests/phase6.sh
 ```
 
 It starts a separate Compose project on port 18080, uses `.test-runtime`, sends synthetic WAV metadata/audio, verifies duplicate prevention and a `206` range response, then removes the test project and temporary runtime state.
+
+`tests/retention.sh` first runs the same isolated ingestion suite, then executes a destructive synthetic retention policy against only `.test-runtime`. It never accesses `runtime/`.
+
+`tests/administration.sh` verifies the protected login/session flow, alias update, and safe default retention-policy creation. `tests/phase6.sh` runs the complete isolated Phase 6 group, including existing Chromium sequential playback coverage.
+
+Apply additive migrations after making a verified backup:
+
+```bash
+deploy/migrate.sh
+```
+
+The command is repeatable: existing objects are retained. It must be run from the deployment host with the production Compose configuration available.
 
 Run the Chromium sequential-playback acceptance test against the same isolated deployment:
 

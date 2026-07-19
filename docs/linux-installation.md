@@ -12,3 +12,13 @@ deploy/backup.sh /secure/backups
 deploy/migrate.sh
 cd deploy && docker-compose up -d --build
 ```
+
+## Upgrade from v0.1.0
+
+1. Create and verify a backup: `deploy/backup.sh /safe/backup-directory`.
+2. Pull the v0.2.0 release when available.
+3. Run `deploy/migrate.sh` from the repository root.
+4. Rebuild and restart: `cd deploy && docker-compose up -d --build`.
+5. Leave all retention policies disabled until their dry-run result has been reviewed.
+
+No migration stores audio in PostgreSQL or enables deletion automatically.

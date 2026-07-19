@@ -34,11 +34,12 @@ func aliases(pool *pgxpool.Pool, args []string) {
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var a, b, c, d, e, f, g string
-			if err := rows.Scan(&a, &b, &c, &d, &e, &f, &g); err != nil {
+			var a, b, c, d, e, g string
+			var enabled bool
+			if err := rows.Scan(&a, &b, &c, &d, &e, &enabled, &g); err != nil {
 				fatal(err)
 			}
-			_ = w.Write([]string{a, b, c, d, e, f, g})
+			_ = w.Write([]string{a, b, c, d, e, fmt.Sprintf("%t", enabled), g})
 		}
 	case "import":
 		fs := flag.NewFlagSet("aliases import", flag.ExitOnError)

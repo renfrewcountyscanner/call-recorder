@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.2.0 (unreleased)
+
+- System-scoped talkgroup and radio alias records with received, imported, and manual sources.
+- Alias CSV import/export and protected administration pages.
+- Resolved aliases in the call list and call-detail view.
+- Disabled-by-default retention policies, execution history, PostgreSQL advisory locking, and a Linux admin CLI.
+- Retention uses an audio-root-local trash move before database commit to avoid deleting outside managed storage.
+- Additive schema migrations and isolated retention coverage.
+
 ## v0.1.0
 
 - Linux-native Go backend with PostgreSQL metadata and Linux filesystem audio storage.
