@@ -1,2 +1,34 @@
-# Deployment services will be added after the application implementation begins.
-# Do not place production credentials or call recordings in this repository.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-call_recorder}
+      POSTGRES_USER: ${POSTGRES_USER:-call_recorder}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in a private .env file}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../backend/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  backend:
+    build: ../backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      CALL_RECORDER_LISTEN_ADDRESS: 0.0.0.0
+      CALL_RECORDER_LISTEN_PORT: 8080
+      CALL_RECORDER_DATABASE_URL: postgresql://${POSTGRES_USER:-call_recorder}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-call_recorder}?sslmode=disable
+      CALL_RECORDER_AUDIO_ROOT: /var/lib/call-recorder/audio
+      CALL_RECORDER_BOOTSTRAP_SENDER_ID: ${CALL_RECORDER_BOOTSTRAP_SENDER_ID:-example-sender}
+      CALL_RECORDER_BOOTSTRAP_SENDER_KEY: ${CALL_RECORDER_BOOTSTRAP_SENDER_KEY:?set a non-example sender key in private .env}
+    ports:
+      - "${CALL_RECORDER_PORT:-8080}:8080"
+    volumes:
+      - audio-data:/var/lib/call-recorder/audio
+volumes:
+  postgres-data:
+  audio-data:
