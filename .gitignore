@@ -54,6 +54,8 @@ obj/
 tmp/
 logs/
 *.log
+__pycache__/
+*.pyc
 
 # Editor/OS files
 .DS_Store
