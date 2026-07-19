@@ -142,6 +142,7 @@ func main() {
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /", s.callsPage)
 	mux.HandleFunc("GET /calls", s.callsFragment)
+	mux.HandleFunc("GET /call/", s.callDetail)
 	mux.HandleFunc("GET /media/", s.media)
 	mux.HandleFunc("POST /api/v1/uploads", s.createUpload)
 	mux.HandleFunc("POST /api/v1/uploads/", s.receiveAudio)
@@ -495,6 +496,31 @@ func (s *server) callsFragment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, "calls.html", map[string]any{"Calls": rows})
+}
+func (s *server) callDetail(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/call/")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	var c completedCall
+	var raw []byte
+	var patches []string
+	err := s.db.QueryRow(r.Context(), `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),p.metadata FROM calls c JOIN pending_uploads p ON p.completed_call_id=c.id LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE c.id=$1`, id).Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.RadioID, &c.RadioName, &c.Frequency, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &raw)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	rows, err := s.db.Query(r.Context(), `SELECT talkgroup_id||coalesce(' '||talkgroup_name,'') FROM call_targets WHERE call_id=$1 ORDER BY talkgroup_id`, id)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var p string
+			_ = rows.Scan(&p)
+			patches = append(patches, p)
+		}
+	}
+	s.render(w, "detail.html", map[string]any{"Call": c, "Patches": patches, "Metadata": string(raw)})
 }
 func (s *server) queryCalls(ctx context.Context, q url.Values) ([]completedCall, error) {
 	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,'') FROM calls c LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE ($1='' OR c.system_id ILIKE '%'||$1||'%' OR c.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(ta.alias,c.talkgroup_name,'') ILIKE '%'||$1||'%' OR coalesce(c.radio_id,'') ILIKE '%'||$1||'%' OR coalesce(ra.alias,c.radio_name,'') ILIKE '%'||$1||'%' OR coalesce(c.transcript,'') ILIKE '%'||$1||'%') AND ($2='' OR c.sender_id=$2) AND ($3='' OR c.system_id=$3) AND ($4='' OR c.talkgroup_id=$4) AND ($5='' OR c.radio_id=$5) AND ($6='' OR c.start_time::date=$6::date) ORDER BY c.start_time DESC LIMIT 100`
