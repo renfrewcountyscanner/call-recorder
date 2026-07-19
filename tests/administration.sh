@@ -14,5 +14,8 @@ curl -fsS -b "$work/cookie" -d 'system=system-z&id=900&alias=Manual+Dispatch&des
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select alias from talkgroup_aliases where system_id='system-z' and talkgroup_id='900'")" = 'Manual Dispatch'
 curl -fsS -b "$work/cookie" -d 'name=synthetic-policy&retention_days=30&priority=1&dry_run=on' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/retention | grep -q 303
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select count(*) from retention_policies where name='synthetic-policy' and enabled=false and dry_run=true")" = 1
+policy_id=$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select id from retention_policies where name='synthetic-policy'")
+curl -fsS -b "$work/cookie" -d "id=$policy_id&name=synthetic-policy-updated&retention_days=31&priority=2&dry_run=on" -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/retention | grep -q 303
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select retention_days from retention_policies where id=$policy_id")" = 31
 curl -fsS -b "$work/cookie" http://127.0.0.1:18080/admin/retention | grep -q 'synthetic-policy'
 echo 'administration tests passed'

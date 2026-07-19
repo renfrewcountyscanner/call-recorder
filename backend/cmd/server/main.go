@@ -714,6 +714,20 @@ func (s *server) adminRetention(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, p)
 	}
+	var edit *policy
+	if raw := r.URL.Query().Get("edit"); raw != "" {
+		id, parseErr := strconv.Atoi(raw)
+		if parseErr != nil {
+			http.Error(w, "invalid policy ID", http.StatusBadRequest)
+			return
+		}
+		var selected policy
+		if err := s.db.QueryRow(r.Context(), `SELECT id,name,enabled,dry_run,retention_days,coalesce(sender_filter,''),coalesce(system_filter,''),coalesce(talkgroup_filter,''),coalesce(call_type_filter,''),priority FROM retention_policies WHERE id=$1`, id).Scan(&selected.ID, &selected.Name, &selected.Enabled, &selected.DryRun, &selected.Days, &selected.Sender, &selected.System, &selected.Talkgroup, &selected.CallType, &selected.Priority); err != nil {
+			http.Error(w, "policy not found", http.StatusNotFound)
+			return
+		}
+		edit = &selected
+	}
 	history, _ := s.db.Query(r.Context(), `SELECT id,coalesce(policy_id,0),dry_run,calls_matched,calls_deleted,audio_files_deleted,failures,ended_at FROM retention_runs ORDER BY id DESC LIMIT 25`)
 	type run struct {
 		ID, Policy, Matched, Deleted, Audio, Failures int
@@ -730,7 +744,7 @@ func (s *server) adminRetention(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	s.render(w, "admin_retention.html", map[string]any{"Policies": items, "Runs": runs})
+	s.render(w, "admin_retention.html", map[string]any{"Policies": items, "Runs": runs, "Edit": edit})
 }
 func (s *server) adminSaveRetention(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
