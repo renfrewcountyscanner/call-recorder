@@ -19,6 +19,8 @@ docker-compose ps
 
 See [docs/development.md](docs/development.md) for sender provisioning and synthetic ingestion.
 
+Runtime PostgreSQL and audio data are bind-mounted under `runtime/postgres` and `runtime/audio` (excluded from Git). Use `deploy/backup.sh DESTINATION_DIRECTORY` to create a verified PostgreSQL dump plus separate audio archive; `deploy/restore.sh` requires `CONFIRM_RESTORE=YES`.
+
 ## Initial scope
 
 - Receive completed calls from multiple sources.
