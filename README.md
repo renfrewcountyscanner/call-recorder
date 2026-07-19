@@ -4,6 +4,21 @@ A clean-room Linux call logger for completed radio calls. The initial scope is d
 
 This project does not include radio decoding, SDR control, trunking-system control, proprietary installer material, decompiled code, vendor artwork, or call recordings.
 
+## Proven local startup
+
+This is Linux-native: Docker runs PostgreSQL; the Go backend and Go uploader run without Windows, Wine, MSSQL, PowerShell, or .NET. Trunk Recorder remains responsible for recording and decoding. Call Recorder receives completed calls only.
+
+```bash
+cd deploy
+cp example.env .env
+# Set strong, private POSTGRES_PASSWORD and CALL_RECORDER_BOOTSTRAP_SENDER_KEY values.
+docker-compose config -q
+docker-compose up --build -d
+docker-compose ps
+```
+
+See [docs/development.md](docs/development.md) for sender provisioning and synthetic ingestion.
+
 ## Initial scope
 
 - Receive completed calls from multiple sources.

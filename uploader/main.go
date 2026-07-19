@@ -13,8 +13,10 @@ import (
 )
 
 type request struct {
-	SenderID, IdempotencyKey, AudioFormat string
-	Call                                  json.RawMessage
+	SenderID       string          `json:"sender_id"`
+	IdempotencyKey string          `json:"idempotency_key"`
+	AudioFormat    string          `json:"audio_format"`
+	Call           json.RawMessage `json:"call"`
 }
 type response struct {
 	UploadToken string `json:"upload_token"`
@@ -64,6 +66,8 @@ func main() {
 	defer f.Close()
 	audioReq, err := http.NewRequest(http.MethodPost, strings.TrimRight(*base, "/")+"/api/v1/uploads/"+accepted.UploadToken, io.Reader(f))
 	must(err)
+	audioReq.Header.Set("X-Call-Recorder-Sender", *sender)
+	audioReq.Header.Set("X-Call-Recorder-Key", *key)
 	if format == "mp3" {
 		audioReq.Header.Set("Content-Type", "audio/mpeg")
 	} else {

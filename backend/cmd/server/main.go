@@ -4,14 +4,17 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,6 +23,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/argon2"
 )
 
 //go:embed web/templates/*.html
@@ -171,8 +175,11 @@ func (s *server) bootstrapSender(ctx context.Context) error {
 	if s.cfg.BootstrapSender == "" || s.cfg.BootstrapKey == "" {
 		return nil
 	}
-	hash := keyHash(s.cfg.BootstrapKey)
-	_, err := s.db.Exec(ctx, `INSERT INTO remote_senders (sender_id,key_hash,enabled) VALUES ($1,$2,true) ON CONFLICT (sender_id) DO NOTHING`, s.cfg.BootstrapSender, hash)
+	hash, err := hashAPIKey(s.cfg.BootstrapKey)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `INSERT INTO remote_senders (sender_id,key_hash,enabled) VALUES ($1,$2,true) ON CONFLICT (sender_id) DO NOTHING`, s.cfg.BootstrapSender, []byte(hash))
 	return err
 }
 
@@ -192,7 +199,7 @@ func (s *server) createUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, errorResponse{"sender authentication failed"})
 		return
 	}
-	if id, found, err := s.findDuplicate(r.Context(), req.Call); err != nil {
+	if id, found, err := s.findDuplicate(r.Context(), req.SenderID, req.Call); err != nil {
 		s.internal(w, err)
 		return
 	} else if found {
@@ -215,7 +222,7 @@ func (s *server) createUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expires := time.Now().UTC().Add(s.cfg.PendingTTL)
-	_, err = s.db.Exec(r.Context(), `INSERT INTO pending_uploads (id,token_hash,sender_id,idempotency_key,metadata,audio_format,expires_at,status) VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,'pending')`, uploadID, keyHash(token), req.SenderID, req.IdempotencyKey, metadata, strings.ToLower(req.AudioFormat), expires)
+	_, err = s.db.Exec(r.Context(), `INSERT INTO pending_uploads (id,token_hash,sender_id,idempotency_key,metadata,audio_format,expires_at,status) VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,'pending')`, uploadID, tokenHash(token), req.SenderID, req.IdempotencyKey, metadata, strings.ToLower(req.AudioFormat), expires)
 	if err != nil {
 		if strings.Contains(err.Error(), "pending_uploads_sender_idempotency_key_key") {
 			writeJSON(w, 409, errorResponse{"idempotency key already pending"})
@@ -242,7 +249,7 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		Metadata                  []byte
 		ExpiresAt                 time.Time
 	}
-	err := s.db.QueryRow(r.Context(), `SELECT id,sender_id,audio_format,metadata,expires_at FROM pending_uploads WHERE token_hash=$1 AND status='pending'`, keyHash(token)).Scan(&pending.ID, &pending.SenderID, &pending.AudioFormat, &pending.Metadata, &pending.ExpiresAt)
+	err := s.db.QueryRow(r.Context(), `SELECT id,sender_id,audio_format,metadata,expires_at FROM pending_uploads WHERE token_hash=$1 AND status='pending'`, tokenHash(token)).Scan(&pending.ID, &pending.SenderID, &pending.AudioFormat, &pending.Metadata, &pending.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeJSON(w, 404, errorResponse{"upload not found or already completed"})
 		return
@@ -254,6 +261,10 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 	if time.Now().UTC().After(pending.ExpiresAt) {
 		_, _ = s.db.Exec(r.Context(), `UPDATE pending_uploads SET status='expired' WHERE id=$1`, pending.ID)
 		writeJSON(w, 410, errorResponse{"upload token expired"})
+		return
+	}
+	if r.Header.Get("X-Call-Recorder-Sender") != pending.SenderID || !s.authenticate(r.Context(), pending.SenderID, r.Header.Get("X-Call-Recorder-Key")) {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"sender authentication failed"})
 		return
 	}
 	if !contentTypeMatches(pending.AudioFormat, r.Header.Get("Content-Type")) {
@@ -287,7 +298,7 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
-	if id, found, err := s.findDuplicate(r.Context(), call); err != nil {
+	if id, found, err := s.findDuplicate(r.Context(), pending.SenderID, call); err != nil {
 		s.internal(w, err)
 		return
 	} else if found {
@@ -346,16 +357,16 @@ func (s *server) callsPage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "index.html", map[string]any{"Title": "Call Recorder"})
 }
 func (s *server) callsFragment(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.queryCalls(r.Context(), r.URL.Query().Get("q"))
+	rows, err := s.queryCalls(r.Context(), r.URL.Query())
 	if err != nil {
 		s.internal(w, err)
 		return
 	}
 	s.render(w, "calls.html", map[string]any{"Calls": rows})
 }
-func (s *server) queryCalls(ctx context.Context, q string) ([]completedCall, error) {
-	query := `SELECT id,sender_id,coalesce(receiver_id,''),system_id,coalesce(system_name,''),coalesce(site_id,''),coalesce(site_name,''),talkgroup_id,coalesce(talkgroup_name,''),coalesce(radio_id,''),coalesce(radio_name,''),coalesce(frequency,''),start_time,duration_ms,audio_path,audio_format,audio_size,coalesce(transcript,''),coalesce(notes,'') FROM calls WHERE ($1='' OR system_id ILIKE '%'||$1||'%' OR talkgroup_id ILIKE '%'||$1||'%' OR coalesce(talkgroup_name,'') ILIKE '%'||$1||'%' OR coalesce(radio_id,'') ILIKE '%'||$1||'%' OR coalesce(radio_name,'') ILIKE '%'||$1||'%' OR coalesce(transcript,'') ILIKE '%'||$1||'%') ORDER BY start_time DESC LIMIT 100`
-	result, err := s.db.Query(ctx, query, q)
+func (s *server) queryCalls(ctx context.Context, q url.Values) ([]completedCall, error) {
+	query := `SELECT id,sender_id,coalesce(receiver_id,''),system_id,coalesce(system_name,''),coalesce(site_id,''),coalesce(site_name,''),talkgroup_id,coalesce(talkgroup_name,''),coalesce(radio_id,''),coalesce(radio_name,''),coalesce(frequency,''),start_time,duration_ms,audio_path,audio_format,audio_size,coalesce(transcript,''),coalesce(notes,'') FROM calls WHERE ($1='' OR system_id ILIKE '%'||$1||'%' OR talkgroup_id ILIKE '%'||$1||'%' OR coalesce(talkgroup_name,'') ILIKE '%'||$1||'%' OR coalesce(radio_id,'') ILIKE '%'||$1||'%' OR coalesce(radio_name,'') ILIKE '%'||$1||'%' OR coalesce(transcript,'') ILIKE '%'||$1||'%') AND ($2='' OR sender_id=$2) AND ($3='' OR system_id=$3) AND ($4='' OR talkgroup_id=$4) AND ($5='' OR radio_id=$5) AND ($6='' OR start_time::date=$6::date) ORDER BY start_time DESC LIMIT 100`
+	result, err := s.db.Query(ctx, query, q.Get("q"), q.Get("sender"), q.Get("system"), q.Get("talkgroup"), q.Get("radio"), q.Get("date"))
 	if err != nil {
 		return nil, err
 	}
@@ -397,11 +408,11 @@ func (s *server) authenticate(ctx context.Context, sender, key string) bool {
 	var hash []byte
 	var enabled bool
 	err := s.db.QueryRow(ctx, `SELECT key_hash,enabled FROM remote_senders WHERE sender_id=$1`, sender).Scan(&hash, &enabled)
-	return err == nil && enabled && string(hash) == string(keyHash(key))
+	return err == nil && enabled && verifyAPIKey(string(hash), key)
 }
-func (s *server) findDuplicate(ctx context.Context, c callMetadata) (string, bool, error) {
+func (s *server) findDuplicate(ctx context.Context, senderID string, c callMetadata) (string, bool, error) {
 	var id string
-	err := s.db.QueryRow(ctx, `SELECT id FROM calls WHERE system_id=$1 AND talkgroup_id=$2 AND coalesce(radio_id,'')=coalesce(NULLIF($3,''),'') AND coalesce(site_id,'')=coalesce(NULLIF($4,''),'') AND coalesce(voice_service,'')=coalesce(NULLIF($5,''),'') AND coalesce(call_type,'')=coalesce(NULLIF($6,''),'') AND start_time BETWEEN $7 - ($8 * interval '1 millisecond') AND $7 + ($8 * interval '1 millisecond') AND abs(duration_ms-$9) <= $10 ORDER BY start_time DESC LIMIT 1`, c.SystemID, c.TalkgroupID, c.RadioID, c.SiteID, c.VoiceService, c.CallType, c.StartTime.UTC(), s.cfg.StartToleranceMS, c.DurationMS, s.cfg.DurationTolMS).Scan(&id)
+	err := s.db.QueryRow(ctx, `SELECT id FROM calls WHERE sender_id=$1 AND system_id=$2 AND talkgroup_id=$3 AND coalesce(radio_id,'')=coalesce(NULLIF($4,''),'') AND coalesce(site_id,'')=coalesce(NULLIF($5,''),'') AND coalesce(voice_service,'')=coalesce(NULLIF($6,''),'') AND coalesce(call_type,'')=coalesce(NULLIF($7,''),'') AND start_time BETWEEN $8::timestamptz - ($9::bigint * interval '1 millisecond') AND $8::timestamptz + ($9::bigint * interval '1 millisecond') AND abs(duration_ms-$10) <= $11 ORDER BY start_time DESC LIMIT 1`, senderID, c.SystemID, c.TalkgroupID, c.RadioID, c.SiteID, c.VoiceService, c.CallType, c.StartTime.UTC(), s.cfg.StartToleranceMS, c.DurationMS, s.cfg.DurationTolMS).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
@@ -451,7 +462,38 @@ func randomToken() (string, error) {
 	_, err := rand.Read(b)
 	return hex.EncodeToString(b), err
 }
-func keyHash(value string) []byte { h := sha256.Sum256([]byte(value)); return h[:] }
+func tokenHash(value string) []byte { h := sha256.Sum256([]byte(value)); return h[:] }
+
+func hashAPIKey(value string) (string, error) {
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return "", err
+	}
+	digest := argon2.IDKey([]byte(value), salt, 3, 64*1024, 2, 32)
+	return "argon2id$v=19$m=65536,t=3,p=2$" + hex.EncodeToString(salt) + "$" + hex.EncodeToString(digest), nil
+}
+
+func verifyAPIKey(encoded, value string) bool {
+	parts := strings.Split(encoded, "$")
+	if len(parts) != 5 || parts[0] != "argon2id" {
+		return false
+	}
+	var memory, iterations uint32
+	var parallelism uint8
+	if _, err := fmt.Sscanf(parts[2], "m=%d,t=%d,p=%d", &memory, &iterations, &parallelism); err != nil {
+		return false
+	}
+	salt, err := hex.DecodeString(parts[3])
+	if err != nil {
+		return false
+	}
+	expected, err := hex.DecodeString(parts[4])
+	if err != nil {
+		return false
+	}
+	actual := argon2.IDKey([]byte(value), salt, iterations, memory, parallelism, uint32(len(expected)))
+	return subtle.ConstantTimeCompare(actual, expected) == 1
+}
 func mimeFor(path string) string {
 	if strings.HasSuffix(path, ".wav") {
 		return "audio/wav"
