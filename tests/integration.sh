@@ -35,4 +35,21 @@ token=$(printf '%s' "$response" | sed -n 's/.*"upload_token":"\([^"]*\)".*/\1/p'
 test -n "$token"
 curl -fsS -H 'X-Call-Recorder-Sender: integration-sender' -H 'X-Call-Recorder-Key: synthetic-integration-key' -H 'Content-Type: audio/mpeg' --data-binary "@$work/call.mp3" "http://127.0.0.1:18080/api/v1/uploads/$token" >/dev/null
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc 'SELECT count(*) FROM calls')" = 2
+before_audio=$(find "$root/.test-runtime/audio" -type f | wc -l)
+sed 's/fixture-1/fixture-rollback/g; s/03:04:05Z/03:06:10Z/' "$work/call.json" > "$work/rollback.json"
+CALL_RECORDER_TEST_FAIL_FINALIZE=true $compose up -d --no-deps --force-recreate backend
+for n in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/healthz >/dev/null && break; sleep 1; done
+response=$(curl -fsS -H 'Content-Type: application/json' -H 'X-Call-Recorder-Key: synthetic-integration-key' --data-binary "@$work/rollback.json" http://127.0.0.1:18080/api/v1/uploads)
+token=$(printf '%s' "$response" | sed -n 's/.*"upload_token":"\([^"]*\)".*/\1/p')
+test -n "$token"
+test "$(curl -s -o "$work/rollback-response.json" -w '%{http_code}' -H 'X-Call-Recorder-Sender: integration-sender' -H 'X-Call-Recorder-Key: synthetic-integration-key' -H 'Content-Type: audio/wav' --data-binary "@$work/call.wav" "http://127.0.0.1:18080/api/v1/uploads/$token")" = 500
+grep -q 'test-only finalization failure' "$work/rollback-response.json"
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc 'SELECT count(*) FROM calls')" = 2
+test "$(find "$root/.test-runtime/audio" -type f | wc -l)" = "$before_audio"
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT count(*) FROM pending_uploads WHERE status='pending'")" -ge 1
+CALL_RECORDER_TEST_FAIL_FINALIZE=false $compose up -d --no-deps --force-recreate backend
+for n in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/healthz >/dev/null && break; sleep 1; done
+curl -fsS -H 'X-Call-Recorder-Sender: integration-sender' -H 'X-Call-Recorder-Key: synthetic-integration-key' -H 'Content-Type: audio/wav' --data-binary "@$work/call.wav" "http://127.0.0.1:18080/api/v1/uploads/$token" >/dev/null
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc 'SELECT count(*) FROM calls')" = 3
+test "$(find "$root/.test-runtime/audio" -type f | wc -l)" = $((before_audio + 1))
 echo 'integration tests passed'
