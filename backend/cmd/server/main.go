@@ -148,6 +148,7 @@ func main() {
 	if cfg.AdminEnabled && cfg.AdminToken != "" {
 		mux.HandleFunc("GET /admin/talkgroups", s.adminTalkgroups)
 		mux.HandleFunc("GET /admin/radios", s.adminRadios)
+		mux.HandleFunc("GET /admin/retention", s.adminRetention)
 	}
 	mux.HandleFunc("GET /media/", s.media)
 	mux.HandleFunc("POST /api/v1/uploads", s.createUpload)
@@ -592,6 +593,32 @@ func (s *server) adminRadios(w http.ResponseWriter, r *http.Request) {
 		list = append(list, x)
 	}
 	s.render(w, "admin_aliases.html", map[string]any{"Title": "Radio aliases", "Kind": "radios", "Aliases": list})
+}
+func (s *server) adminRetention(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	rows, err := s.db.Query(r.Context(), `SELECT id,name,enabled,dry_run,retention_days,coalesce(sender_filter,''),coalesce(system_filter,''),coalesce(talkgroup_filter,''),coalesce(call_type_filter,''),priority FROM retention_policies ORDER BY priority DESC,id`)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	defer rows.Close()
+	type policy struct {
+		ID, Days, Priority                        int
+		Name, Sender, System, Talkgroup, CallType string
+		Enabled, DryRun                           bool
+	}
+	items := []policy{}
+	for rows.Next() {
+		var p policy
+		if err := rows.Scan(&p.ID, &p.Name, &p.Enabled, &p.DryRun, &p.Days, &p.Sender, &p.System, &p.Talkgroup, &p.CallType, &p.Priority); err != nil {
+			s.internal(w, err)
+			return
+		}
+		items = append(items, p)
+	}
+	s.render(w, "admin_retention.html", map[string]any{"Policies": items})
 }
 func (s *server) queryCalls(ctx context.Context, q url.Values) ([]completedCall, error) {
 	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,'') FROM calls c LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE ($1='' OR c.system_id ILIKE '%'||$1||'%' OR c.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(ta.alias,c.talkgroup_name,'') ILIKE '%'||$1||'%' OR coalesce(c.radio_id,'') ILIKE '%'||$1||'%' OR coalesce(ra.alias,c.radio_name,'') ILIKE '%'||$1||'%' OR coalesce(c.transcript,'') ILIKE '%'||$1||'%') AND ($2='' OR c.sender_id=$2) AND ($3='' OR c.system_id=$3) AND ($4='' OR c.talkgroup_id=$4) AND ($5='' OR c.radio_id=$5) AND ($6='' OR c.start_time::date=$6::date) ORDER BY c.start_time DESC LIMIT 100`
