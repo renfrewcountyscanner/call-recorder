@@ -1,8 +1,8 @@
 # Call Recorder
 
-## v0.2.0 development
+## v0.2.0
 
-The current development branch adds system-scoped talkgroup and radio alias administration, CSV import/export, a call-detail page, and safe-by-default retention policies. Retention policies are disabled and dry-run by default; destructive execution is available only through the protected Linux admin command.
+This release adds system-scoped talkgroup and radio alias administration, CSV import/export, a call-detail page, and safe-by-default retention policies. Retention policies are disabled and dry-run by default; destructive execution is available only through the protected Linux admin command.
 
 Call Recorder is an initial working Linux-native release for receiving completed calls from Linux Trunk Recorder installations. It uses Go, PostgreSQL, Docker Compose, bind-mounted Linux audio storage, durable sender spooling, browser playback, and verified backup/restore tooling. See [CHANGELOG.md](CHANGELOG.md) and [known limitations](docs/known-limitations.md).
 

@@ -582,10 +582,11 @@ func aliasInput(v url.Values) (system, id, alias, description, category, source 
 	if source != "manual" && source != "imported" {
 		source = "manual"
 	}
-	priority, err = strconv.Atoi(v.Get("priority"))
-	if err != nil {
-		err = errors.New("priority must be an integer")
-		return
+	if raw := strings.TrimSpace(v.Get("priority")); raw != "" {
+		if priority, err = strconv.Atoi(raw); err != nil {
+			err = errors.New("priority must be an integer")
+			return
+		}
 	}
 	enabled = v.Get("enabled") == "on"
 	return
@@ -694,7 +695,7 @@ func (s *server) adminRetention(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
 		return
 	}
-	rows, err := s.db.Query(r.Context(), `SELECT id,name,enabled,dry_run,retention_days,coalesce(sender_filter,''),coalesce(system_filter,''),coalesce(talkgroup_filter,''),coalesce(call_type_filter,''),priority FROM retention_policies ORDER BY priority DESC,id`)
+	rows, err := s.db.Query(r.Context(), `SELECT id,name,enabled,dry_run,retention_days,coalesce(sender_filter,''),coalesce(system_filter,''),coalesce(talkgroup_filter,''),coalesce(call_type_filter,''),priority,coalesce(min_duration_ms::text,''),coalesce(max_duration_ms::text,'') FROM retention_policies ORDER BY priority DESC,id`)
 	if err != nil {
 		s.internal(w, err)
 		return
@@ -703,12 +704,13 @@ func (s *server) adminRetention(w http.ResponseWriter, r *http.Request) {
 	type policy struct {
 		ID, Days, Priority                        int
 		Name, Sender, System, Talkgroup, CallType string
+		Min, Max                                  string
 		Enabled, DryRun                           bool
 	}
 	items := []policy{}
 	for rows.Next() {
 		var p policy
-		if err := rows.Scan(&p.ID, &p.Name, &p.Enabled, &p.DryRun, &p.Days, &p.Sender, &p.System, &p.Talkgroup, &p.CallType, &p.Priority); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Enabled, &p.DryRun, &p.Days, &p.Sender, &p.System, &p.Talkgroup, &p.CallType, &p.Priority, &p.Min, &p.Max); err != nil {
 			s.internal(w, err)
 			return
 		}
@@ -722,7 +724,7 @@ func (s *server) adminRetention(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var selected policy
-		if err := s.db.QueryRow(r.Context(), `SELECT id,name,enabled,dry_run,retention_days,coalesce(sender_filter,''),coalesce(system_filter,''),coalesce(talkgroup_filter,''),coalesce(call_type_filter,''),priority FROM retention_policies WHERE id=$1`, id).Scan(&selected.ID, &selected.Name, &selected.Enabled, &selected.DryRun, &selected.Days, &selected.Sender, &selected.System, &selected.Talkgroup, &selected.CallType, &selected.Priority); err != nil {
+		if err := s.db.QueryRow(r.Context(), `SELECT id,name,enabled,dry_run,retention_days,coalesce(sender_filter,''),coalesce(system_filter,''),coalesce(talkgroup_filter,''),coalesce(call_type_filter,''),priority,coalesce(min_duration_ms::text,''),coalesce(max_duration_ms::text,'') FROM retention_policies WHERE id=$1`, id).Scan(&selected.ID, &selected.Name, &selected.Enabled, &selected.DryRun, &selected.Days, &selected.Sender, &selected.System, &selected.Talkgroup, &selected.CallType, &selected.Priority, &selected.Min, &selected.Max); err != nil {
 			http.Error(w, "policy not found", http.StatusNotFound)
 			return
 		}

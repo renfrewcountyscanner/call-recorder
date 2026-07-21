@@ -12,6 +12,8 @@ for n in $(seq 1 40); do curl -fsS http://127.0.0.1:18080/healthz >/dev/null && 
 curl -fsS -c "$work/cookie" -d 'token=synthetic-admin-token' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/login | grep -q 303
 curl -fsS -b "$work/cookie" -d 'system=system-z&id=900&alias=Manual+Dispatch&description=synthetic&category=test&priority=4&source=manual&enabled=on' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/talkgroups | grep -q 303
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select alias from talkgroup_aliases where system_id='system-z' and talkgroup_id='900'")" = 'Manual Dispatch'
+curl -fsS -b "$work/cookie" -d 'system=system-z&id=901&alias=Manual+Unit&description=synthetic&category=test&source=manual&enabled=on' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/radios | grep -q 303
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select alias from radio_aliases where system_id='system-z' and radio_id='901'")" = 'Manual Unit'
 curl -fsS -b "$work/cookie" -d 'name=synthetic-policy&retention_days=30&priority=1&dry_run=on' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/retention | grep -q 303
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select count(*) from retention_policies where name='synthetic-policy' and enabled=false and dry_run=true")" = 1
 policy_id=$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select id from retention_policies where name='synthetic-policy'")

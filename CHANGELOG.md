@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.0 (unreleased)
+## v0.2.0 (2026-07-20)
 
 - System-scoped talkgroup and radio alias records with received, imported, and manual sources.
 - Alias CSV import/export and protected administration pages.
