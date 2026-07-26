@@ -15,6 +15,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -56,6 +57,7 @@ type config struct {
 	AdminToken       string
 	CloudflareAccessEnabled bool
 	CloudflareAdminEmail string
+	CloudflareTrustedProxyIPs []string
 }
 
 type server struct {
@@ -197,8 +199,9 @@ func main() {
 }
 
 func loadConfig() config {
-	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL")))}
+	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS"))}
 }
+func splitCSV(value string) []string { var out []string; for _, item := range strings.Split(value, ",") { if v := strings.TrimSpace(item); v != "" { out = append(out, v) } }; return out }
 func env(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
@@ -635,6 +638,11 @@ func (s *server) callDetail(w http.ResponseWriter, r *http.Request) {
 }
 func (s *server) adminOK(r *http.Request) bool {
 	if s.cfg.CloudflareAccessEnabled {
+		remote, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil { remote = r.RemoteAddr }
+		trusted := false
+		for _, ip := range s.cfg.CloudflareTrustedProxyIPs { if remote == ip { trusted = true; break } }
+		if !trusted { return false }
 		return s.cfg.CloudflareAdminEmail != "" && strings.EqualFold(strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email")), s.cfg.CloudflareAdminEmail)
 	}
 	if s.cfg.AdminToken == "" {
