@@ -1,6 +1,6 @@
 # Web interface
 
-The v0.3.0 web interface is a server-rendered Go-template application with vendored HTMX for partial refresh and vanilla JavaScript for playback. All assets are self-contained in the backend binary (`/static/…`); there are no CDN dependencies. Dark theme is the default; a light theme and a system-following option are available from the header toggle (persisted in the browser).
+The v0.3.0-dev web interface is a server-rendered Go-template application with vendored HTMX for partial refresh and vanilla JavaScript for playback. All assets are self-contained in the backend binary (`/static/…`); there are no CDN dependencies. Dark theme is the default; a light theme and a system-following option are available from the header toggle (persisted in the browser).
 
 ## Navigation
 
@@ -25,3 +25,8 @@ The detail page groups call information into talkgroup, radio, system/site, and 
 ## Browser support
 
 Current Chromium, Firefox, and Safari on desktop and mobile. JavaScript is required for filtering and playback; the call list degrades to the paginated server-rendered fragment.
+## Functional parity additions
+
+The calls page supports query-string filters for sender, receiver, system, site, talkgroup, radio, call type, frequency, duration range, date range, free-text/notes search, and patched calls. Filtered CSV export is available from the same page. A call detail page provides JSON metadata export, safe audio download, LCN/classification, preserved metadata, and authorized notes editing.
+
+The `/events/calls` Server-Sent Events endpoint announces changes for the current filter set. The browser reconnects automatically and falls back to timed HTMX refresh; active playback is preserved. `/status` provides receiver/system activity derived from completed calls.

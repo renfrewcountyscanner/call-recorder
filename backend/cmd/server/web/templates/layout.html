@@ -43,6 +43,7 @@
         {{else if .Nav.AdminEnabled}}
         <li><a href="/admin/login">Admin sign-in</a></li>
         {{end}}
+        <li><a href="/status" {{if eq .Nav.Active "status"}}aria-current="page"{{end}}>Receiver status</a></li>
       </ul>
     </nav>
     <div class="header-tools">

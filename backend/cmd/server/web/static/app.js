@@ -102,6 +102,20 @@
 
   /* ---------- Shared audio player ---------- */
   var audio = $('player-audio');
+  var liveStatus = $('live-status');
+  if (liveStatus && window.EventSource) {
+    var live = new EventSource('/events/calls' + window.location.search);
+    live.onopen = function () { liveStatus.textContent = 'Live updates: connected'; liveStatus.className = 'live-status live'; };
+    live.addEventListener('calls', function () {
+      liveStatus.textContent = 'Live updates: new calls available';
+      liveStatus.className = 'live-status live';
+      var active = $('player-audio') && !$('player-audio').paused;
+      if (active) { window.setTimeout(function () { if (window.htmx) window.htmx.ajax('GET', '/calls?' + window.location.search.replace(/^\?/, ''), {target: '#calls', swap: 'innerHTML'}); }, 1000); }
+      else if (window.htmx) window.htmx.ajax('GET', '/calls?' + window.location.search.replace(/^\?/, ''), {target: '#calls', swap: 'innerHTML'});
+    });
+    live.onerror = function () { liveStatus.textContent = 'Live updates: reconnecting'; liveStatus.className = 'live-status reconnecting'; };
+    window.setInterval(function () { if (live.readyState !== 1 && window.htmx) window.htmx.ajax('GET', '/calls?' + window.location.search.replace(/^\?/, ''), {target: '#calls', swap: 'innerHTML'}); }, 30000);
+  }
   if (!audio) return;
   var bar = $('player-bar');
   var btnPlay = $('pp-play'), btnPrev = $('pp-prev'), btnNext = $('pp-next'), btnStop = $('pp-stop');

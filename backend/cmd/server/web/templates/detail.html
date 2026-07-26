@@ -2,6 +2,7 @@
 {{template "head" .}}
 {{template "top" .}}
 <p class="small"><a href="/?system={{.Call.SystemID}}&talkgroup={{.Call.TalkgroupID}}">← Calls for this talkgroup</a></p>
+<p class="small"><a href="/export/call/{{.Call.ID}}">Export JSON</a> · <a href="/download/{{.Call.ID}}">Download audio</a></p>
 <div class="detail-hero">
   <button type="button" class="play-btn" data-play="{{.Call.ID}}" data-title="{{if .Call.TalkgroupName}}{{.Call.TalkgroupName}}{{else}}Talkgroup {{.Call.TalkgroupID}}{{end}}" data-meta="{{.Call.SystemID}} · {{.Call.StartTime.Local.Format "2006-01-02 15:04:05"}}" aria-label="Play this call"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg></button>
   <div>
@@ -48,7 +49,9 @@
       <dt>Start</dt><dd class="mono">{{.Call.StartTime.Local.Format "2006-01-02 15:04:05 MST"}}</dd>
       <dt>Duration</dt><dd class="mono">{{dur .Call.DurationMS}}</dd>
       <dt>Frequency</dt><dd class="mono">{{if .Call.Frequency}}{{.Call.Frequency}}{{else}}<span class="muted">—</span>{{end}}</dd>
+      <dt>LCN</dt><dd class="mono">{{if .Call.LCN}}{{.Call.LCN}}{{else}}<span class="muted">—</span>{{end}}</dd>
       <dt>Call type</dt><dd>{{if .Call.CallType}}{{.Call.CallType}}{{else}}<span class="muted">—</span>{{end}}</dd>
+	  <dt>Classification</dt><dd>{{if .Call.GroupCall}}Group{{else}}Private or unknown{{end}}</dd>
       <dt>Audio</dt><dd class="mono">{{.Call.AudioFormat}} · {{.Call.AudioSize}} bytes</dd>
     </dl>
   </section>
@@ -59,6 +62,10 @@
   <div class="chips">{{range .Patches}}<span class="badge warn">{{.}}</span>{{end}}</div>
 </section>
 {{end}}
+<section class="card" aria-labelledby="d-notes"><h2 id="d-notes">Call text and notes</h2>
+  {{if .Call.Transcript}}<p><strong>Received text:</strong> {{.Call.Transcript}}</p>{{end}}
+  {{if .Nav.Authorized}}<form method="post" action="/admin/call/{{.Call.ID}}"><label for="notes">Notes</label><textarea id="notes" name="notes" maxlength="10000" rows="5">{{.Call.Notes}}</textarea><button class="btn primary" type="submit">Save notes</button></form>{{else if .Call.Notes}}<p>{{.Call.Notes}}</p>{{else}}<p class="muted">No notes.</p>{{end}}
+</section>
 <details class="metadata">
   <summary>Preserved metadata</summary>
   <pre>{{.Metadata}}</pre>

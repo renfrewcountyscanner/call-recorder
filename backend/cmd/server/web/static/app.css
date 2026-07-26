@@ -67,6 +67,10 @@
   }
 }
 
+ .live-status { margin: .5rem 0 1rem; color: var(--muted); font-size: .9rem; }
+ .live-status.live { color: var(--ok); }
+ .live-status.reconnecting { color: var(--accent); }
+
 /* ---------- Base ---------- */
 
 *, *::before, *::after { box-sizing: border-box; }

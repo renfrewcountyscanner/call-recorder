@@ -1,0 +1,9 @@
+{{define "status.html"}}
+{{template "head" .}}{{template "top" .}}
+<h1>Receiver status</h1>
+<p class="muted">Activity is considered stale after 15 minutes without a completed call.</p>
+<div class="table-wrap"><table class="data"><thead><tr><th>Sender</th><th>System</th><th>Site</th><th>Calls</th><th>Last activity</th><th>Status</th></tr></thead><tbody>
+{{range .Rows}}<tr><td>{{.Sender}}</td><td>{{.System}}</td><td>{{.Site}}</td><td>{{.Calls}}</td><td>{{.Last.Local.Format "2006-01-02 15:04:05 MST"}}</td><td>{{if .Active}}<span class="badge success">Active</span>{{else}}<span class="badge muted">Stale</span>{{end}}</td></tr>{{else}}<tr><td colspan="6" class="empty-state">No received calls yet.</td></tr>{{end}}
+</tbody></table></div>
+{{template "bottom" .}}
+{{end}}

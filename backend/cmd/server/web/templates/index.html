@@ -2,6 +2,7 @@
 {{template "head" .}}
 {{template "top" .}}
 <h1>Calls</h1>
+<div id="live-status" class="live-status" role="status" aria-live="polite">Live updates: connecting…</div>
 {{if .Error}}<div class="alert danger" role="alert">{{.Error}}</div>{{end}}
 <details class="filters" open>
   <summary>Filters</summary>
@@ -10,8 +11,15 @@
       <label>Search <input name="q" value="{{.Filter.Q}}" autocomplete="off" placeholder="Alias, ID, or transcript"></label>
       <label>Sender <input name="sender" value="{{.Filter.Sender}}" autocomplete="off"></label>
       <label>System <input name="system" value="{{.Filter.System}}" autocomplete="off"></label>
+      <label>Site <input name="site" value="{{.Filter.Site}}" autocomplete="off"></label>
+      <label>Receiver <input name="receiver" value="{{.Filter.Receiver}}" autocomplete="off"></label>
       <label>Talkgroup <input name="talkgroup" value="{{.Filter.Talkgroup}}" autocomplete="off"></label>
       <label>Radio ID <input name="radio" value="{{.Filter.Radio}}" autocomplete="off"></label>
+      <label>Call type <input name="call_type" value="{{.Filter.CallType}}" autocomplete="off"></label>
+      <label>Frequency <input name="frequency" value="{{.Filter.Frequency}}" autocomplete="off"></label>
+      <label>Min duration (sec) <input name="min_duration" value="{{.Filter.MinDuration}}" inputmode="decimal"></label>
+      <label>Max duration (sec) <input name="max_duration" value="{{.Filter.MaxDuration}}" inputmode="decimal"></label>
+      <label class="check"><input type="checkbox" name="patched" value="1" {{if .Filter.Patched}}checked{{end}}> Patched calls only</label>
       <label>From <input type="date" name="from" value="{{.Filter.From}}"></label>
       <label>To <input type="date" name="to" value="{{.Filter.To}}"></label>
       <label>Per page
@@ -26,6 +34,7 @@
     <div class="filter-actions">
       <button class="btn primary" type="submit">Apply filters</button>
       <a class="btn ghost" href="/" id="filter-reset">Reset</a>
+      <a class="btn ghost" href="/export/calls.csv?{{.RawQuery}}">Export CSV</a>
     </div>
   </form>
 </details>
