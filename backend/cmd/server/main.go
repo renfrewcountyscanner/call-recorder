@@ -50,6 +50,7 @@ type config struct {
 	BootstrapSender           string
 	BootstrapKey              string
 	LegacyEnabled             bool
+	LegacyDebug               bool
 	LegacyAuthID              string
 	LegacyAPIKey              string
 	TestFailFinalize          bool
@@ -199,7 +200,7 @@ func main() {
 }
 
 func loadConfig() config {
-	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS"))}
+	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyDebug: env("CALL_RECORDER_LEGACY_DEBUG", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS"))}
 }
 func splitCSV(value string) []string {
 	var out []string
@@ -293,23 +294,38 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 			} `json:"talkGroupInfo"`
 		} `json:"recordedCall"`
 	}
+	if s.cfg.LegacyDebug {
+		s.logger.Info("legacy metadata request", "content_type", r.Header.Get("Content-Type"), "content_length", r.ContentLength)
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	decoder := json.NewDecoder(r.Body)
 	decoder.UseNumber()
 	if err := decoder.Decode(&request); err != nil {
+		if s.cfg.LegacyDebug {
+			s.logger.Info("legacy metadata result", "status", 400, "message", "invalid JSON")
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]any{"Status": 400, "StatusMessage": "invalid JSON"})
 		return
 	}
 	if !s.authenticate(r.Context(), request.AuthID, request.APIKey) {
+		if s.cfg.LegacyDebug {
+			s.logger.Info("legacy metadata result", "sender_id", request.AuthID, "status", 403, "message", "authentication failed")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"Status": 403, "StatusMessage": "authentication failed"})
 		return
 	}
 	if len(request.RecordedCall.TalkGroupInfo.CallTargets) == 0 {
+		if s.cfg.LegacyDebug {
+			s.logger.Info("legacy metadata result", "sender_id", request.AuthID, "status", 400, "message", "missing call target")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"Status": 400, "StatusMessage": "missing call target"})
 		return
 	}
 	start, err := time.Parse(time.RFC3339Nano, request.RecordedCall.StartTime)
 	if err != nil {
+		if s.cfg.LegacyDebug {
+			s.logger.Info("legacy metadata result", "sender_id", request.AuthID, "status", 400, "message", "invalid start time")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"Status": 400, "StatusMessage": "invalid start time"})
 		return
 	}
@@ -332,11 +348,17 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 		status = recorded.Code
 		message = response.Error
 	}
+	if s.cfg.LegacyDebug {
+		s.logger.Info("legacy metadata result", "sender_id", request.AuthID, "status", status, "duplicate", response.Duplicate, "call_audio_id_present", response.UploadToken != "", "message", message)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"Status": status, "StatusMessage": message, "Duplicate": response.Duplicate, "CallAudioID": response.UploadToken})
 }
 
 func (s *server) legacyReceiveAudio(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.URL.Path, "/api/callaudioupload/")
+	if s.cfg.LegacyDebug {
+		s.logger.Info("legacy audio request", "content_type", r.Header.Get("Content-Type"), "content_length", r.ContentLength, "token_present", token != "")
+	}
 	forward := r.Clone(r.Context())
 	forward.URL.Path = "/api/v1/uploads/" + token
 	forward.Header = r.Header.Clone()
@@ -353,6 +375,9 @@ func (s *server) legacyReceiveAudio(w http.ResponseWriter, r *http.Request) {
 	if response.Error != "" {
 		status = recorded.Code
 		message = response.Error
+	}
+	if s.cfg.LegacyDebug {
+		s.logger.Info("legacy audio result", "status", status, "message", message)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"Status": status, "StatusMessage": message})
 }
