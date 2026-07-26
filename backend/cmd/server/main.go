@@ -40,23 +40,23 @@ var staticFS embed.FS
 const version = "v0.3.0"
 
 type config struct {
-	ListenAddr       string
-	DatabaseURL      string
-	AudioRoot        string
-	MaxAudioBytes    int64
-	PendingTTL       time.Duration
-	StartToleranceMS int64
-	DurationTolMS    int64
-	BootstrapSender  string
-	BootstrapKey     string
-	LegacyEnabled    bool
-	LegacyAuthID     string
-	LegacyAPIKey     string
-	TestFailFinalize bool
-	AdminEnabled     bool
-	AdminToken       string
-	CloudflareAccessEnabled bool
-	CloudflareAdminEmail string
+	ListenAddr                string
+	DatabaseURL               string
+	AudioRoot                 string
+	MaxAudioBytes             int64
+	PendingTTL                time.Duration
+	StartToleranceMS          int64
+	DurationTolMS             int64
+	BootstrapSender           string
+	BootstrapKey              string
+	LegacyEnabled             bool
+	LegacyAuthID              string
+	LegacyAPIKey              string
+	TestFailFinalize          bool
+	AdminEnabled              bool
+	AdminToken                string
+	CloudflareAccessEnabled   bool
+	CloudflareAdminEmail      string
 	CloudflareTrustedProxyIPs []string
 }
 
@@ -201,7 +201,15 @@ func main() {
 func loadConfig() config {
 	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS"))}
 }
-func splitCSV(value string) []string { var out []string; for _, item := range strings.Split(value, ",") { if v := strings.TrimSpace(item); v != "" { out = append(out, v) } }; return out }
+func splitCSV(value string) []string {
+	var out []string
+	for _, item := range strings.Split(value, ",") {
+		if v := strings.TrimSpace(item); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
 func env(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
@@ -292,7 +300,7 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"Status": 400, "StatusMessage": "invalid JSON"})
 		return
 	}
-	if request.AuthID != s.cfg.LegacyAuthID || subtle.ConstantTimeCompare([]byte(request.APIKey), []byte(s.cfg.LegacyAPIKey)) != 1 {
+	if !s.authenticate(r.Context(), request.AuthID, request.APIKey) {
 		writeJSON(w, http.StatusOK, map[string]any{"Status": 403, "StatusMessage": "authentication failed"})
 		return
 	}
@@ -308,12 +316,12 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 	target := request.RecordedCall.TalkGroupInfo.CallTargets[0]
 	info := request.RecordedCall.TalkGroupInfo
 	call := callMetadata{StartTime: start, DurationMS: int64(request.RecordedCall.Duration * 1000), ReceiverID: info.Receiver, SystemID: fmt.Sprint(info.SystemID), SystemName: info.SystemLabel, SiteID: fmt.Sprint(info.SiteID), SiteName: info.SiteLabel, TalkgroupID: target.ID.String(), TalkgroupName: target.Label, TalkgroupTag: target.Tag, RadioID: fmt.Sprint(info.SourceID), RadioName: info.SourceLabel, RadioTag: info.SourceTag, Frequency: fmt.Sprint(info.Frequency), LCN: fmt.Sprint(info.LCN), VoiceService: info.VoiceService, CallType: fmt.Sprint(info.CallType)}
-	body, _ := json.Marshal(createUploadRequest{SenderID: s.cfg.LegacyAuthID, IdempotencyKey: "legacy-" + request.RecordedCall.StartTime + "-" + target.ID.String(), AudioFormat: strings.ToLower(request.AudioFormat), Call: call})
+	body, _ := json.Marshal(createUploadRequest{SenderID: request.AuthID, IdempotencyKey: "legacy-" + request.RecordedCall.StartTime + "-" + target.ID.String(), AudioFormat: strings.ToLower(request.AudioFormat), Call: call})
 	forward := r.Clone(r.Context())
 	forward.Body = io.NopCloser(bytes.NewReader(body))
 	forward.ContentLength = int64(len(body))
 	forward.Header = make(http.Header)
-	forward.Header.Set("X-Call-Recorder-Key", s.cfg.LegacyAPIKey)
+	forward.Header.Set("X-Call-Recorder-Key", request.APIKey)
 	recorded := httptest.NewRecorder()
 	s.createUpload(recorded, forward)
 	var response createUploadResponse
@@ -332,8 +340,10 @@ func (s *server) legacyReceiveAudio(w http.ResponseWriter, r *http.Request) {
 	forward := r.Clone(r.Context())
 	forward.URL.Path = "/api/v1/uploads/" + token
 	forward.Header = r.Header.Clone()
-	forward.Header.Set("X-Call-Recorder-Sender", s.cfg.LegacyAuthID)
-	forward.Header.Set("X-Call-Recorder-Key", s.cfg.LegacyAPIKey)
+	// The legacy protocol authenticates the metadata request. The returned,
+	// short-lived CallAudioID is the bearer credential for the ordered audio
+	// request and the legacy sender does not repeat apiKey on that request.
+	forward.Header.Set("X-Call-Recorder-Legacy", "1")
 	recorded := httptest.NewRecorder()
 	s.receiveAudio(recorded, forward)
 	var response createUploadResponse
@@ -427,7 +437,8 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 410, errorResponse{"upload token expired"})
 		return
 	}
-	if r.Header.Get("X-Call-Recorder-Sender") != pending.SenderID || !s.authenticate(r.Context(), pending.SenderID, r.Header.Get("X-Call-Recorder-Key")) {
+	legacyBearer := r.Header.Get("X-Call-Recorder-Legacy") == "1"
+	if !legacyBearer && (r.Header.Get("X-Call-Recorder-Sender") != pending.SenderID || !s.authenticate(r.Context(), pending.SenderID, r.Header.Get("X-Call-Recorder-Key"))) {
 		writeJSON(w, http.StatusUnauthorized, errorResponse{"sender authentication failed"})
 		return
 	}
@@ -639,10 +650,19 @@ func (s *server) callDetail(w http.ResponseWriter, r *http.Request) {
 func (s *server) adminOK(r *http.Request) bool {
 	if s.cfg.CloudflareAccessEnabled {
 		remote, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil { remote = r.RemoteAddr }
+		if err != nil {
+			remote = r.RemoteAddr
+		}
 		trusted := false
-		for _, ip := range s.cfg.CloudflareTrustedProxyIPs { if remote == ip { trusted = true; break } }
-		if !trusted { return false }
+		for _, ip := range s.cfg.CloudflareTrustedProxyIPs {
+			if remote == ip {
+				trusted = true
+				break
+			}
+		}
+		if !trusted {
+			return false
+		}
 		return s.cfg.CloudflareAdminEmail != "" && strings.EqualFold(strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email")), s.cfg.CloudflareAdminEmail)
 	}
 	if s.cfg.AdminToken == "" {
@@ -689,39 +709,101 @@ func (s *server) adminSenders(w http.ResponseWriter, r *http.Request) {
 	s.adminSendersPage(w, r, "", "")
 }
 func (s *server) adminSendersPage(w http.ResponseWriter, r *http.Request, oneTimeSender, oneTimeKey string) {
-	if !s.adminAuthorized(w, r) { return }
+	if !s.adminAuthorized(w, r) {
+		return
+	}
 	rows, err := s.db.Query(r.Context(), `SELECT sender_id,enabled,created_at FROM remote_senders ORDER BY sender_id`)
-	if err != nil { s.internal(w, err); return }
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
 	defer rows.Close()
-	type senderRow struct { ID string; Enabled bool; Created time.Time }
+	type senderRow struct {
+		ID      string
+		Enabled bool
+		Created time.Time
+	}
 	items := []senderRow{}
-	for rows.Next() { var x senderRow; if err := rows.Scan(&x.ID, &x.Enabled, &x.Created); err != nil { s.internal(w, err); return }; items = append(items, x) }
+	for rows.Next() {
+		var x senderRow
+		if err := rows.Scan(&x.ID, &x.Enabled, &x.Created); err != nil {
+			s.internal(w, err)
+			return
+		}
+		items = append(items, x)
+	}
 	s.page(w, r, "admin_senders.html", "Sender credentials", "senders", map[string]any{"Senders": items, "OneTimeKey": oneTimeKey, "OneTimeSender": oneTimeSender})
 }
 func (s *server) adminSenderWrite(w http.ResponseWriter, r *http.Request, replace bool) (string, string, error) {
-	if !s.adminAuthorized(w, r) { return "", "", errors.New("unauthorized") }
-	v, err := adminForm(r); if err != nil { return "", "", errors.New("invalid form") }
+	if !s.adminAuthorized(w, r) {
+		return "", "", errors.New("unauthorized")
+	}
+	v, err := adminForm(r)
+	if err != nil {
+		return "", "", errors.New("invalid form")
+	}
 	id := strings.TrimSpace(v.Get("sender_id"))
-	if id == "" || len(id) > 100 || strings.ContainsAny(id, " \t\r\n") { return "", "", errors.New("sender ID must be 1-100 characters without whitespace") }
-	key, err := generateKey(); if err != nil { return "", "", err }
-	hash, err := hashAPIKey(key); if err != nil { return "", "", err }
-	if replace { _, err = s.db.Exec(r.Context(), `INSERT INTO remote_senders(sender_id,key_hash,enabled) VALUES($1,$2,true) ON CONFLICT(sender_id) DO UPDATE SET key_hash=EXCLUDED.key_hash,enabled=true`, id, []byte(hash)) } else { _, err = s.db.Exec(r.Context(), `INSERT INTO remote_senders(sender_id,key_hash,enabled) VALUES($1,$2,true)`, id, []byte(hash)) }
-	if err != nil { return "", "", err }
+	if id == "" || len(id) > 100 || strings.ContainsAny(id, " \t\r\n") {
+		return "", "", errors.New("sender ID must be 1-100 characters without whitespace")
+	}
+	key, err := generateKey()
+	if err != nil {
+		return "", "", err
+	}
+	hash, err := hashAPIKey(key)
+	if err != nil {
+		return "", "", err
+	}
+	if replace {
+		_, err = s.db.Exec(r.Context(), `INSERT INTO remote_senders(sender_id,key_hash,enabled) VALUES($1,$2,true) ON CONFLICT(sender_id) DO UPDATE SET key_hash=EXCLUDED.key_hash,enabled=true`, id, []byte(hash))
+	} else {
+		_, err = s.db.Exec(r.Context(), `INSERT INTO remote_senders(sender_id,key_hash,enabled) VALUES($1,$2,true)`, id, []byte(hash))
+	}
+	if err != nil {
+		return "", "", err
+	}
 	return id, key, nil
 }
 func (s *server) adminCreateSender(w http.ResponseWriter, r *http.Request) {
-	id, key, err := s.adminSenderWrite(w, r, false); if err != nil { if err.Error()=="unauthorized" { return }; http.Error(w, err.Error(), http.StatusBadRequest); return }
+	id, key, err := s.adminSenderWrite(w, r, false)
+	if err != nil {
+		if err.Error() == "unauthorized" {
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	s.adminSendersPage(w, r, id, key)
 }
 func (s *server) adminReplaceSender(w http.ResponseWriter, r *http.Request) {
-	id, key, err := s.adminSenderWrite(w, r, true); if err != nil { if err.Error()=="unauthorized" { return }; http.Error(w, err.Error(), http.StatusBadRequest); return }
+	id, key, err := s.adminSenderWrite(w, r, true)
+	if err != nil {
+		if err.Error() == "unauthorized" {
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	s.adminSendersPage(w, r, id, key)
 }
 func (s *server) adminDisableSender(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) { return }
-	v, err := adminForm(r); if err != nil { http.Error(w, "invalid form", http.StatusBadRequest); return }
-	id := strings.TrimSpace(v.Get("sender_id")); if id == "" { http.Error(w, "sender ID is required", http.StatusBadRequest); return }
-	if _, err := s.db.Exec(r.Context(), `UPDATE remote_senders SET enabled=false WHERE sender_id=$1`, id); err != nil { s.internal(w, err); return }
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	v, err := adminForm(r)
+	if err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(v.Get("sender_id"))
+	if id == "" {
+		http.Error(w, "sender ID is required", http.StatusBadRequest)
+		return
+	}
+	if _, err := s.db.Exec(r.Context(), `UPDATE remote_senders SET enabled=false WHERE sender_id=$1`, id); err != nil {
+		s.internal(w, err)
+		return
+	}
 	http.Redirect(w, r, "/admin/senders", http.StatusSeeOther)
 }
 func adminForm(r *http.Request) (url.Values, error) {
@@ -1184,7 +1266,9 @@ func tokenHash(value string) []byte { h := sha256.Sum256([]byte(value)); return 
 
 func generateKey() (string, error) {
 	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil { return "", err }
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
 	return hex.EncodeToString(b), nil
 }
 
