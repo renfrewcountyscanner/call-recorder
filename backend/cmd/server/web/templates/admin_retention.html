@@ -1,1 +1,92 @@
-{{define "admin_retention.html"}}<!doctype html><html><head><meta charset="utf-8"><title>Retention policies</title><style>body{font-family:system-ui;margin:2rem;max-width:1400px}table{border-collapse:collapse;width:100%}th,td{padding:.35rem;border:1px solid #ddd}input{max-width:11rem}form{margin:.5rem 0}</style></head><body><h1>Retention policies</h1><p><a href="/admin/talkgroups">Talkgroups</a> · <a href="/admin/radios">Radio IDs</a> · <a href="/admin/retention">Retention</a></p><p>New policies are disabled and dry-run by default. A web run is always dry-run; destructive runs require the Linux admin CLI.</p><h2>{{if .Edit}}Edit{{else}}Create{{end}} policy</h2><form method="post">{{if .Edit}}<input type="hidden" name="id" value="{{.Edit.ID}}">{{end}}<label>Name <input name="name" value="{{if .Edit}}{{.Edit.Name}}{{end}}" required></label><label>Days <input name="retention_days" type="number" min="1" value="{{if .Edit}}{{.Edit.Days}}{{end}}" required></label><label>Sender <input name="sender" value="{{if .Edit}}{{.Edit.Sender}}{{end}}"></label><label>System <input name="system" value="{{if .Edit}}{{.Edit.System}}{{end}}"></label><label>Talkgroup <input name="talkgroup" value="{{if .Edit}}{{.Edit.Talkgroup}}{{end}}"></label><label>Call type <input name="call_type" value="{{if .Edit}}{{.Edit.CallType}}{{end}}"></label><label>Min ms <input name="min_duration_ms" type="number" value="{{if .Edit}}{{.Edit.Min}}{{end}}"></label><label>Max ms <input name="max_duration_ms" type="number" value="{{if .Edit}}{{.Edit.Max}}{{end}}"></label><label>Priority <input name="priority" type="number" value="{{if .Edit}}{{.Edit.Priority}}{{else}}0{{end}}"></label><label>Enabled <input type="checkbox" name="enabled" {{if and .Edit .Edit.Enabled}}checked{{end}}></label><label>Dry run <input type="checkbox" name="dry_run" {{if or (not .Edit) .Edit.DryRun}}checked{{end}}></label><button>Save</button></form><table><tr><th>ID</th><th>Name</th><th>Enabled</th><th>Dry run</th><th>Days</th><th>Sender/system/TG/type</th><th>Priority</th><th>Action</th></tr>{{range .Policies}}<tr><td>{{.ID}}</td><td>{{.Name}}</td><td>{{.Enabled}}</td><td>{{.DryRun}}</td><td>{{.Days}}</td><td>{{.Sender}} / {{.System}} / {{.Talkgroup}} / {{.CallType}}</td><td>{{.Priority}}</td><td><a href="/admin/retention?edit={{.ID}}">Edit</a><form method="post" action="/admin/retention/run"><input type="hidden" name="id" value="{{.ID}}"><button>Dry-run</button></form><form method="post" action="/admin/retention/delete"><input type="hidden" name="id" value="{{.ID}}"><button>Delete</button></form></td></tr>{{end}}</table><h2>Recent runs</h2><table><tr><th>Run</th><th>Policy</th><th>Dry run</th><th>Matched</th><th>Deleted</th><th>Audio</th><th>Failures</th><th>Ended</th></tr>{{range .Runs}}<tr><td>{{.ID}}</td><td>{{.Policy}}</td><td>{{.Dry}}</td><td>{{.Matched}}</td><td>{{.Deleted}}</td><td>{{.Audio}}</td><td>{{.Failures}}</td><td>{{.Ended}}</td></tr>{{end}}</table></body></html>{{end}}
+{{define "admin_retention.html"}}
+{{template "head" .}}
+{{template "top" .}}
+<h1>Retention policies</h1>
+<div class="alert info">Runs started here are always <strong>dry-runs</strong>: they count matches and record history without deleting anything. Destructive execution is only possible from the Linux admin CLI on policies explicitly set to <strong>live delete</strong>.</div>
+<section class="form-panel" aria-labelledby="policy-form-heading">
+  <h2 id="policy-form-heading">{{if .Edit}}Edit policy “{{.Edit.Name}}”{{else}}Create policy{{end}}</h2>
+  <form method="post">
+    {{if .Edit}}<input type="hidden" name="id" value="{{.Edit.ID}}">{{end}}
+    <div class="form-grid">
+      <label>Name <input name="name" value="{{if .Edit}}{{.Edit.Name}}{{end}}" required maxlength="160" autocomplete="off"></label>
+      <label>Retention days <input name="retention_days" type="number" min="1" max="36500" value="{{if .Edit}}{{.Edit.Days}}{{end}}" required></label>
+      <label>Sender <input name="sender" value="{{if .Edit}}{{.Edit.Sender}}{{end}}" autocomplete="off"></label>
+      <label>System <input name="system" value="{{if .Edit}}{{.Edit.System}}{{end}}" autocomplete="off"></label>
+      <label>Talkgroup <input name="talkgroup" value="{{if .Edit}}{{.Edit.Talkgroup}}{{end}}" autocomplete="off"></label>
+      <label>Call type <input name="call_type" value="{{if .Edit}}{{.Edit.CallType}}{{end}}" autocomplete="off"></label>
+      <label>Min duration ms <input name="min_duration_ms" type="number" value="{{if .Edit}}{{.Edit.Min}}{{end}}"></label>
+      <label>Max duration ms <input name="max_duration_ms" type="number" value="{{if .Edit}}{{.Edit.Max}}{{end}}"></label>
+      <label>Priority <input name="priority" type="number" value="{{if .Edit}}{{.Edit.Priority}}{{else}}0{{end}}"></label>
+      <label class="form-check"><input type="checkbox" name="enabled" {{if and .Edit .Edit.Enabled}}checked{{end}}> Enabled</label>
+      <label class="form-check"><input type="checkbox" name="dry_run" {{if or (not .Edit) .Edit.DryRun}}checked{{end}}> Dry-run only</label>
+    </div>
+    <div class="filter-actions">
+      <button class="btn primary" type="submit">{{if .Edit}}Save changes{{else}}Create policy{{end}}</button>
+      {{if .Edit}}<a class="btn ghost" href="/admin/retention">Cancel edit</a>{{end}}
+    </div>
+  </form>
+</section>
+{{if .Policies}}
+<div class="table-wrap">
+<table class="data responsive">
+  <thead>
+    <tr><th scope="col">ID</th><th scope="col">Name</th><th scope="col">Status</th><th scope="col">Days</th><th scope="col">Filters</th><th scope="col">Priority</th><th scope="col">Actions</th></tr>
+  </thead>
+  <tbody>
+    {{range .Policies}}
+    <tr>
+      <td data-label="ID" class="mono">{{.ID}}</td>
+      <td data-label="Name"><strong>{{.Name}}</strong></td>
+      <td data-label="Status">
+        {{if .Enabled}}<span class="badge ok">enabled</span>{{else}}<span class="badge">disabled</span>{{end}}
+        {{if .DryRun}}<span class="badge info">dry-run</span>{{else}}<span class="badge danger">live delete</span>{{end}}
+      </td>
+      <td data-label="Days" class="mono">{{.Days}}</td>
+      <td data-label="Filters" class="small muted">
+        {{if .Sender}}sender={{.Sender}} {{end}}{{if .System}}system={{.System}} {{end}}{{if .Talkgroup}}tg={{.Talkgroup}} {{end}}{{if .CallType}}type={{.CallType}} {{end}}{{if .Min}}min={{.Min}}ms {{end}}{{if .Max}}max={{.Max}}ms{{end}}
+        {{if not (or .Sender .System .Talkgroup .CallType .Min .Max)}}all calls{{end}}
+      </td>
+      <td data-label="Priority" class="mono">{{.Priority}}</td>
+      <td data-label="Actions">
+        <a class="btn small" href="/admin/retention?edit={{.ID}}">Edit</a>
+        <form method="post" action="/admin/retention/run" style="display:inline"><input type="hidden" name="id" value="{{.ID}}"><button class="btn small" type="submit">Dry-run</button></form>
+        <form method="post" action="/admin/retention/delete" style="display:inline" data-confirm="Delete policy “{{.Name}}”? Execution history is kept, but this cannot be undone."><input type="hidden" name="id" value="{{.ID}}"><button class="btn small danger" type="submit">Delete</button></form>
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+</div>
+{{else}}
+<div class="empty-state">
+  <strong>No retention policies</strong>
+  Create one with the form above. New policies are disabled and dry-run by default.
+</div>
+{{end}}
+<h2>Recent runs</h2>
+{{if .Runs}}
+<div class="table-wrap">
+<table class="data responsive">
+  <thead><tr><th scope="col">Run</th><th scope="col">Policy</th><th scope="col">Mode</th><th scope="col">Matched</th><th scope="col">Deleted</th><th scope="col">Audio</th><th scope="col">Failures</th><th scope="col">Ended</th></tr></thead>
+  <tbody>
+    {{range .Runs}}
+    <tr>
+      <td data-label="Run" class="mono">{{.ID}}</td>
+      <td data-label="Policy">{{.PolicyName}}</td>
+      <td data-label="Mode">{{if .Dry}}<span class="badge info">dry-run</span>{{else}}<span class="badge danger">live delete</span>{{end}}</td>
+      <td data-label="Matched" class="mono">{{.Matched}}</td>
+      <td data-label="Deleted" class="mono">{{.Deleted}}</td>
+      <td data-label="Audio" class="mono">{{.Audio}}</td>
+      <td data-label="Failures" class="mono">{{.Failures}}</td>
+      <td data-label="Ended" class="mono small">{{tdate .Ended}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+</div>
+<p><a class="btn small ghost" href="/admin/retention/history">Full retention history →</a></p>
+{{else}}
+<div class="empty-state"><strong>No retention runs yet</strong>Use a policy's Dry-run action to preview matches.</div>
+{{end}}
+{{template "bottom" .}}
+{{end}}

@@ -13,3 +13,9 @@ services:
       - "18080:8080"
     volumes:
       - ../.test-runtime/audio:/var/lib/call-recorder/audio
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

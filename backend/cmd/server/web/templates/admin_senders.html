@@ -1,0 +1,11 @@
+{{define "admin_senders.html"}}
+<main class="page admin-page">
+  <div class="page-heading"><div><p class="eyebrow">Administration</p><h1>Sender credentials</h1><p class="lede">Manage recorder identities used by upload clients.</p></div></div>
+  {{if .OneTimeKey}}
+  <section class="alert success" role="alert"><strong>New API key for {{.OneTimeSender}}</strong><p>Copy this key now. It is shown only once and is never stored in plaintext.</p><code class="one-time-key">{{.OneTimeKey}}</code></section>
+  {{end}}
+  <section class="form-panel"><h2>Create sender</h2><p class="muted">The sender ID is public metadata; the generated key is secret.</p><form method="post" action="/admin/senders/create" class="admin-form"><label>Sender ID<input name="sender_id" required maxlength="100" autocomplete="off" pattern="[^\\s]+"></label><button class="btn primary" type="submit">Generate API key</button></form></section>
+  <section class="form-panel"><h2>Replace key</h2><p class="muted">Use this when a key is lost or suspected compromised. Existing clients stop working immediately.</p><form method="post" action="/admin/senders/replace" class="admin-form"><label>Sender ID<input name="sender_id" required maxlength="100" autocomplete="off" pattern="[^\\s]+"></label><button class="btn" type="submit">Replace API key</button></form></section>
+  <section class="table-wrap"><table class="data"><caption class="sr-only">Configured sender identities</caption><thead><tr><th scope="col">Sender ID</th><th scope="col">Created</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead><tbody>{{range .Senders}}<tr><td data-label="Sender ID"><code>{{.ID}}</code></td><td data-label="Created">{{.Created}}</td><td data-label="Status">{{if .Enabled}}<span class="badge success">Enabled</span>{{else}}<span class="badge muted">Disabled</span>{{end}}</td><td data-label="Actions">{{if .Enabled}}<form method="post" action="/admin/senders/disable" data-confirm="Disable sender {{.ID}}? Existing clients will stop uploading."><input type="hidden" name="sender_id" value="{{.ID}}"><button class="btn small danger" type="submit">Disable</button></form>{{else}}<span class="muted">Disabled</span>{{end}}</td></tr>{{else}}<tr><td colspan="4" class="empty-state">No sender identities configured.</td></tr>{{end}}</tbody></table></section>
+</main>
+{{end}}

@@ -1,0 +1,31 @@
+{{define "admin_history.html"}}
+{{template "head" .}}
+{{template "top" .}}
+<h1>Retention history</h1>
+<p class="muted">Every retention execution is recorded here, including dry-runs. Deleting a policy keeps its history.</p>
+{{if .Runs}}
+<div class="table-wrap">
+<table class="data responsive">
+  <thead><tr><th scope="col">Run</th><th scope="col">Policy</th><th scope="col">Mode</th><th scope="col">Matched</th><th scope="col">Deleted</th><th scope="col">Audio</th><th scope="col">Failures</th><th scope="col">Started</th><th scope="col">Ended</th></tr></thead>
+  <tbody>
+    {{range .Runs}}
+    <tr>
+      <td data-label="Run" class="mono">{{.ID}}</td>
+      <td data-label="Policy">{{.PolicyName}}</td>
+      <td data-label="Mode">{{if .Dry}}<span class="badge info">dry-run</span>{{else}}<span class="badge danger">live delete</span>{{end}}</td>
+      <td data-label="Matched" class="mono">{{.Matched}}</td>
+      <td data-label="Deleted" class="mono">{{.Deleted}}</td>
+      <td data-label="Audio" class="mono">{{.Audio}}</td>
+      <td data-label="Failures" class="mono">{{.Failures}}</td>
+      <td data-label="Started" class="mono small">{{tdate .Started}}</td>
+      <td data-label="Ended" class="mono small">{{tdate .Ended}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+</div>
+{{else}}
+<div class="empty-state"><strong>No retention history</strong>No retention policy has run yet.</div>
+{{end}}
+{{template "bottom" .}}
+{{end}}

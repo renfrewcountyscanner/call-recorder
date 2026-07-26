@@ -1,11 +1,35 @@
 package main
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestFilterFromQueryIncludesPhase7Fields(t *testing.T) {
+	f, err := filterFromQuery(url.Values{"q": {"dispatch"}, "sender": {"s"}, "system": {"sys"}, "site": {"site-1"}, "receiver": {"rx"}, "talkgroup": {"100"}, "radio": {"200"}, "call_type": {"private"}, "frequency": {"851"}, "min_duration": {"1.5"}, "max_duration": {"30"}, "patched": {"1"}, "page": {"2"}, "page_size": {"100"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Site != "site-1" || f.Receiver != "rx" || f.CallType != "private" || !f.Patched || f.Page != 2 || f.PageSize != 100 {
+		t.Fatalf("unexpected filter: %#v", f)
+	}
+	u := callsURL(f, "", f.Page)
+	for _, want := range []string{"site=site-1", "receiver=rx", "call_type=private", "patched=1", "page=2"} {
+		if !strings.Contains(u, want) {
+			t.Fatalf("%q missing from %s", want, u)
+		}
+	}
+}
+
+func TestFilterRejectsInvalidDuration(t *testing.T) {
+	if _, err := filterFromQuery(url.Values{"min_duration": {"-1"}}); err == nil {
+		t.Fatal("expected invalid duration")
+	}
+}
 
 func TestValidateMetadata(t *testing.T) {
 	good := createUploadRequest{SenderID: "test", AudioFormat: "wav", Call: callMetadata{StartTime: time.Now(), DurationMS: 1000, SystemID: "system", TalkgroupID: "100"}}

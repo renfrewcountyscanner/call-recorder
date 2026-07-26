@@ -11,11 +11,28 @@ def envfile(path):
         if "=" in line and not line.lstrip().startswith("#"):
             k, v = line.split("=", 1); os.environ.setdefault(k.strip(), v.strip())
 
-def post(url, data, headers, timeout):
+def _post(url, data, headers, timeout):
+    """Return a consistent response tuple, including HTTP error headers."""
     req = Request(url, data=data, headers=headers, method="POST")
     try:
-        with urlopen(req, timeout=timeout) as res: return res.status, res.read()
-    except HTTPError as err: return err.code, err.read()
+        with urlopen(req, timeout=timeout) as res:
+            return res.status, res.headers.get("Content-Type", ""), res.read()
+    except HTTPError as err:
+        return err.code, err.headers.get("Content-Type", "") if err.headers else "", err.read()
+
+def _json_response(status, content_type, body, operation):
+    try:
+        response = json.loads(body or b"{}")
+    except (TypeError, ValueError):
+        raise RuntimeError(f"{operation} response was not JSON (http={status}, content_type={content_type or 'unknown'})")
+    if not isinstance(response, dict):
+        raise RuntimeError(f"{operation} response was not a JSON object (http={status})")
+    return response
+
+def _status_error(response, fallback):
+    message = response.get("StatusMessage") or response.get("error") or fallback
+    message = " ".join(str(message).split())[:240]
+    return message
 
 def legacy_metadata(call, cfg, audio):
     targets = [{"targetid": call.get("talkgroup", ""), "targetlabel": call.get("talkgroup_description", ""), "targettag": call.get("talkgroup_tag", "")}]
@@ -25,16 +42,28 @@ def legacy_metadata(call, cfg, audio):
 def attempt(item, cfg):
     audio, call = Path(item["audio"]), json.loads(Path(item["metadata"]).read_text())
     payload = json.dumps(legacy_metadata(call, cfg, audio)).encode()
-    status, body = post(cfg["DESTINATION_URL"].rstrip("/")+"/api/callupload", payload, {"Content-Type":"application/json"}, int(cfg.get("TIMEOUT_SECONDS", "30")))
-    response = json.loads(body or b"{}")
-    if status != 200 or response.get("Status", 500) >= 400: raise RuntimeError("metadata rejected")
+    status, content_type, body = _post(cfg["DESTINATION_URL"].rstrip("/")+"/api/callupload", payload, {"Content-Type":"application/json"}, int(cfg.get("TIMEOUT_SECONDS", "30")))
+    response = _json_response(status, content_type, body, "metadata")
+    try:
+        application_status = int(response.get("Status", 500))
+    except (TypeError, ValueError):
+        application_status = 500
+    if status < 200 or status >= 300 or application_status >= 400:
+        raise RuntimeError(f"metadata rejected: http={status}, status={application_status}, message={_status_error(response, 'rejected')}")
+    if response.get("Duplicate"):
+        return
     token = response.get("CallAudioID")
-    if response.get("Duplicate"): return
-    if not token: raise RuntimeError("missing upload identifier")
+    if not isinstance(token, str) or not token.strip():
+        raise RuntimeError("metadata accepted without CallAudioID")
     mime = "audio/mpeg" if audio.suffix.lower()==".mp3" else "audio/wav"
-    status, body = post(cfg["DESTINATION_URL"].rstrip("/")+"/api/callaudioupload/"+token, audio.read_bytes(), {"Content-Type":mime}, int(cfg.get("TIMEOUT_SECONDS", "30")))
-    response = json.loads(body or b"{}")
-    if status != 200 or response.get("Status", 500) >= 400: raise RuntimeError("audio rejected")
+    status, content_type, body = _post(cfg["DESTINATION_URL"].rstrip("/")+"/api/callaudioupload/"+token, audio.read_bytes(), {"Content-Type":mime}, int(cfg.get("TIMEOUT_SECONDS", "30")))
+    response = _json_response(status, content_type, body, "audio")
+    try:
+        application_status = int(response.get("Status", 500))
+    except (TypeError, ValueError):
+        application_status = 500
+    if status < 200 or status >= 300 or application_status >= 400:
+        raise RuntimeError(f"audio rejected: http={status}, status={application_status}, message={_status_error(response, 'rejected')}")
 
 def destinations(cfg):
     result = [cfg]

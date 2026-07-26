@@ -1,1 +1,49 @@
-{{define "calls.html"}}<table><thead><tr><th>Time</th><th>System</th><th>Talkgroup</th><th>Radio</th><th>Duration</th><th>Audio</th></tr></thead><tbody>{{range .Calls}}<tr><td><a href="/call/{{.ID}}">{{.StartTime.Local.Format "2006-01-02 15:04:05"}}</a></td><td>{{.SystemID}} {{.SystemName}}</td><td>{{.TalkgroupID}} {{.TalkgroupName}}</td><td>{{.RadioID}} {{.RadioName}}</td><td>{{.DurationMS}} ms</td><td><audio controls preload="none" src="/media/{{.ID}}"></audio></td></tr>{{else}}<tr><td colspan="6">No completed calls found.</td></tr>{{end}}</tbody></table><script>document.querySelectorAll('audio').forEach((a,i,all)=>a.onended=()=>{if(i+1<all.length)all[i+1].play()})</script>{{end}}
+{{define "calls.html"}}
+{{if .Error}}
+<div class="alert danger" role="alert">{{.Error}}</div>
+{{else}}
+<div class="list-meta">
+  <span id="result-count">{{.Total}} call{{if ne .Total 1}}s{{end}}</span>
+  {{if .Chips}}
+  <span class="chips" aria-label="Active filters">
+    {{range .Chips}}<span class="chip">{{.Label}} <a href="{{.ClearURL}}" hx-get="{{.ClearURL}}" hx-target="#calls" aria-label="Remove filter {{.Label}}">×</a></span>{{end}}
+  </span>
+  {{end}}
+</div>
+{{if .Calls}}
+<div class="table-wrap">
+<table class="data responsive">
+  <thead>
+    <tr><th scope="col" class="col-play"><span class="visually-hidden">Play</span></th><th scope="col">Time</th><th scope="col">Receiver / system / site</th><th scope="col">Talkgroup</th><th scope="col">Radio</th><th scope="col">Freq / LCN</th><th scope="col">Dur</th><th scope="col">Type</th></tr>
+  </thead>
+  <tbody>
+    {{range .Calls}}
+    <tr class="call-row">
+      <td class="col-play"><button type="button" class="play-btn" data-play="{{.ID}}" data-title="{{if .TalkgroupName}}{{.TalkgroupName}}{{else}}Talkgroup {{.TalkgroupID}}{{end}}" data-meta="{{.SystemID}} · {{.StartTime.Local.Format "2006-01-02 15:04:05"}}" aria-label="Play {{if .TalkgroupName}}{{.TalkgroupName}}{{else}}talkgroup {{.TalkgroupID}}{{end}} call from {{.StartTime.Local.Format "15:04"}}"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg></button></td>
+      <td class="col-time" data-label="Time"><a class="time-link" href="/call/{{.ID}}">{{.StartTime.Local.Format "15:04:05"}}</a><span class="date">{{.StartTime.Local.Format "2006-01-02"}}</span></td>
+      <td class="col-system" data-label="System">{{if .ReceiverID}}{{.ReceiverID}} · {{end}}{{.SystemID}}{{if .SiteID}} <span class="muted small">· {{.SiteID}}</span>{{end}}</td>
+      <td class="col-tg" data-label="Talkgroup"><span class="alias" title="{{.TalkgroupName}}">{{if .TalkgroupName}}{{.TalkgroupName}}{{else}}<span class="muted">—</span>{{end}}</span> <span class="id-chip">{{.TalkgroupID}}</span></td>
+      <td class="col-radio" data-label="Radio"><span class="alias" title="{{.RadioName}}">{{if .RadioName}}{{.RadioName}}{{else}}<span class="muted">—</span>{{end}}</span> {{if .RadioID}}<span class="id-chip">{{.RadioID}}</span>{{end}}</td>
+      <td class="col-freq" data-label="Freq">{{.Frequency}}{{if .LCN}} <span class="muted small">/ {{.LCN}}</span>{{end}}</td>
+      <td class="col-dur" data-label="Dur">{{dur .DurationMS}}</td>
+      <td class="col-type" data-label="Type">{{if .CallType}}<span class="badge">{{.CallType}}</span>{{end}}{{if gt .Patches 0}}<span class="badge warn" title="{{.Patches}} patched talkgroup{{if ne .Patches 1}}s{{end}}">+{{.Patches}}</span>{{end}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+</div>
+{{if or .PrevURL .NextURL}}
+<nav class="pager" aria-label="Call list pages">
+  {{if .PrevURL}}<a class="btn small" href="{{.PrevURL}}" hx-get="{{.PrevURL}}" hx-target="#calls">← Newer</a>{{end}}
+  <span class="page-of">Page {{.Filter.Page}} of {{.Pages}}</span>
+  {{if .NextURL}}<a class="btn small" href="{{.NextURL}}" hx-get="{{.NextURL}}" hx-target="#calls">Older →</a>{{end}}
+</nav>
+{{end}}
+{{else}}
+<div class="empty-state">
+  <strong>No calls found</strong>
+  {{if .Chips}}No calls match the active filters. <a href="/">Clear all filters</a>{{else}}Completed calls will appear here as they are received.{{end}}
+</div>
+{{end}}
+{{end}}
+{{end}}

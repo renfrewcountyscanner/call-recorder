@@ -13,14 +13,23 @@ cd /app/call-recorder
 tests/integration.sh
 tests/retention.sh
 tests/administration.sh
-tests/phase6.sh
+tests/phase7.sh
 ```
 
 It starts a separate Compose project on port 18080, uses `.test-runtime`, sends synthetic WAV metadata/audio, verifies duplicate prevention and a `206` range response, then removes the test project and temporary runtime state.
 
 `tests/retention.sh` first runs the same isolated ingestion suite, then executes a destructive synthetic retention policy against only `.test-runtime`. It never accesses `runtime/`.
 
-`tests/administration.sh` verifies the protected login/session flow, alias update, and safe default retention-policy creation. `tests/phase6.sh` runs the complete isolated Phase 6 group, including existing Chromium sequential playback coverage.
+`tests/administration.sh` verifies the protected login/session flow, alias update, and safe default retention-policy creation. `tests/phase7.sh` runs the complete isolated group: the Phase 6 suites plus the browser suites below.
+
+Web interface suites (Chromium + vendored axe-core, isolated only):
+
+```bash
+tests/browser-sequential.sh   # sequential playback via the shared player
+tests/browser-acceptance.sh   # layout, filters, playback, admin, themes, console errors
+tests/accessibility.sh        # axe-core audits; fails on critical violations
+tests/screenshots.sh          # sanitized captures into tests/output/ (ignored)
+```
 
 Apply additive migrations after making a verified backup:
 

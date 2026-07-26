@@ -7,13 +7,16 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
+	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
 	"io"
+	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -31,22 +34,32 @@ import (
 //go:embed web/templates/*.html
 var templatesFS embed.FS
 
+//go:embed web/static
+var staticFS embed.FS
+
+// version is reported by /healthz and shown in the interface header.
+const version = "v0.3.0"
+
 type config struct {
-	ListenAddr       string
-	DatabaseURL      string
-	AudioRoot        string
-	MaxAudioBytes    int64
-	PendingTTL       time.Duration
-	StartToleranceMS int64
-	DurationTolMS    int64
-	BootstrapSender  string
-	BootstrapKey     string
-	LegacyEnabled    bool
-	LegacyAuthID     string
-	LegacyAPIKey     string
-	TestFailFinalize bool
-	AdminEnabled     bool
-	AdminToken       string
+	ListenAddr                string
+	DatabaseURL               string
+	AudioRoot                 string
+	MaxAudioBytes             int64
+	PendingTTL                time.Duration
+	StartToleranceMS          int64
+	DurationTolMS             int64
+	BootstrapSender           string
+	BootstrapKey              string
+	LegacyEnabled             bool
+	LegacyDebug               bool
+	LegacyAuthID              string
+	LegacyAPIKey              string
+	TestFailFinalize          bool
+	AdminEnabled              bool
+	AdminToken                string
+	CloudflareAccessEnabled   bool
+	CloudflareAdminEmail      string
+	CloudflareTrustedProxyIPs []string
 }
 
 type server struct {
@@ -103,10 +116,12 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 type completedCall struct {
-	ID, SenderID, ReceiverID, SystemID, SystemName, SiteID, SiteName, TalkgroupID, TalkgroupName, RadioID, RadioName, Frequency, AudioPath, AudioFormat, Transcript, Notes string
-	StartTime                                                                                                                                                              time.Time
-	DurationMS                                                                                                                                                             int64
-	AudioSize                                                                                                                                                              int64
+	ID, SenderID, ReceiverID, SystemID, SystemName, SiteID, SiteName, TalkgroupID, TalkgroupName, RadioID, RadioName, Frequency, LCN, AudioPath, AudioFormat, Transcript, Notes, CallType string
+	GroupCall                                                                                                                                                                             *bool
+	StartTime                                                                                                                                                                             time.Time
+	DurationMS                                                                                                                                                                            int64
+	AudioSize                                                                                                                                                                             int64
+	Patches                                                                                                                                                                               int
 }
 
 func main() {
@@ -129,7 +144,7 @@ func main() {
 		slog.Error("ping postgres", "error", err)
 		os.Exit(2)
 	}
-	s := &server{cfg: cfg, db: pool, logger: slog.Default(), templates: template.Must(template.ParseFS(templatesFS, "web/templates/*.html"))}
+	s := &server{cfg: cfg, db: pool, logger: slog.Default(), templates: template.Must(template.New("cr").Funcs(template.FuncMap{"dur": formatDuration, "tdate": formatTimePtr, "srcBadge": sourceBadge}).ParseFS(templatesFS, "web/templates/*.html"))}
 	if err := s.bootstrapSender(context.Background()); err != nil {
 		slog.Error("bootstrap sender", "error", err)
 		os.Exit(2)
@@ -142,18 +157,39 @@ func main() {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("GET /readyz", s.health)
 	mux.HandleFunc("GET /", s.callsPage)
 	mux.HandleFunc("GET /calls", s.callsFragment)
 	mux.HandleFunc("GET /call/", s.callDetail)
-	if cfg.AdminEnabled && cfg.AdminToken != "" {
+	mux.HandleFunc("GET /export/calls.csv", s.exportCallsCSV)
+	mux.HandleFunc("GET /export/call/", s.exportCallJSON)
+	mux.HandleFunc("GET /download/", s.downloadCall)
+	mux.HandleFunc("GET /events/calls", s.eventsCalls)
+	mux.HandleFunc("GET /status", s.statusPage)
+	staticSub, err := fs.Sub(staticFS, "web/static")
+	if err != nil {
+		slog.Error("static assets", "error", err)
+		os.Exit(2)
+	}
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		http.FileServerFS(staticSub).ServeHTTP(w, r)
+	})))
+	if cfg.AdminEnabled && (cfg.AdminToken != "" || (cfg.CloudflareAccessEnabled && cfg.CloudflareAdminEmail != "")) {
 		mux.HandleFunc("GET /admin/login", s.adminLogin)
 		mux.HandleFunc("POST /admin/login", s.adminLogin)
 		mux.HandleFunc("GET /admin/talkgroups", s.adminTalkgroups)
+		mux.HandleFunc("GET /admin/senders", s.adminSenders)
+		mux.HandleFunc("POST /admin/senders/create", s.adminCreateSender)
+		mux.HandleFunc("POST /admin/senders/replace", s.adminReplaceSender)
+		mux.HandleFunc("POST /admin/senders/disable", s.adminDisableSender)
+		mux.HandleFunc("POST /admin/call/", s.adminUpdateCallNotes)
 		mux.HandleFunc("POST /admin/talkgroups", s.adminSaveTalkgroup)
 		mux.HandleFunc("GET /admin/radios", s.adminRadios)
 		mux.HandleFunc("POST /admin/radios", s.adminSaveRadio)
 		mux.HandleFunc("GET /admin/retention", s.adminRetention)
 		mux.HandleFunc("POST /admin/retention", s.adminSaveRetention)
+		mux.HandleFunc("GET /admin/retention/history", s.adminRetentionHistory)
 		mux.HandleFunc("POST /admin/retention/run", s.adminRunRetention)
 		mux.HandleFunc("POST /admin/retention/delete", s.adminDeleteRetention)
 	}
@@ -173,7 +209,16 @@ func main() {
 }
 
 func loadConfig() config {
-	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN")}
+	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyDebug: env("CALL_RECORDER_LEGACY_DEBUG", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS"))}
+}
+func splitCSV(value string) []string {
+	var out []string
+	for _, item := range strings.Split(value, ",") {
+		if v := strings.TrimSpace(item); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 func env(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {
@@ -192,6 +237,7 @@ func (s *server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "same-origin")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self'; media-src 'self'; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -200,7 +246,7 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse{"database unavailable"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version})
 }
 func (s *server) bootstrapSender(ctx context.Context) error {
 	if s.cfg.BootstrapSender == "" || s.cfg.BootstrapKey == "" {
@@ -257,35 +303,51 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 			} `json:"talkGroupInfo"`
 		} `json:"recordedCall"`
 	}
+	if s.cfg.LegacyDebug {
+		s.logger.Info("legacy metadata request", "content_type", r.Header.Get("Content-Type"), "content_length", r.ContentLength)
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	decoder := json.NewDecoder(r.Body)
 	decoder.UseNumber()
 	if err := decoder.Decode(&request); err != nil {
+		if s.cfg.LegacyDebug {
+			s.logger.Info("legacy metadata result", "status", 400, "message", "invalid JSON")
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]any{"Status": 400, "StatusMessage": "invalid JSON"})
 		return
 	}
-	if request.AuthID != s.cfg.LegacyAuthID || subtle.ConstantTimeCompare([]byte(request.APIKey), []byte(s.cfg.LegacyAPIKey)) != 1 {
+	canonicalSender, authenticated := s.authenticateLegacy(r.Context(), request.AuthID, request.APIKey)
+	if !authenticated {
+		if s.cfg.LegacyDebug {
+			s.logger.Info("legacy metadata result", "sender_id", request.AuthID, "status", 403, "message", "authentication failed")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"Status": 403, "StatusMessage": "authentication failed"})
 		return
 	}
 	if len(request.RecordedCall.TalkGroupInfo.CallTargets) == 0 {
+		if s.cfg.LegacyDebug {
+			s.logger.Info("legacy metadata result", "sender_id", request.AuthID, "status", 400, "message", "missing call target")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"Status": 400, "StatusMessage": "missing call target"})
 		return
 	}
 	start, err := time.Parse(time.RFC3339Nano, request.RecordedCall.StartTime)
 	if err != nil {
+		if s.cfg.LegacyDebug {
+			s.logger.Info("legacy metadata result", "sender_id", request.AuthID, "status", 400, "message", "invalid start time")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"Status": 400, "StatusMessage": "invalid start time"})
 		return
 	}
 	target := request.RecordedCall.TalkGroupInfo.CallTargets[0]
 	info := request.RecordedCall.TalkGroupInfo
 	call := callMetadata{StartTime: start, DurationMS: int64(request.RecordedCall.Duration * 1000), ReceiverID: info.Receiver, SystemID: fmt.Sprint(info.SystemID), SystemName: info.SystemLabel, SiteID: fmt.Sprint(info.SiteID), SiteName: info.SiteLabel, TalkgroupID: target.ID.String(), TalkgroupName: target.Label, TalkgroupTag: target.Tag, RadioID: fmt.Sprint(info.SourceID), RadioName: info.SourceLabel, RadioTag: info.SourceTag, Frequency: fmt.Sprint(info.Frequency), LCN: fmt.Sprint(info.LCN), VoiceService: info.VoiceService, CallType: fmt.Sprint(info.CallType)}
-	body, _ := json.Marshal(createUploadRequest{SenderID: s.cfg.LegacyAuthID, IdempotencyKey: "legacy-" + request.RecordedCall.StartTime + "-" + target.ID.String(), AudioFormat: strings.ToLower(request.AudioFormat), Call: call})
+	body, _ := json.Marshal(createUploadRequest{SenderID: canonicalSender, IdempotencyKey: "legacy-" + request.RecordedCall.StartTime + "-" + target.ID.String(), AudioFormat: strings.ToLower(request.AudioFormat), Call: call})
 	forward := r.Clone(r.Context())
 	forward.Body = io.NopCloser(bytes.NewReader(body))
 	forward.ContentLength = int64(len(body))
 	forward.Header = make(http.Header)
-	forward.Header.Set("X-Call-Recorder-Key", s.cfg.LegacyAPIKey)
+	forward.Header.Set("X-Call-Recorder-Key", request.APIKey)
 	recorded := httptest.NewRecorder()
 	s.createUpload(recorded, forward)
 	var response createUploadResponse
@@ -296,16 +358,24 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 		status = recorded.Code
 		message = response.Error
 	}
+	if s.cfg.LegacyDebug {
+		s.logger.Info("legacy metadata result", "sender_id", request.AuthID, "canonical_sender_id", canonicalSender, "status", status, "duplicate", response.Duplicate, "call_audio_id_present", response.UploadToken != "", "message", message)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"Status": status, "StatusMessage": message, "Duplicate": response.Duplicate, "CallAudioID": response.UploadToken})
 }
 
 func (s *server) legacyReceiveAudio(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.URL.Path, "/api/callaudioupload/")
+	if s.cfg.LegacyDebug {
+		s.logger.Info("legacy audio request", "content_type", r.Header.Get("Content-Type"), "content_length", r.ContentLength, "token_present", token != "")
+	}
 	forward := r.Clone(r.Context())
 	forward.URL.Path = "/api/v1/uploads/" + token
 	forward.Header = r.Header.Clone()
-	forward.Header.Set("X-Call-Recorder-Sender", s.cfg.LegacyAuthID)
-	forward.Header.Set("X-Call-Recorder-Key", s.cfg.LegacyAPIKey)
+	// The legacy protocol authenticates the metadata request. The returned,
+	// short-lived CallAudioID is the bearer credential for the ordered audio
+	// request and the legacy sender does not repeat apiKey on that request.
+	forward.Header.Set("X-Call-Recorder-Legacy", "1")
 	recorded := httptest.NewRecorder()
 	s.receiveAudio(recorded, forward)
 	var response createUploadResponse
@@ -315,6 +385,9 @@ func (s *server) legacyReceiveAudio(w http.ResponseWriter, r *http.Request) {
 	if response.Error != "" {
 		status = recorded.Code
 		message = response.Error
+	}
+	if s.cfg.LegacyDebug {
+		s.logger.Info("legacy audio result", "status", status, "message", message)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"Status": status, "StatusMessage": message})
 }
@@ -399,7 +472,8 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 410, errorResponse{"upload token expired"})
 		return
 	}
-	if r.Header.Get("X-Call-Recorder-Sender") != pending.SenderID || !s.authenticate(r.Context(), pending.SenderID, r.Header.Get("X-Call-Recorder-Key")) {
+	legacyBearer := r.Header.Get("X-Call-Recorder-Legacy") == "1"
+	if !legacyBearer && (r.Header.Get("X-Call-Recorder-Sender") != pending.SenderID || !s.authenticate(r.Context(), pending.SenderID, r.Header.Get("X-Call-Recorder-Key"))) {
 		writeJSON(w, http.StatusUnauthorized, errorResponse{"sender authentication failed"})
 		return
 	}
@@ -501,15 +575,100 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) callsPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "index.html", map[string]any{"Title": "Call Recorder"})
+	f, ferr := filterFromQuery(r.URL.Query())
+	data := map[string]any{"Filter": f, "RawQuery": r.URL.RawQuery}
+	if ferr != nil {
+		data["Error"] = "Invalid filter values: dates must use YYYY-MM-DD."
+	}
+	s.page(w, r, "index.html", "Calls", "calls", data)
 }
+
+type filterChip struct{ Label, ClearURL string }
+
+func callsURL(f callFilter, drop string, page int) string {
+	v := url.Values{}
+	set := func(k, val string) {
+		if val != "" && k != drop {
+			v.Set(k, val)
+		}
+	}
+	set("q", f.Q)
+	set("sender", f.Sender)
+	set("system", f.System)
+	set("site", f.Site)
+	set("receiver", f.Receiver)
+	set("talkgroup", f.Talkgroup)
+	set("radio", f.Radio)
+	set("call_type", f.CallType)
+	set("frequency", f.Frequency)
+	set("min_duration", f.MinDuration)
+	set("max_duration", f.MaxDuration)
+	if f.Patched && drop != "patched" {
+		v.Set("patched", "1")
+	}
+	set("date", f.Date)
+	set("from", f.From)
+	set("to", f.To)
+	if f.PageSize != 50 {
+		v.Set("page_size", strconv.Itoa(f.PageSize))
+	}
+	if page > 1 {
+		v.Set("page", strconv.Itoa(page))
+	}
+	if encoded := v.Encode(); encoded != "" {
+		return "/calls?" + encoded
+	}
+	return "/calls"
+}
+
+func chipsFor(f callFilter) []filterChip {
+	chips := []filterChip{}
+	add := func(label, key, value string) {
+		if value != "" {
+			chips = append(chips, filterChip{Label: label + value, ClearURL: callsURL(f, key, 1)})
+		}
+	}
+	add("Search: ", "q", f.Q)
+	add("Sender: ", "sender", f.Sender)
+	add("System: ", "system", f.System)
+	add("Site: ", "site", f.Site)
+	add("Receiver: ", "receiver", f.Receiver)
+	add("Talkgroup: ", "talkgroup", f.Talkgroup)
+	add("Radio: ", "radio", f.Radio)
+	add("Type: ", "call_type", f.CallType)
+	add("Frequency: ", "frequency", f.Frequency)
+	add("Min duration: ", "min_duration", f.MinDuration)
+	add("Max duration: ", "max_duration", f.MaxDuration)
+	if f.Patched {
+		chips = append(chips, filterChip{Label: "Patched", ClearURL: callsURL(f, "patched", 1)})
+	}
+	add("On ", "date", f.Date)
+	add("From ", "from", f.From)
+	add("To ", "to", f.To)
+	return chips
+}
+
 func (s *server) callsFragment(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.queryCalls(r.Context(), r.URL.Query())
-	if err != nil {
-		s.internal(w, err)
+	f, ferr := filterFromQuery(r.URL.Query())
+	if ferr != nil {
+		s.render(w, "calls.html", map[string]any{"Error": "Invalid filter values: dates must use YYYY-MM-DD."})
 		return
 	}
-	s.render(w, "calls.html", map[string]any{"Calls": rows})
+	calls, total, err := s.queryCalls(r.Context(), f)
+	if err != nil {
+		s.logger.Error("call query failed", "error", err)
+		s.render(w, "calls.html", map[string]any{"Error": "The call list could not be loaded. Try again shortly."})
+		return
+	}
+	pages := (total + f.PageSize - 1) / f.PageSize
+	data := map[string]any{"Calls": calls, "Total": total, "Pages": pages, "Filter": f, "Chips": chipsFor(f)}
+	if f.Page > 1 {
+		data["PrevURL"] = callsURL(f, "", f.Page-1)
+	}
+	if f.Page < pages {
+		data["NextURL"] = callsURL(f, "", f.Page+1)
+	}
+	s.render(w, "calls.html", data)
 }
 func (s *server) callDetail(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/call/")
@@ -520,7 +679,7 @@ func (s *server) callDetail(w http.ResponseWriter, r *http.Request) {
 	var c completedCall
 	var raw []byte
 	var patches []string
-	err := s.db.QueryRow(r.Context(), `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(p.metadata,'{}'::jsonb) FROM calls c LEFT JOIN pending_uploads p ON p.completed_call_id=c.id LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE c.id=$1`, id).Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.RadioID, &c.RadioName, &c.Frequency, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &raw)
+	err := s.db.QueryRow(r.Context(), `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),coalesce(c.lcn,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(p.metadata,'{}'::jsonb),coalesce(c.call_type,''),c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id) FROM calls c LEFT JOIN pending_uploads p ON p.completed_call_id=c.id LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE c.id=$1`, id).Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.RadioID, &c.RadioName, &c.Frequency, &c.LCN, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &raw, &c.CallType, &c.GroupCall, &c.Patches)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -534,24 +693,269 @@ func (s *server) callDetail(w http.ResponseWriter, r *http.Request) {
 			patches = append(patches, p)
 		}
 	}
-	s.render(w, "detail.html", map[string]any{"Call": c, "Patches": patches, "Metadata": string(raw)})
+	meta := string(raw)
+	var pretty bytes.Buffer
+	if json.Indent(&pretty, raw, "", "  ") == nil {
+		meta = pretty.String()
+	}
+	s.page(w, r, "detail.html", "Call detail", "calls", map[string]any{"Call": c, "Patches": patches, "Metadata": meta})
 }
-func (s *server) adminAuthorized(w http.ResponseWriter, r *http.Request) bool {
-	headerOK := subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Call-Recorder-Admin")), []byte(s.cfg.AdminToken)) == 1
-	cookieOK := false
+
+func (s *server) adminUpdateCallNotes(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/admin/call/")
+	if id == "" || strings.Contains(id, "/") {
+		http.Error(w, "invalid call ID", 400)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", 400)
+		return
+	}
+	notes := strings.TrimSpace(r.FormValue("notes"))
+	if len(notes) > 10000 {
+		http.Error(w, "notes exceed 10000 characters", 400)
+		return
+	}
+	identity := strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email"))
+	if identity == "" {
+		identity = "admin-token"
+	}
+	if _, err := s.db.Exec(r.Context(), `UPDATE calls SET notes=$1,notes_updated_at=now(),notes_updated_by=$2 WHERE id=$3`, notes, identity, id); err != nil {
+		s.internal(w, err)
+		return
+	}
+	http.Redirect(w, r, "/call/"+url.PathEscape(id), http.StatusSeeOther)
+}
+
+func (s *server) exportCallsCSV(w http.ResponseWriter, r *http.Request) {
+	f, err := filterFromQuery(r.URL.Query())
+	if err != nil {
+		http.Error(w, "invalid filters", 400)
+		return
+	}
+	f.Page = 1
+	f.PageSize = 200
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="call-export.csv"`)
+	cw := csv.NewWriter(w)
+	_ = cw.Write([]string{"Call ID", "Timestamp", "Sender", "Receiver", "System", "Site", "Talkgroup ID", "Talkgroup Alias", "Radio ID", "Radio Alias", "Frequency", "LCN", "Duration Seconds", "Call Type", "Patched Targets", "Transcript", "Notes", "Audio Format"})
+	for {
+		page, total, e := s.queryCalls(r.Context(), f)
+		if e != nil {
+			s.internal(w, e)
+			return
+		}
+		for _, c := range page {
+			_ = cw.Write([]string{c.ID, c.StartTime.UTC().Format(time.RFC3339Nano), c.SenderID, c.ReceiverID, c.SystemID, c.SiteID, c.TalkgroupID, c.TalkgroupName, c.RadioID, c.RadioName, c.Frequency, c.LCN, fmt.Sprintf("%.3f", float64(c.DurationMS)/1000), c.CallType, strconv.Itoa(c.Patches), c.Transcript, c.Notes, c.AudioFormat})
+		}
+		cw.Flush()
+		if cw.Error() != nil {
+			return
+		}
+		if f.Page*f.PageSize >= total || len(page) == 0 {
+			break
+		}
+		f.Page++
+	}
+}
+
+func sanitizeExportMetadata(raw json.RawMessage) any {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return map[string]any{}
+	}
+	var clean func(any) any
+	clean = func(v any) any {
+		switch x := v.(type) {
+		case map[string]any:
+			for k := range x {
+				switch strings.ToLower(k) {
+				case "apikey", "api_key", "authorization", "cookie", "uploadtoken", "upload_token", "callaudiouploadid", "audiopath", "audio_path", "databaseurl", "database_url":
+					delete(x, k)
+				default:
+					x[k] = clean(x[k])
+				}
+			}
+		case []any:
+			for i := range x {
+				x[i] = clean(x[i])
+			}
+		}
+		return v
+	}
+	return clean(value)
+}
+
+func (s *server) exportCallJSON(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/export/call/")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	var out struct {
+		ID, SenderID, ReceiverID, SystemID, SystemName, SiteID, SiteName, TalkgroupID, TalkgroupName, RadioID, RadioName, Frequency, LCN, CallType, AudioFormat, Transcript, Notes string
+		StartTime                                                                                                                                                                  time.Time
+		DurationMS, AudioSize                                                                                                                                                      int64
+		GroupCall                                                                                                                                                                  *bool
+		Raw                                                                                                                                                                        json.RawMessage
+	}
+	err := s.db.QueryRow(r.Context(), `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(c.radio_name,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.call_type,''),c.audio_format,coalesce(c.transcript,''),coalesce(c.notes,''),c.start_time,c.duration_ms,c.audio_size,c.group_call,coalesce(p.metadata,'{}'::jsonb) FROM calls c LEFT JOIN pending_uploads p ON p.completed_call_id=c.id WHERE c.id=$1`, id).Scan(&out.ID, &out.SenderID, &out.ReceiverID, &out.SystemID, &out.SystemName, &out.SiteID, &out.SiteName, &out.TalkgroupID, &out.TalkgroupName, &out.RadioID, &out.RadioName, &out.Frequency, &out.LCN, &out.CallType, &out.AudioFormat, &out.Transcript, &out.Notes, &out.StartTime, &out.DurationMS, &out.AudioSize, &out.GroupCall, &out.Raw)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="call-`+id+`.json"`)
+	// The preserved sender document is useful for interoperability, but exports
+	// must never carry credentials, upload tokens, or server-local paths.
+	clean := sanitizeExportMetadata(out.Raw)
+	_ = json.NewEncoder(w).Encode(struct {
+		ID, SenderID, ReceiverID, SystemID, SystemName, SiteID, SiteName, TalkgroupID, TalkgroupName, RadioID, RadioName, Frequency, LCN, CallType, AudioFormat, Transcript, Notes string
+		StartTime                                                                                                                                                                  time.Time
+		DurationMS, AudioSize                                                                                                                                                      int64
+		GroupCall                                                                                                                                                                  *bool
+		Raw                                                                                                                                                                        any
+	}{out.ID, out.SenderID, out.ReceiverID, out.SystemID, out.SystemName, out.SiteID, out.SiteName, out.TalkgroupID, out.TalkgroupName, out.RadioID, out.RadioName, out.Frequency, out.LCN, out.CallType, out.AudioFormat, out.Transcript, out.Notes, out.StartTime, out.DurationMS, out.AudioSize, out.GroupCall, clean})
+}
+
+func (s *server) downloadCall(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/download/")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	var path, format string
+	if err := s.db.QueryRow(r.Context(), `SELECT audio_path,audio_format FROM calls WHERE id=$1`, id).Scan(&path, &format); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	full := filepath.Join(s.cfg.AudioRoot, path)
+	root := filepath.Clean(s.cfg.AudioRoot)
+	if !strings.HasPrefix(filepath.Clean(full), root+string(os.PathSeparator)) {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", mimeFor(path))
+	w.Header().Set("Content-Disposition", `attachment; filename="call-`+id+`.`+format+`"`)
+	http.ServeFile(w, r, full)
+}
+
+func (s *server) statusPage(w http.ResponseWriter, r *http.Request) {
+	type row struct {
+		Sender, System, Site string
+		Calls                int
+		Last                 time.Time
+		Active               bool
+	}
+	rows, err := s.db.Query(r.Context(), `SELECT sender_id,coalesce(system_id,''),coalesce(site_id,''),count(*),max(start_time) FROM calls GROUP BY sender_id,system_id,site_id ORDER BY max(start_time) DESC`)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	defer rows.Close()
+	var items []row
+	for rows.Next() {
+		var x row
+		if rows.Scan(&x.Sender, &x.System, &x.Site, &x.Calls, &x.Last) == nil {
+			x.Active = time.Since(x.Last) <= 15*time.Minute
+			items = append(items, x)
+		}
+	}
+	s.page(w, r, "status.html", "Receiver status", "status", map[string]any{"Rows": items})
+}
+
+func (s *server) eventsCalls(w http.ResponseWriter, r *http.Request) {
+	f, err := filterFromQuery(r.URL.Query())
+	if err != nil {
+		http.Error(w, "invalid filters", 400)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE unavailable", 500)
+		return
+	}
+	_, _ = io.WriteString(w, "event: ready\ndata: {}\n\n")
+	flusher.Flush()
+	last := -1
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	maxDuration := time.NewTimer(30 * time.Minute)
+	defer maxDuration.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-maxDuration.C:
+			_, _ = io.WriteString(w, "event: reconnect\ndata: {}\n\n")
+			flusher.Flush()
+			return
+		case <-ticker.C:
+		}
+		_, total, e := s.queryCalls(r.Context(), f)
+		if e != nil {
+			_, _ = io.WriteString(w, "event: error\ndata: {}\n\n")
+			flusher.Flush()
+			continue
+		}
+		if total != last {
+			last = total
+			payload, _ := json.Marshal(map[string]any{"count": total})
+			_, _ = fmt.Fprintf(w, "event: calls\ndata: %s\n\n", payload)
+			flusher.Flush()
+		}
+	}
+}
+func (s *server) adminOK(r *http.Request) bool {
+	if s.cfg.CloudflareAccessEnabled {
+		remote, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			remote = r.RemoteAddr
+		}
+		trusted := false
+		for _, ip := range s.cfg.CloudflareTrustedProxyIPs {
+			if remote == ip {
+				trusted = true
+				break
+			}
+		}
+		if !trusted {
+			return false
+		}
+		return s.cfg.CloudflareAdminEmail != "" && strings.EqualFold(strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email")), s.cfg.CloudflareAdminEmail)
+	}
+	if s.cfg.AdminToken == "" {
+		return false
+	}
+	if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Call-Recorder-Admin")), []byte(s.cfg.AdminToken)) == 1 {
+		return true
+	}
 	if c, err := r.Cookie("call_recorder_admin"); err == nil {
 		expected := sha256.Sum256([]byte(s.cfg.AdminToken))
-		cookieOK = subtle.ConstantTimeCompare([]byte(c.Value), []byte(hex.EncodeToString(expected[:]))) == 1
+		return subtle.ConstantTimeCompare([]byte(c.Value), []byte(hex.EncodeToString(expected[:]))) == 1
 	}
-	if !headerOK && !cookieOK {
-		http.Error(w, "administration authorization required", http.StatusUnauthorized)
+	return false
+}
+func (s *server) adminAuthorized(w http.ResponseWriter, r *http.Request) bool {
+	if !s.adminOK(r) {
+		s.renderStatus(w, r, http.StatusUnauthorized, "admin_required.html", "Administration sign-in required", "", nil)
 		return false
 	}
 	return true
 }
 func (s *server) adminLogin(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.CloudflareAccessEnabled {
+		s.renderStatus(w, r, http.StatusUnauthorized, "admin_required.html", "Cloudflare Access administration", "", nil)
+		return
+	}
 	if r.Method == http.MethodGet {
-		s.render(w, "admin_login.html", nil)
+		s.page(w, r, "admin_login.html", "Administration sign-in", "", nil)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -559,12 +963,113 @@ func (s *server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if subtle.ConstantTimeCompare([]byte(r.Form.Get("token")), []byte(s.cfg.AdminToken)) != 1 {
-		http.Error(w, "administration authorization required", http.StatusUnauthorized)
+		s.renderStatus(w, r, http.StatusUnauthorized, "admin_login.html", "Administration sign-in", "", map[string]any{"Error": "Incorrect administration token."})
 		return
 	}
 	h := sha256.Sum256([]byte(s.cfg.AdminToken))
 	http.SetCookie(w, &http.Cookie{Name: "call_recorder_admin", Value: hex.EncodeToString(h[:]), Path: "/admin", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, MaxAge: 3600})
 	http.Redirect(w, r, "/admin/talkgroups", http.StatusSeeOther)
+}
+func (s *server) adminSenders(w http.ResponseWriter, r *http.Request) {
+	s.adminSendersPage(w, r, "", "")
+}
+func (s *server) adminSendersPage(w http.ResponseWriter, r *http.Request, oneTimeSender, oneTimeKey string) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	rows, err := s.db.Query(r.Context(), `SELECT sender_id,enabled,created_at FROM remote_senders ORDER BY sender_id`)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	defer rows.Close()
+	type senderRow struct {
+		ID      string
+		Enabled bool
+		Created time.Time
+	}
+	items := []senderRow{}
+	for rows.Next() {
+		var x senderRow
+		if err := rows.Scan(&x.ID, &x.Enabled, &x.Created); err != nil {
+			s.internal(w, err)
+			return
+		}
+		items = append(items, x)
+	}
+	s.page(w, r, "admin_senders.html", "Sender credentials", "senders", map[string]any{"Senders": items, "OneTimeKey": oneTimeKey, "OneTimeSender": oneTimeSender})
+}
+func (s *server) adminSenderWrite(w http.ResponseWriter, r *http.Request, replace bool) (string, string, error) {
+	if !s.adminAuthorized(w, r) {
+		return "", "", errors.New("unauthorized")
+	}
+	v, err := adminForm(r)
+	if err != nil {
+		return "", "", errors.New("invalid form")
+	}
+	id := strings.TrimSpace(v.Get("sender_id"))
+	if id == "" || len(id) > 100 || strings.ContainsAny(id, " \t\r\n") {
+		return "", "", errors.New("sender ID must be 1-100 characters without whitespace")
+	}
+	key, err := generateKey()
+	if err != nil {
+		return "", "", err
+	}
+	hash, err := hashAPIKey(key)
+	if err != nil {
+		return "", "", err
+	}
+	if replace {
+		_, err = s.db.Exec(r.Context(), `INSERT INTO remote_senders(sender_id,key_hash,enabled) VALUES($1,$2,true) ON CONFLICT(sender_id) DO UPDATE SET key_hash=EXCLUDED.key_hash,enabled=true`, id, []byte(hash))
+	} else {
+		_, err = s.db.Exec(r.Context(), `INSERT INTO remote_senders(sender_id,key_hash,enabled) VALUES($1,$2,true)`, id, []byte(hash))
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return id, key, nil
+}
+func (s *server) adminCreateSender(w http.ResponseWriter, r *http.Request) {
+	id, key, err := s.adminSenderWrite(w, r, false)
+	if err != nil {
+		if err.Error() == "unauthorized" {
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.adminSendersPage(w, r, id, key)
+}
+func (s *server) adminReplaceSender(w http.ResponseWriter, r *http.Request) {
+	id, key, err := s.adminSenderWrite(w, r, true)
+	if err != nil {
+		if err.Error() == "unauthorized" {
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.adminSendersPage(w, r, id, key)
+}
+func (s *server) adminDisableSender(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	v, err := adminForm(r)
+	if err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(v.Get("sender_id"))
+	if id == "" {
+		http.Error(w, "sender ID is required", http.StatusBadRequest)
+		return
+	}
+	if _, err := s.db.Exec(r.Context(), `UPDATE remote_senders SET enabled=false WHERE sender_id=$1`, id); err != nil {
+		s.internal(w, err)
+		return
+	}
+	http.Redirect(w, r, "/admin/senders", http.StatusSeeOther)
 }
 func adminForm(r *http.Request) (url.Values, error) {
 	if err := r.ParseForm(); err != nil {
@@ -610,7 +1115,7 @@ func (s *server) adminSaveTalkgroup(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
-	http.Redirect(w, r, "/admin/talkgroups", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/talkgroups?q="+url.QueryEscape(v.Get("q")), http.StatusSeeOther)
 }
 func (s *server) adminSaveRadio(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
@@ -631,7 +1136,7 @@ func (s *server) adminSaveRadio(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
-	http.Redirect(w, r, "/admin/radios", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/radios?q="+url.QueryEscape(v.Get("q")), http.StatusSeeOther)
 }
 func (s *server) adminTalkgroups(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
@@ -660,7 +1165,7 @@ func (s *server) adminTalkgroups(w http.ResponseWriter, r *http.Request) {
 		}
 		list = append(list, x)
 	}
-	s.render(w, "admin_aliases.html", map[string]any{"Title": "Talkgroup aliases", "Kind": "talkgroups", "Aliases": list})
+	s.page(w, r, "admin_aliases.html", "Talkgroup aliases", "talkgroups", map[string]any{"Title": "Talkgroup aliases", "Kind": "talkgroups", "Aliases": list, "Q": q})
 }
 func (s *server) adminRadios(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
@@ -689,7 +1194,7 @@ func (s *server) adminRadios(w http.ResponseWriter, r *http.Request) {
 		}
 		list = append(list, x)
 	}
-	s.render(w, "admin_aliases.html", map[string]any{"Title": "Radio aliases", "Kind": "radios", "Aliases": list})
+	s.page(w, r, "admin_aliases.html", "Radio aliases", "radios", map[string]any{"Title": "Radio aliases", "Kind": "radios", "Aliases": list, "Q": q})
 }
 func (s *server) adminRetention(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
@@ -730,23 +1235,43 @@ func (s *server) adminRetention(w http.ResponseWriter, r *http.Request) {
 		}
 		edit = &selected
 	}
-	history, _ := s.db.Query(r.Context(), `SELECT id,coalesce(policy_id,0),dry_run,calls_matched,calls_deleted,audio_files_deleted,failures,ended_at FROM retention_runs ORDER BY id DESC LIMIT 25`)
-	type run struct {
-		ID, Policy, Matched, Deleted, Audio, Failures int
-		Dry                                           bool
-		Ended                                         *time.Time
+	history, _ := s.db.Query(r.Context(), `SELECT r.id,coalesce(r.policy_id,0),coalesce(p.name,'(deleted policy)'),r.dry_run,r.calls_matched,r.calls_deleted,r.audio_files_deleted,r.failures,r.started_at,r.ended_at FROM retention_runs r LEFT JOIN retention_policies p ON p.id=r.policy_id ORDER BY r.id DESC LIMIT 10`)
+	runs := scanRetentionRuns(history)
+	s.page(w, r, "admin_retention.html", "Retention policies", "retention", map[string]any{"Policies": items, "Runs": runs, "Edit": edit})
+}
+
+type retentionRun struct {
+	ID, Policy, Matched, Deleted, Audio, Failures int
+	PolicyName                                    string
+	Dry                                           bool
+	Started, Ended                                *time.Time
+}
+
+func scanRetentionRuns(rows pgx.Rows) []retentionRun {
+	runs := []retentionRun{}
+	if rows == nil {
+		return runs
 	}
-	runs := []run{}
-	if history != nil {
-		defer history.Close()
-		for history.Next() {
-			var x run
-			if history.Scan(&x.ID, &x.Policy, &x.Dry, &x.Matched, &x.Deleted, &x.Audio, &x.Failures, &x.Ended) == nil {
-				runs = append(runs, x)
-			}
+	defer rows.Close()
+	for rows.Next() {
+		var x retentionRun
+		if rows.Scan(&x.ID, &x.Policy, &x.PolicyName, &x.Dry, &x.Matched, &x.Deleted, &x.Audio, &x.Failures, &x.Started, &x.Ended) == nil {
+			runs = append(runs, x)
 		}
 	}
-	s.render(w, "admin_retention.html", map[string]any{"Policies": items, "Runs": runs, "Edit": edit})
+	return runs
+}
+
+func (s *server) adminRetentionHistory(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	rows, err := s.db.Query(r.Context(), `SELECT r.id,coalesce(r.policy_id,0),coalesce(p.name,'(deleted policy)'),r.dry_run,r.calls_matched,r.calls_deleted,r.audio_files_deleted,r.failures,r.started_at,r.ended_at FROM retention_runs r LEFT JOIN retention_policies p ON p.id=r.policy_id ORDER BY r.id DESC LIMIT 200`)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	s.page(w, r, "admin_history.html", "Retention history", "history", map[string]any{"Runs": scanRetentionRuns(rows)})
 }
 func (s *server) adminSaveRetention(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
@@ -869,22 +1394,65 @@ func (s *server) adminRunRetention(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Redirect(w, r, "/admin/retention", 303)
 }
-func (s *server) queryCalls(ctx context.Context, q url.Values) ([]completedCall, error) {
-	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,'') FROM calls c LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE ($1='' OR c.system_id ILIKE '%'||$1||'%' OR c.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(ta.alias,c.talkgroup_name,'') ILIKE '%'||$1||'%' OR coalesce(c.radio_id,'') ILIKE '%'||$1||'%' OR coalesce(ra.alias,c.radio_name,'') ILIKE '%'||$1||'%' OR coalesce(c.transcript,'') ILIKE '%'||$1||'%') AND ($2='' OR c.sender_id=$2) AND ($3='' OR c.system_id=$3) AND ($4='' OR c.talkgroup_id=$4) AND ($5='' OR c.radio_id=$5) AND ($6='' OR c.start_time::date=$6::date) ORDER BY c.start_time DESC LIMIT 100`
-	result, err := s.db.Query(ctx, query, q.Get("q"), q.Get("sender"), q.Get("system"), q.Get("talkgroup"), q.Get("radio"), q.Get("date"))
+
+type callFilter struct {
+	Q, Sender, System, Site, Receiver, Talkgroup, Radio, CallType, Frequency, MinDuration, MaxDuration, Date, From, To string
+	Patched                                                                                                            bool
+	Page, PageSize                                                                                                     int
+}
+
+func filterFromQuery(q url.Values) (callFilter, error) {
+	f := callFilter{Q: strings.TrimSpace(q.Get("q")), Sender: strings.TrimSpace(q.Get("sender")), System: strings.TrimSpace(q.Get("system")), Site: strings.TrimSpace(q.Get("site")), Receiver: strings.TrimSpace(q.Get("receiver")), Talkgroup: strings.TrimSpace(q.Get("talkgroup")), Radio: strings.TrimSpace(q.Get("radio")), CallType: strings.TrimSpace(q.Get("call_type")), Frequency: strings.TrimSpace(q.Get("frequency")), MinDuration: strings.TrimSpace(q.Get("min_duration")), MaxDuration: strings.TrimSpace(q.Get("max_duration")), Date: q.Get("date"), From: q.Get("from"), To: q.Get("to"), Page: 1, PageSize: 50, Patched: q.Get("patched") == "1" || strings.EqualFold(q.Get("patched"), "true")}
+	for _, d := range []string{f.Date, f.From, f.To} {
+		if d != "" {
+			if _, err := time.Parse("2006-01-02", d); err != nil {
+				return f, errors.New("dates must use YYYY-MM-DD")
+			}
+		}
+	}
+	for _, d := range []string{f.MinDuration, f.MaxDuration} {
+		if d != "" {
+			if n, err := strconv.ParseFloat(d, 64); err != nil || n < 0 || n > 86400 {
+				return f, errors.New("durations must be nonnegative seconds")
+			}
+		}
+	}
+	if n, err := strconv.Atoi(q.Get("page")); err == nil && n > 0 {
+		f.Page = n
+	}
+	if n, err := strconv.Atoi(q.Get("page_size")); err == nil {
+		switch n {
+		case 25, 50, 100, 200:
+			f.PageSize = n
+		}
+	}
+	return f, nil
+}
+
+const callsFrom = ` FROM calls c LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled`
+const callsWhere = ` WHERE ($1='' OR c.search_document @@ plainto_tsquery('simple',$1) OR c.search_document::text ILIKE '%'||lower($1)||'%') AND ($2='' OR c.sender_id=$2) AND ($3='' OR c.system_id=$3) AND ($4='' OR c.site_id=$4) AND ($5='' OR c.receiver_id=$5) AND ($6='' OR c.talkgroup_id=$6) AND ($7='' OR c.radio_id=$7) AND ($8='' OR c.call_type=$8) AND ($9='' OR c.frequency ILIKE '%'||$9||'%') AND ($10='' OR c.duration_ms >= ($10::double precision*1000)) AND ($11='' OR c.duration_ms <= ($11::double precision*1000)) AND ($12='' OR c.start_time::date=$12::date) AND ($13='' OR c.start_time::date>=$13::date) AND ($14='' OR c.start_time::date<=$14::date) AND (NOT $15 OR EXISTS (SELECT 1 FROM call_targets ct WHERE ct.call_id=c.id))`
+
+func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall, int, error) {
+	args := []any{f.Q, f.Sender, f.System, f.Site, f.Receiver, f.Talkgroup, f.Radio, f.CallType, f.Frequency, f.MinDuration, f.MaxDuration, f.Date, f.From, f.To, f.Patched}
+	var total int
+	if err := s.db.QueryRow(ctx, `SELECT count(*)`+callsFrom+callsWhere, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),coalesce(c.lcn,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id)` + callsFrom + callsWhere + ` ORDER BY c.start_time DESC LIMIT $16 OFFSET $17`
+	result, err := s.db.Query(ctx, query, append(args, f.PageSize, (f.Page-1)*f.PageSize)...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer result.Close()
 	calls := []completedCall{}
 	for result.Next() {
 		var c completedCall
-		if err := result.Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.RadioID, &c.RadioName, &c.Frequency, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes); err != nil {
-			return nil, err
+		if err := result.Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.RadioID, &c.RadioName, &c.Frequency, &c.LCN, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &c.CallType, &c.GroupCall, &c.Patches); err != nil {
+			return nil, 0, err
 		}
 		calls = append(calls, c)
 	}
-	return calls, result.Err()
+	return calls, total, result.Err()
 }
 func (s *server) media(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/media/")
@@ -914,6 +1482,23 @@ func (s *server) authenticate(ctx context.Context, sender, key string) bool {
 	var enabled bool
 	err := s.db.QueryRow(ctx, `SELECT key_hash,enabled FROM remote_senders WHERE sender_id=$1`, sender).Scan(&hash, &enabled)
 	return err == nil && enabled && verifyAPIKey(string(hash), key)
+}
+
+// authenticateLegacy accepts case variations from legacy senders while keeping
+// the canonical sender_id stored in remote_senders and calls. Modern API
+// authentication remains case-sensitive.
+func (s *server) authenticateLegacy(ctx context.Context, sender, key string) (string, bool) {
+	if sender == "" || key == "" {
+		return "", false
+	}
+	var canonical string
+	var hash []byte
+	var enabled bool
+	err := s.db.QueryRow(ctx, `SELECT sender_id,key_hash,enabled FROM remote_senders WHERE lower(sender_id)=lower($1) LIMIT 1`, sender).Scan(&canonical, &hash, &enabled)
+	if err != nil || !enabled || !verifyAPIKey(string(hash), key) {
+		return "", false
+	}
+	return canonical, true
 }
 func (s *server) findDuplicate(ctx context.Context, senderID string, c callMetadata) (string, bool, error) {
 	var id string
@@ -969,6 +1554,14 @@ func randomToken() (string, error) {
 }
 func tokenHash(value string) []byte { h := sha256.Sum256([]byte(value)); return h[:] }
 
+func generateKey() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
 func hashAPIKey(value string) (string, error) {
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
@@ -1005,6 +1598,36 @@ func mimeFor(path string) string {
 	}
 	return "audio/mpeg"
 }
+func formatDuration(ms int64) string {
+	if ms <= 0 {
+		return "0:00"
+	}
+	total := ms / 1000
+	m, s := total/60, total%60
+	if m >= 60 {
+		return fmt.Sprintf("%d:%02d:%02d", m/60, m%60, s)
+	}
+	return fmt.Sprintf("%d:%02d", m, s)
+}
+func formatTimePtr(t *time.Time) string {
+	if t == nil {
+		return "—"
+	}
+	return t.Local().Format("2006-01-02 15:04")
+}
+func sourceBadge(source, alias string) template.HTML {
+	if alias == "" {
+		return `<span class="badge">numeric fallback</span>`
+	}
+	switch source {
+	case "manual":
+		return `<span class="badge info">manual</span>`
+	case "imported":
+		return `<span class="badge purple">imported</span>`
+	default:
+		return `<span class="badge">received</span>`
+	}
+}
 func firstErr(a, b error) error {
 	if a != nil {
 		return a
@@ -1025,4 +1648,27 @@ func (s *server) render(w http.ResponseWriter, name string, data any) {
 	if err := s.templates.ExecuteTemplate(w, name, data); err != nil {
 		s.internal(w, err)
 	}
+}
+
+type navContext struct {
+	Title, Active, Version   string
+	AdminEnabled, Authorized bool
+}
+
+func (s *server) nav(r *http.Request, active, title string) navContext {
+	return navContext{Title: title, Active: active, Version: version, AdminEnabled: s.cfg.AdminEnabled, Authorized: s.cfg.AdminEnabled && s.adminOK(r)}
+}
+func (s *server) renderStatus(w http.ResponseWriter, r *http.Request, status int, name, title, active string, data map[string]any) {
+	if data == nil {
+		data = map[string]any{}
+	}
+	data["Nav"] = s.nav(r, active, title)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	if err := s.templates.ExecuteTemplate(w, name, data); err != nil {
+		s.logger.Error("render failed", "template", name, "error", err)
+	}
+}
+func (s *server) page(w http.ResponseWriter, r *http.Request, name, title, active string, data map[string]any) {
+	s.renderStatus(w, r, http.StatusOK, name, title, active, data)
 }
