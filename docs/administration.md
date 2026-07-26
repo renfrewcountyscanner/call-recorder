@@ -23,3 +23,9 @@ docker-compose run --rm --entrypoint /usr/local/bin/call-recorder-admin backend 
 ```
 
 The last command that omits `--dry-run` can delete calls only when an enabled policy is configured `dry_run=false`; review a dry run first.
+
+## Cloudflare Access and Google authentication
+
+For production, put the service behind a Cloudflare Access application configured for Google authentication and require login for the site. Set `CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED=true` and `CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL=renfrewcountyscanner@gmail.com`. Cloudflare supplies the authenticated identity in `Cf-Access-Authenticated-User-Email`; only that exact configured email receives administrative rights. Other authenticated users remain guests: they can browse and play calls but cannot change aliases, manage sender credentials, or run retention operations.
+
+When Cloudflare mode is enabled, the local `CALL_RECORDER_ADMIN_TOKEN` login is bypassed. Do not expose the origin directly; otherwise clients could forge the identity header. Restrict origin access to Cloudflare or an equivalent trusted reverse proxy.

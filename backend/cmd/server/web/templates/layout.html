@@ -39,6 +39,7 @@
         <li><a href="/admin/radios" {{if eq .Nav.Active "radios"}}aria-current="page"{{end}}>Radios</a></li>
         <li><a href="/admin/retention" {{if eq .Nav.Active "retention"}}aria-current="page"{{end}}>Retention</a></li>
         <li><a href="/admin/retention/history" {{if eq .Nav.Active "history"}}aria-current="page"{{end}}>History</a></li>
+        <li><a href="/admin/senders" {{if eq .Nav.Active "senders"}}aria-current="page"{{end}}>Sender credentials</a></li>
         {{else if .Nav.AdminEnabled}}
         <li><a href="/admin/login">Admin sign-in</a></li>
         {{end}}
