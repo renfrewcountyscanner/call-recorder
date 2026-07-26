@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +31,12 @@ import (
 
 //go:embed web/templates/*.html
 var templatesFS embed.FS
+
+//go:embed web/static
+var staticFS embed.FS
+
+// version is reported by /healthz and shown in the interface header.
+const version = "v0.3.0"
 
 type config struct {
 	ListenAddr       string
@@ -103,10 +110,11 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 type completedCall struct {
-	ID, SenderID, ReceiverID, SystemID, SystemName, SiteID, SiteName, TalkgroupID, TalkgroupName, RadioID, RadioName, Frequency, AudioPath, AudioFormat, Transcript, Notes string
-	StartTime                                                                                                                                                              time.Time
-	DurationMS                                                                                                                                                             int64
-	AudioSize                                                                                                                                                              int64
+	ID, SenderID, ReceiverID, SystemID, SystemName, SiteID, SiteName, TalkgroupID, TalkgroupName, RadioID, RadioName, Frequency, AudioPath, AudioFormat, Transcript, Notes, CallType string
+	StartTime                                                                                                                                                                        time.Time
+	DurationMS                                                                                                                                                                       int64
+	AudioSize                                                                                                                                                                        int64
+	Patches                                                                                                                                                                          int
 }
 
 func main() {
@@ -129,7 +137,7 @@ func main() {
 		slog.Error("ping postgres", "error", err)
 		os.Exit(2)
 	}
-	s := &server{cfg: cfg, db: pool, logger: slog.Default(), templates: template.Must(template.ParseFS(templatesFS, "web/templates/*.html"))}
+	s := &server{cfg: cfg, db: pool, logger: slog.Default(), templates: template.Must(template.New("cr").Funcs(template.FuncMap{"dur": formatDuration, "tdate": formatTimePtr, "srcBadge": sourceBadge}).ParseFS(templatesFS, "web/templates/*.html"))}
 	if err := s.bootstrapSender(context.Background()); err != nil {
 		slog.Error("bootstrap sender", "error", err)
 		os.Exit(2)
@@ -145,6 +153,15 @@ func main() {
 	mux.HandleFunc("GET /", s.callsPage)
 	mux.HandleFunc("GET /calls", s.callsFragment)
 	mux.HandleFunc("GET /call/", s.callDetail)
+	staticSub, err := fs.Sub(staticFS, "web/static")
+	if err != nil {
+		slog.Error("static assets", "error", err)
+		os.Exit(2)
+	}
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		http.FileServerFS(staticSub).ServeHTTP(w, r)
+	})))
 	if cfg.AdminEnabled && cfg.AdminToken != "" {
 		mux.HandleFunc("GET /admin/login", s.adminLogin)
 		mux.HandleFunc("POST /admin/login", s.adminLogin)
@@ -154,6 +171,7 @@ func main() {
 		mux.HandleFunc("POST /admin/radios", s.adminSaveRadio)
 		mux.HandleFunc("GET /admin/retention", s.adminRetention)
 		mux.HandleFunc("POST /admin/retention", s.adminSaveRetention)
+		mux.HandleFunc("GET /admin/retention/history", s.adminRetentionHistory)
 		mux.HandleFunc("POST /admin/retention/run", s.adminRunRetention)
 		mux.HandleFunc("POST /admin/retention/delete", s.adminDeleteRetention)
 	}
@@ -192,6 +210,7 @@ func (s *server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "same-origin")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self'; media-src 'self'; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -200,7 +219,7 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse{"database unavailable"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version})
 }
 func (s *server) bootstrapSender(ctx context.Context) error {
 	if s.cfg.BootstrapSender == "" || s.cfg.BootstrapKey == "" {
@@ -501,15 +520,82 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) callsPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "index.html", map[string]any{"Title": "Call Recorder"})
+	f, ferr := filterFromQuery(r.URL.Query())
+	data := map[string]any{"Filter": f, "RawQuery": r.URL.RawQuery}
+	if ferr != nil {
+		data["Error"] = "Invalid filter values: dates must use YYYY-MM-DD."
+	}
+	s.page(w, r, "index.html", "Calls", "calls", data)
 }
+
+type filterChip struct{ Label, ClearURL string }
+
+func callsURL(f callFilter, drop string, page int) string {
+	v := url.Values{}
+	set := func(k, val string) {
+		if val != "" && k != drop {
+			v.Set(k, val)
+		}
+	}
+	set("q", f.Q)
+	set("sender", f.Sender)
+	set("system", f.System)
+	set("talkgroup", f.Talkgroup)
+	set("radio", f.Radio)
+	set("date", f.Date)
+	set("from", f.From)
+	set("to", f.To)
+	if f.PageSize != 50 {
+		v.Set("page_size", strconv.Itoa(f.PageSize))
+	}
+	if page > 1 {
+		v.Set("page", strconv.Itoa(page))
+	}
+	if encoded := v.Encode(); encoded != "" {
+		return "/calls?" + encoded
+	}
+	return "/calls"
+}
+
+func chipsFor(f callFilter) []filterChip {
+	chips := []filterChip{}
+	add := func(label, key, value string) {
+		if value != "" {
+			chips = append(chips, filterChip{Label: label + value, ClearURL: callsURL(f, key, 1)})
+		}
+	}
+	add("Search: ", "q", f.Q)
+	add("Sender: ", "sender", f.Sender)
+	add("System: ", "system", f.System)
+	add("Talkgroup: ", "talkgroup", f.Talkgroup)
+	add("Radio: ", "radio", f.Radio)
+	add("On ", "date", f.Date)
+	add("From ", "from", f.From)
+	add("To ", "to", f.To)
+	return chips
+}
+
 func (s *server) callsFragment(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.queryCalls(r.Context(), r.URL.Query())
-	if err != nil {
-		s.internal(w, err)
+	f, ferr := filterFromQuery(r.URL.Query())
+	if ferr != nil {
+		s.render(w, "calls.html", map[string]any{"Error": "Invalid filter values: dates must use YYYY-MM-DD."})
 		return
 	}
-	s.render(w, "calls.html", map[string]any{"Calls": rows})
+	calls, total, err := s.queryCalls(r.Context(), f)
+	if err != nil {
+		s.logger.Error("call query failed", "error", err)
+		s.render(w, "calls.html", map[string]any{"Error": "The call list could not be loaded. Try again shortly."})
+		return
+	}
+	pages := (total + f.PageSize - 1) / f.PageSize
+	data := map[string]any{"Calls": calls, "Total": total, "Pages": pages, "Filter": f, "Chips": chipsFor(f)}
+	if f.Page > 1 {
+		data["PrevURL"] = callsURL(f, "", f.Page-1)
+	}
+	if f.Page < pages {
+		data["NextURL"] = callsURL(f, "", f.Page+1)
+	}
+	s.render(w, "calls.html", data)
 }
 func (s *server) callDetail(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/call/")
@@ -520,7 +606,7 @@ func (s *server) callDetail(w http.ResponseWriter, r *http.Request) {
 	var c completedCall
 	var raw []byte
 	var patches []string
-	err := s.db.QueryRow(r.Context(), `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(p.metadata,'{}'::jsonb) FROM calls c LEFT JOIN pending_uploads p ON p.completed_call_id=c.id LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE c.id=$1`, id).Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.RadioID, &c.RadioName, &c.Frequency, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &raw)
+	err := s.db.QueryRow(r.Context(), `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(p.metadata,'{}'::jsonb),coalesce(c.call_type,''),(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id) FROM calls c LEFT JOIN pending_uploads p ON p.completed_call_id=c.id LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE c.id=$1`, id).Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.RadioID, &c.RadioName, &c.Frequency, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &raw, &c.CallType, &c.Patches)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -534,24 +620,36 @@ func (s *server) callDetail(w http.ResponseWriter, r *http.Request) {
 			patches = append(patches, p)
 		}
 	}
-	s.render(w, "detail.html", map[string]any{"Call": c, "Patches": patches, "Metadata": string(raw)})
+	meta := string(raw)
+	var pretty bytes.Buffer
+	if json.Indent(&pretty, raw, "", "  ") == nil {
+		meta = pretty.String()
+	}
+	s.page(w, r, "detail.html", "Call detail", "calls", map[string]any{"Call": c, "Patches": patches, "Metadata": meta})
 }
-func (s *server) adminAuthorized(w http.ResponseWriter, r *http.Request) bool {
-	headerOK := subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Call-Recorder-Admin")), []byte(s.cfg.AdminToken)) == 1
-	cookieOK := false
+func (s *server) adminOK(r *http.Request) bool {
+	if s.cfg.AdminToken == "" {
+		return false
+	}
+	if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Call-Recorder-Admin")), []byte(s.cfg.AdminToken)) == 1 {
+		return true
+	}
 	if c, err := r.Cookie("call_recorder_admin"); err == nil {
 		expected := sha256.Sum256([]byte(s.cfg.AdminToken))
-		cookieOK = subtle.ConstantTimeCompare([]byte(c.Value), []byte(hex.EncodeToString(expected[:]))) == 1
+		return subtle.ConstantTimeCompare([]byte(c.Value), []byte(hex.EncodeToString(expected[:]))) == 1
 	}
-	if !headerOK && !cookieOK {
-		http.Error(w, "administration authorization required", http.StatusUnauthorized)
+	return false
+}
+func (s *server) adminAuthorized(w http.ResponseWriter, r *http.Request) bool {
+	if !s.adminOK(r) {
+		s.renderStatus(w, r, http.StatusUnauthorized, "admin_required.html", "Administration sign-in required", "", nil)
 		return false
 	}
 	return true
 }
 func (s *server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		s.render(w, "admin_login.html", nil)
+		s.page(w, r, "admin_login.html", "Administration sign-in", "", nil)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -559,7 +657,7 @@ func (s *server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if subtle.ConstantTimeCompare([]byte(r.Form.Get("token")), []byte(s.cfg.AdminToken)) != 1 {
-		http.Error(w, "administration authorization required", http.StatusUnauthorized)
+		s.renderStatus(w, r, http.StatusUnauthorized, "admin_login.html", "Administration sign-in", "", map[string]any{"Error": "Incorrect administration token."})
 		return
 	}
 	h := sha256.Sum256([]byte(s.cfg.AdminToken))
@@ -610,7 +708,7 @@ func (s *server) adminSaveTalkgroup(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
-	http.Redirect(w, r, "/admin/talkgroups", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/talkgroups?q="+url.QueryEscape(v.Get("q")), http.StatusSeeOther)
 }
 func (s *server) adminSaveRadio(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
@@ -631,7 +729,7 @@ func (s *server) adminSaveRadio(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
-	http.Redirect(w, r, "/admin/radios", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/radios?q="+url.QueryEscape(v.Get("q")), http.StatusSeeOther)
 }
 func (s *server) adminTalkgroups(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
@@ -660,7 +758,7 @@ func (s *server) adminTalkgroups(w http.ResponseWriter, r *http.Request) {
 		}
 		list = append(list, x)
 	}
-	s.render(w, "admin_aliases.html", map[string]any{"Title": "Talkgroup aliases", "Kind": "talkgroups", "Aliases": list})
+	s.page(w, r, "admin_aliases.html", "Talkgroup aliases", "talkgroups", map[string]any{"Title": "Talkgroup aliases", "Kind": "talkgroups", "Aliases": list, "Q": q})
 }
 func (s *server) adminRadios(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
@@ -689,7 +787,7 @@ func (s *server) adminRadios(w http.ResponseWriter, r *http.Request) {
 		}
 		list = append(list, x)
 	}
-	s.render(w, "admin_aliases.html", map[string]any{"Title": "Radio aliases", "Kind": "radios", "Aliases": list})
+	s.page(w, r, "admin_aliases.html", "Radio aliases", "radios", map[string]any{"Title": "Radio aliases", "Kind": "radios", "Aliases": list, "Q": q})
 }
 func (s *server) adminRetention(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
@@ -730,23 +828,43 @@ func (s *server) adminRetention(w http.ResponseWriter, r *http.Request) {
 		}
 		edit = &selected
 	}
-	history, _ := s.db.Query(r.Context(), `SELECT id,coalesce(policy_id,0),dry_run,calls_matched,calls_deleted,audio_files_deleted,failures,ended_at FROM retention_runs ORDER BY id DESC LIMIT 25`)
-	type run struct {
-		ID, Policy, Matched, Deleted, Audio, Failures int
-		Dry                                           bool
-		Ended                                         *time.Time
+	history, _ := s.db.Query(r.Context(), `SELECT r.id,coalesce(r.policy_id,0),coalesce(p.name,'(deleted policy)'),r.dry_run,r.calls_matched,r.calls_deleted,r.audio_files_deleted,r.failures,r.started_at,r.ended_at FROM retention_runs r LEFT JOIN retention_policies p ON p.id=r.policy_id ORDER BY r.id DESC LIMIT 10`)
+	runs := scanRetentionRuns(history)
+	s.page(w, r, "admin_retention.html", "Retention policies", "retention", map[string]any{"Policies": items, "Runs": runs, "Edit": edit})
+}
+
+type retentionRun struct {
+	ID, Policy, Matched, Deleted, Audio, Failures int
+	PolicyName                                    string
+	Dry                                           bool
+	Started, Ended                                *time.Time
+}
+
+func scanRetentionRuns(rows pgx.Rows) []retentionRun {
+	runs := []retentionRun{}
+	if rows == nil {
+		return runs
 	}
-	runs := []run{}
-	if history != nil {
-		defer history.Close()
-		for history.Next() {
-			var x run
-			if history.Scan(&x.ID, &x.Policy, &x.Dry, &x.Matched, &x.Deleted, &x.Audio, &x.Failures, &x.Ended) == nil {
-				runs = append(runs, x)
-			}
+	defer rows.Close()
+	for rows.Next() {
+		var x retentionRun
+		if rows.Scan(&x.ID, &x.Policy, &x.PolicyName, &x.Dry, &x.Matched, &x.Deleted, &x.Audio, &x.Failures, &x.Started, &x.Ended) == nil {
+			runs = append(runs, x)
 		}
 	}
-	s.render(w, "admin_retention.html", map[string]any{"Policies": items, "Runs": runs, "Edit": edit})
+	return runs
+}
+
+func (s *server) adminRetentionHistory(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	rows, err := s.db.Query(r.Context(), `SELECT r.id,coalesce(r.policy_id,0),coalesce(p.name,'(deleted policy)'),r.dry_run,r.calls_matched,r.calls_deleted,r.audio_files_deleted,r.failures,r.started_at,r.ended_at FROM retention_runs r LEFT JOIN retention_policies p ON p.id=r.policy_id ORDER BY r.id DESC LIMIT 200`)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	s.page(w, r, "admin_history.html", "Retention history", "history", map[string]any{"Runs": scanRetentionRuns(rows)})
 }
 func (s *server) adminSaveRetention(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
@@ -869,22 +987,57 @@ func (s *server) adminRunRetention(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Redirect(w, r, "/admin/retention", 303)
 }
-func (s *server) queryCalls(ctx context.Context, q url.Values) ([]completedCall, error) {
-	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,'') FROM calls c LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE ($1='' OR c.system_id ILIKE '%'||$1||'%' OR c.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(ta.alias,c.talkgroup_name,'') ILIKE '%'||$1||'%' OR coalesce(c.radio_id,'') ILIKE '%'||$1||'%' OR coalesce(ra.alias,c.radio_name,'') ILIKE '%'||$1||'%' OR coalesce(c.transcript,'') ILIKE '%'||$1||'%') AND ($2='' OR c.sender_id=$2) AND ($3='' OR c.system_id=$3) AND ($4='' OR c.talkgroup_id=$4) AND ($5='' OR c.radio_id=$5) AND ($6='' OR c.start_time::date=$6::date) ORDER BY c.start_time DESC LIMIT 100`
-	result, err := s.db.Query(ctx, query, q.Get("q"), q.Get("sender"), q.Get("system"), q.Get("talkgroup"), q.Get("radio"), q.Get("date"))
+
+type callFilter struct {
+	Q, Sender, System, Talkgroup, Radio, Date, From, To string
+	Page, PageSize                                      int
+}
+
+func filterFromQuery(q url.Values) (callFilter, error) {
+	f := callFilter{Q: strings.TrimSpace(q.Get("q")), Sender: strings.TrimSpace(q.Get("sender")), System: strings.TrimSpace(q.Get("system")), Talkgroup: strings.TrimSpace(q.Get("talkgroup")), Radio: strings.TrimSpace(q.Get("radio")), Date: q.Get("date"), From: q.Get("from"), To: q.Get("to"), Page: 1, PageSize: 50}
+	for _, d := range []string{f.Date, f.From, f.To} {
+		if d != "" {
+			if _, err := time.Parse("2006-01-02", d); err != nil {
+				return f, errors.New("dates must use YYYY-MM-DD")
+			}
+		}
+	}
+	if n, err := strconv.Atoi(q.Get("page")); err == nil && n > 0 {
+		f.Page = n
+	}
+	if n, err := strconv.Atoi(q.Get("page_size")); err == nil {
+		switch n {
+		case 25, 50, 100, 200:
+			f.PageSize = n
+		}
+	}
+	return f, nil
+}
+
+const callsFrom = ` FROM calls c LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled`
+const callsWhere = ` WHERE ($1='' OR c.system_id ILIKE '%'||$1||'%' OR c.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(ta.alias,c.talkgroup_name,'') ILIKE '%'||$1||'%' OR coalesce(c.radio_id,'') ILIKE '%'||$1||'%' OR coalesce(ra.alias,c.radio_name,'') ILIKE '%'||$1||'%' OR coalesce(c.transcript,'') ILIKE '%'||$1||'%') AND ($2='' OR c.sender_id=$2) AND ($3='' OR c.system_id=$3) AND ($4='' OR c.talkgroup_id=$4) AND ($5='' OR c.radio_id=$5) AND ($6='' OR c.start_time::date=$6::date) AND ($7='' OR c.start_time::date>=$7::date) AND ($8='' OR c.start_time::date<=$8::date)`
+
+func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall, int, error) {
+	args := []any{f.Q, f.Sender, f.System, f.Talkgroup, f.Radio, f.Date, f.From, f.To}
+	var total int
+	if err := s.db.QueryRow(ctx, `SELECT count(*)`+callsFrom+callsWhere, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id)` + callsFrom + callsWhere + ` ORDER BY c.start_time DESC LIMIT $9 OFFSET $10`
+	result, err := s.db.Query(ctx, query, append(args, f.PageSize, (f.Page-1)*f.PageSize)...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer result.Close()
 	calls := []completedCall{}
 	for result.Next() {
 		var c completedCall
-		if err := result.Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.RadioID, &c.RadioName, &c.Frequency, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes); err != nil {
-			return nil, err
+		if err := result.Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.RadioID, &c.RadioName, &c.Frequency, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &c.CallType, &c.Patches); err != nil {
+			return nil, 0, err
 		}
 		calls = append(calls, c)
 	}
-	return calls, result.Err()
+	return calls, total, result.Err()
 }
 func (s *server) media(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/media/")
@@ -1005,6 +1158,36 @@ func mimeFor(path string) string {
 	}
 	return "audio/mpeg"
 }
+func formatDuration(ms int64) string {
+	if ms <= 0 {
+		return "0:00"
+	}
+	total := ms / 1000
+	m, s := total/60, total%60
+	if m >= 60 {
+		return fmt.Sprintf("%d:%02d:%02d", m/60, m%60, s)
+	}
+	return fmt.Sprintf("%d:%02d", m, s)
+}
+func formatTimePtr(t *time.Time) string {
+	if t == nil {
+		return "—"
+	}
+	return t.Local().Format("2006-01-02 15:04")
+}
+func sourceBadge(source, alias string) template.HTML {
+	if alias == "" {
+		return `<span class="badge">numeric fallback</span>`
+	}
+	switch source {
+	case "manual":
+		return `<span class="badge info">manual</span>`
+	case "imported":
+		return `<span class="badge purple">imported</span>`
+	default:
+		return `<span class="badge">received</span>`
+	}
+}
 func firstErr(a, b error) error {
 	if a != nil {
 		return a
@@ -1025,4 +1208,27 @@ func (s *server) render(w http.ResponseWriter, name string, data any) {
 	if err := s.templates.ExecuteTemplate(w, name, data); err != nil {
 		s.internal(w, err)
 	}
+}
+
+type navContext struct {
+	Title, Active, Version   string
+	AdminEnabled, Authorized bool
+}
+
+func (s *server) nav(r *http.Request, active, title string) navContext {
+	return navContext{Title: title, Active: active, Version: version, AdminEnabled: s.cfg.AdminEnabled, Authorized: s.cfg.AdminEnabled && s.adminOK(r)}
+}
+func (s *server) renderStatus(w http.ResponseWriter, r *http.Request, status int, name, title, active string, data map[string]any) {
+	if data == nil {
+		data = map[string]any{}
+	}
+	data["Nav"] = s.nav(r, active, title)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	if err := s.templates.ExecuteTemplate(w, name, data); err != nil {
+		s.logger.Error("render failed", "template", name, "error", err)
+	}
+}
+func (s *server) page(w http.ResponseWriter, r *http.Request, name, title, active string, data map[string]any) {
+	s.renderStatus(w, r, http.StatusOK, name, title, active, data)
 }

@@ -1,0 +1,11 @@
+{{define "admin_required.html"}}
+{{template "head" .}}
+{{template "top" .}}
+<div class="login-card">
+  <h1>Administration sign-in required</h1>
+  <div class="alert warn" role="alert">This area is restricted. Sign in with the administration token to continue.</div>
+  <p><a class="btn primary" href="/admin/login">Go to sign-in</a></p>
+  <p class="muted small">API clients must send the X-Call-Recorder-Admin header.</p>
+</div>
+{{template "bottom" .}}
+{{end}}

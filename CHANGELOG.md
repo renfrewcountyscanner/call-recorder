@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.3.0 (unreleased)
+
+- Redesigned web interface: dark-first theme system with light and system options, shared layout and navigation, and a small internal design system.
+- Scanner-oriented call log: alias-primary rows with secondary ID chips, call-type and patch badges, responsive stacked cards on mobile, total counts, and pagination.
+- Filters: from/to date range, removable active-filter chips, reset, preserved values, and shareable query-string URLs.
+- Playback: single shared player bar with previous/next/stop, seek and time display, 0.75×–2× speed (session-persisted), volume, auto-advance toggle, row highlighting, and keyboard controls.
+- Sectioned call-detail page with collapsible pretty-printed metadata.
+- Redesigned talkgroup, radio, retention, login, and unauthorized pages; retention history page; confirmation dialog for destructive actions; obvious enabled/dry-run badges.
+- Self-contained assets: vendored HTMX replaces the CDN, strict Content-Security-Policy, cacheable static files.
+- Automated axe-core accessibility suite, browser acceptance suite, and screenshot capture in the isolated environment.
+
 ## v0.2.0 (2026-07-20)
 
 - System-scoped talkgroup and radio alias records with received, imported, and manual sources.

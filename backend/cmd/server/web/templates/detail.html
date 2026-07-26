@@ -1,1 +1,68 @@
-{{define "detail.html"}}<!doctype html><html><head><meta charset="utf-8"><title>Call {{.Call.ID}}</title></head><body><p><a href="/">Call list</a></p><h1>Call detail</h1><dl><dt>Call ID</dt><dd>{{.Call.ID}}</dd><dt>Sender</dt><dd>{{.Call.SenderID}}</dd><dt>System</dt><dd>{{.Call.SystemID}} {{.Call.SystemName}}</dd><dt>Site</dt><dd>{{.Call.SiteID}} {{.Call.SiteName}}</dd><dt>Talkgroup</dt><dd>{{.Call.TalkgroupID}} {{.Call.TalkgroupName}}</dd><dt>Radio</dt><dd>{{.Call.RadioID}} {{.Call.RadioName}}</dd><dt>Frequency</dt><dd>{{.Call.Frequency}}</dd><dt>Duration</dt><dd>{{.Call.DurationMS}} ms</dd><dt>Start</dt><dd>{{.Call.StartTime}}</dd><dt>Audio</dt><dd>{{.Call.AudioFormat}} ({{.Call.AudioSize}} bytes)</dd><dt>Patched targets</dt><dd>{{range .Patches}}{{.}} {{end}}</dd></dl><audio controls src="/media/{{.Call.ID}}"></audio><h2>Preserved metadata</h2><pre>{{.Metadata}}</pre></body></html>{{end}}
+{{define "detail.html"}}
+{{template "head" .}}
+{{template "top" .}}
+<p class="small"><a href="/?system={{.Call.SystemID}}&talkgroup={{.Call.TalkgroupID}}">← Calls for this talkgroup</a></p>
+<div class="detail-hero">
+  <button type="button" class="play-btn" data-play="{{.Call.ID}}" data-title="{{if .Call.TalkgroupName}}{{.Call.TalkgroupName}}{{else}}Talkgroup {{.Call.TalkgroupID}}{{end}}" data-meta="{{.Call.SystemID}} · {{.Call.StartTime.Local.Format "2006-01-02 15:04:05"}}" aria-label="Play this call"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg></button>
+  <div>
+    <span class="alias" title="{{.Call.TalkgroupName}}">{{if .Call.TalkgroupName}}{{.Call.TalkgroupName}}{{else}}Talkgroup {{.Call.TalkgroupID}}{{end}}</span>
+    <div class="muted">{{.Call.SystemID}}{{if .Call.SystemName}} · {{.Call.SystemName}}{{end}} · {{.Call.StartTime.Local.Format "2006-01-02 15:04:05"}}</div>
+  </div>
+  <div>
+    {{if .Call.CallType}}<span class="badge info">{{.Call.CallType}}</span>{{end}}
+    {{if gt .Call.Patches 0}}<span class="badge warn" title="{{.Call.Patches}} patched talkgroups">+{{.Call.Patches}} patch</span>{{end}}
+    <span class="badge">{{.Call.AudioFormat}}</span>
+  </div>
+</div>
+<div class="detail-grid">
+  <section class="card" aria-labelledby="d-tg">
+    <h2 id="d-tg">Talkgroup</h2>
+    <dl>
+      <dt>Alias</dt><dd>{{if .Call.TalkgroupName}}{{.Call.TalkgroupName}}{{else}}<span class="muted">none (numeric fallback)</span>{{end}}</dd>
+      <dt>ID</dt><dd class="mono">{{.Call.TalkgroupID}}</dd>
+      <dt>Calls</dt><dd><a href="/?system={{.Call.SystemID}}&talkgroup={{.Call.TalkgroupID}}">Filtered call list</a></dd>
+      {{if .Nav.Authorized}}<dt>Admin</dt><dd><a href="/admin/talkgroups?q={{.Call.TalkgroupID}}">Edit talkgroup alias</a></dd>{{end}}
+    </dl>
+  </section>
+  <section class="card" aria-labelledby="d-radio">
+    <h2 id="d-radio">Radio</h2>
+    <dl>
+      <dt>Alias</dt><dd>{{if .Call.RadioName}}{{.Call.RadioName}}{{else}}<span class="muted">none</span>{{end}}</dd>
+      <dt>ID</dt><dd class="mono">{{if .Call.RadioID}}{{.Call.RadioID}}{{else}}<span class="muted">—</span>{{end}}</dd>
+      {{if .Call.RadioID}}<dt>Calls</dt><dd><a href="/?system={{.Call.SystemID}}&radio={{.Call.RadioID}}">Filtered call list</a></dd>{{end}}
+      {{if and .Nav.Authorized .Call.RadioID}}<dt>Admin</dt><dd><a href="/admin/radios?q={{.Call.RadioID}}">Edit radio alias</a></dd>{{end}}
+    </dl>
+  </section>
+  <section class="card" aria-labelledby="d-sys">
+    <h2 id="d-sys">System and site</h2>
+    <dl>
+      <dt>System</dt><dd>{{.Call.SystemID}}{{if .Call.SystemName}} · {{.Call.SystemName}}{{end}}</dd>
+      <dt>Site</dt><dd>{{if .Call.SiteID}}{{.Call.SiteID}}{{if .Call.SiteName}} · {{.Call.SiteName}}{{end}}{{else}}<span class="muted">—</span>{{end}}</dd>
+      <dt>Sender</dt><dd class="mono">{{.Call.SenderID}}</dd>
+      {{if .Call.ReceiverID}}<dt>Receiver</dt><dd class="mono">{{.Call.ReceiverID}}</dd>{{end}}
+    </dl>
+  </section>
+  <section class="card" aria-labelledby="d-time">
+    <h2 id="d-time">Timing and signal</h2>
+    <dl>
+      <dt>Start</dt><dd class="mono">{{.Call.StartTime.Local.Format "2006-01-02 15:04:05 MST"}}</dd>
+      <dt>Duration</dt><dd class="mono">{{dur .Call.DurationMS}}</dd>
+      <dt>Frequency</dt><dd class="mono">{{if .Call.Frequency}}{{.Call.Frequency}}{{else}}<span class="muted">—</span>{{end}}</dd>
+      <dt>Call type</dt><dd>{{if .Call.CallType}}{{.Call.CallType}}{{else}}<span class="muted">—</span>{{end}}</dd>
+      <dt>Audio</dt><dd class="mono">{{.Call.AudioFormat}} · {{.Call.AudioSize}} bytes</dd>
+    </dl>
+  </section>
+</div>
+{{if .Patches}}
+<section class="card" aria-labelledby="d-patch">
+  <h2 id="d-patch">Patched talkgroups</h2>
+  <div class="chips">{{range .Patches}}<span class="badge warn">{{.}}</span>{{end}}</div>
+</section>
+{{end}}
+<details class="metadata">
+  <summary>Preserved metadata</summary>
+  <pre>{{.Metadata}}</pre>
+</details>
+{{template "playerbar" .}}
+{{template "bottom" .}}
+{{end}}

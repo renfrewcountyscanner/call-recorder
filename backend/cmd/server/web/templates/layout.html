@@ -1,0 +1,93 @@
+{{define "head"}}<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{if .Nav.Title}}{{.Nav.Title}} · {{end}}Call Recorder</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
+<script src="/static/theme.js"></script>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/htmx.min.js" defer></script>
+<script src="/static/app.js" defer></script>
+</head>
+{{end}}
+
+{{define "top"}}
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-play" viewBox="0 0 16 16"><path d="M4 2l9 6-9 6z" fill="currentColor"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 16 16"><path d="M3.5 2h3v12h-3zM9.5 2h3v12h-3z" fill="currentColor"/></symbol>
+  <symbol id="i-prev" viewBox="0 0 16 16"><path d="M3 2h2.2v12H3zM13.5 2L6 8l7.5 6z" fill="currentColor"/></symbol>
+  <symbol id="i-next" viewBox="0 0 16 16"><path d="M10.8 2H13v12h-2.2zM2.5 2L10 8l-7.5 6z" fill="currentColor"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 16 16"><rect x="3" y="3" width="10" height="10" fill="currentColor"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 16 16"><path d="M2.5 4h11M2.5 8h11M2.5 12h11" stroke="currentColor" stroke-width="1.8" fill="none"/></symbol>
+</svg>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="app-header">
+  <div class="wrap header-row">
+    <a class="brand" href="/">
+      <svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="12" fill="none"/><path d="M14 40c8-14 12-21 18-21s10 7 18 21" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round"/><circle cx="32" cy="19" r="5" fill="currentColor"/><rect x="12" y="44" width="40" height="5" rx="2.5" fill="currentColor" opacity=".35"/></svg>
+      <span>Call Recorder <span class="version">{{.Nav.Version}}</span></span>
+    </a>
+    <button class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="main-nav" aria-label="Toggle navigation"><svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg></button>
+    <nav id="main-nav" aria-label="Main navigation">
+      <ul>
+        <li><a href="/" {{if eq .Nav.Active "calls"}}aria-current="page"{{end}}>Calls</a></li>
+        {{if .Nav.Authorized}}
+        <li><a href="/admin/talkgroups" {{if eq .Nav.Active "talkgroups"}}aria-current="page"{{end}}>Talkgroups</a></li>
+        <li><a href="/admin/radios" {{if eq .Nav.Active "radios"}}aria-current="page"{{end}}>Radios</a></li>
+        <li><a href="/admin/retention" {{if eq .Nav.Active "retention"}}aria-current="page"{{end}}>Retention</a></li>
+        <li><a href="/admin/retention/history" {{if eq .Nav.Active "history"}}aria-current="page"{{end}}>History</a></li>
+        {{else if .Nav.AdminEnabled}}
+        <li><a href="/admin/login">Admin sign-in</a></li>
+        {{end}}
+      </ul>
+    </nav>
+    <div class="header-tools">
+      <span id="status-dot" class="status-dot" role="status" aria-label="Backend status unknown"></span>
+      <button id="theme-toggle" class="btn ghost small" type="button" aria-label="Change theme">Dark</button>
+    </div>
+  </div>
+</header>
+<main id="main" class="wrap">
+{{end}}
+
+{{define "bottom"}}
+</main>
+</body></html>
+{{end}}
+
+{{define "playerbar"}}
+<div class="player-bar" id="player-bar" hidden>
+  <audio id="player-audio" preload="none"></audio>
+  <div class="player-inner">
+    <div class="player-controls">
+      <button id="pp-prev" class="btn icon" type="button" aria-label="Previous call" title="Previous (p)"><svg class="ic" aria-hidden="true"><use href="#i-prev"/></svg></button>
+      <button id="pp-play" class="btn icon primary" type="button" aria-label="Play or pause (space)" title="Play/pause (space)"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg></button>
+      <button id="pp-next" class="btn icon" type="button" aria-label="Next call" title="Next (n)"><svg class="ic" aria-hidden="true"><use href="#i-next"/></svg></button>
+      <button id="pp-stop" class="btn icon" type="button" aria-label="Stop" title="Stop (s)"><svg class="ic" aria-hidden="true"><use href="#i-stop"/></svg></button>
+    </div>
+    <div class="player-track">
+      <div class="player-title" id="pp-title">No call selected</div>
+      <div class="player-meta" id="pp-meta"></div>
+      <input id="pp-seek" type="range" min="0" max="1000" value="0" aria-label="Seek">
+      <div class="player-time"><span id="pp-cur">0:00</span> / <span id="pp-dur">0:00</span></div>
+    </div>
+    <div class="player-opts">
+      <label class="seq-toggle" title="Play the next call automatically"><input type="checkbox" id="pp-seq" checked> Auto-advance</label>
+      <label>Speed
+        <select id="pp-speed" aria-label="Playback speed">
+          <option value="0.75">0.75×</option>
+          <option value="1" selected>1×</option>
+          <option value="1.25">1.25×</option>
+          <option value="1.5">1.5×</option>
+          <option value="2">2×</option>
+        </select>
+      </label>
+      <label>Volume <input type="range" id="pp-vol" min="0" max="1" step="0.05" value="1" aria-label="Volume"></label>
+    </div>
+  </div>
+  <div id="pp-announce" class="visually-hidden" role="status" aria-live="polite"></div>
+</div>
+{{end}}

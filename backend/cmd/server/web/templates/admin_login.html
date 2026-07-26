@@ -1,1 +1,14 @@
-{{define "admin_login.html"}}<!doctype html><html><head><meta charset="utf-8"><title>Administration login</title></head><body><h1>Administration login</h1><form method="post"><label>Administration token <input type="password" name="token" autocomplete="current-password" required></label><button>Continue</button></form></body></html>{{end}}
+{{define "admin_login.html"}}
+{{template "head" .}}
+{{template "top" .}}
+<div class="login-card">
+  <h1>Administration sign-in</h1>
+  {{if .Error}}<div class="alert danger" role="alert">{{.Error}}</div>{{end}}
+  <form method="post">
+    <p><label>Administration token <input type="password" name="token" autocomplete="current-password" required autofocus></label></p>
+    <button class="btn primary" type="submit">Sign in</button>
+  </form>
+  <p class="muted small">Sign-in creates a one-hour HttpOnly session. API clients can use the X-Call-Recorder-Admin header instead.</p>
+</div>
+{{template "bottom" .}}
+{{end}}

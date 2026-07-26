@@ -22,3 +22,13 @@ cd deploy && docker-compose up -d --build
 5. Leave all retention policies disabled until their dry-run result has been reviewed.
 
 No migration stores audio in PostgreSQL or enables deletion automatically.
+
+## Upgrade from v0.2.0 to v0.3.0
+
+v0.3.0 changes only the web interface and requires no schema migration:
+
+1. Create and verify a backup: `deploy/backup.sh /safe/backup-directory`.
+2. Pull the v0.3.0 release when available.
+3. Rebuild and restart: `cd deploy && docker-compose up -d --build`.
+
+Existing filters, playback, administration authentication, aliases, and retention behaviour are unchanged.

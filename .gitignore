@@ -64,3 +64,6 @@ backups/
 .DS_Store
 .idea/
 .vscode/
+
+# Phase 7 test screenshots
+tests/output/
