@@ -45,6 +45,8 @@ type config struct {
 	LegacyAuthID     string
 	LegacyAPIKey     string
 	TestFailFinalize bool
+	AdminEnabled     bool
+	AdminToken       string
 }
 
 type server struct {
@@ -142,6 +144,19 @@ func main() {
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /", s.callsPage)
 	mux.HandleFunc("GET /calls", s.callsFragment)
+	mux.HandleFunc("GET /call/", s.callDetail)
+	if cfg.AdminEnabled && cfg.AdminToken != "" {
+		mux.HandleFunc("GET /admin/login", s.adminLogin)
+		mux.HandleFunc("POST /admin/login", s.adminLogin)
+		mux.HandleFunc("GET /admin/talkgroups", s.adminTalkgroups)
+		mux.HandleFunc("POST /admin/talkgroups", s.adminSaveTalkgroup)
+		mux.HandleFunc("GET /admin/radios", s.adminRadios)
+		mux.HandleFunc("POST /admin/radios", s.adminSaveRadio)
+		mux.HandleFunc("GET /admin/retention", s.adminRetention)
+		mux.HandleFunc("POST /admin/retention", s.adminSaveRetention)
+		mux.HandleFunc("POST /admin/retention/run", s.adminRunRetention)
+		mux.HandleFunc("POST /admin/retention/delete", s.adminDeleteRetention)
+	}
 	mux.HandleFunc("GET /media/", s.media)
 	mux.HandleFunc("POST /api/v1/uploads", s.createUpload)
 	mux.HandleFunc("POST /api/v1/uploads/", s.receiveAudio)
@@ -158,7 +173,7 @@ func main() {
 }
 
 func loadConfig() config {
-	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true"}
+	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN")}
 }
 func env(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {
@@ -463,6 +478,12 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if err == nil && call.TalkgroupName != "" {
+		_, err = tx.Exec(r.Context(), `INSERT INTO talkgroup_aliases (system_id,talkgroup_id,alias,source) VALUES ($1,$2,$3,'received') ON CONFLICT (system_id,talkgroup_id) DO UPDATE SET alias=EXCLUDED.alias,updated_at=now() WHERE talkgroup_aliases.source='received'`, call.SystemID, call.TalkgroupID, call.TalkgroupName)
+	}
+	if err == nil && call.RadioID != "" && call.RadioName != "" {
+		_, err = tx.Exec(r.Context(), `INSERT INTO radio_aliases (system_id,radio_id,alias,source) VALUES ($1,$2,$3,'received') ON CONFLICT (system_id,radio_id) DO UPDATE SET alias=EXCLUDED.alias,updated_at=now() WHERE radio_aliases.source='received'`, call.SystemID, call.RadioID, call.RadioName)
+	}
 	if err == nil {
 		_, err = tx.Exec(r.Context(), `UPDATE pending_uploads SET status='completed',completed_at=now(),completed_call_id=$2 WHERE id=$1`, pending.ID, callID)
 	}
@@ -490,8 +511,366 @@ func (s *server) callsFragment(w http.ResponseWriter, r *http.Request) {
 	}
 	s.render(w, "calls.html", map[string]any{"Calls": rows})
 }
+func (s *server) callDetail(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/call/")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	var c completedCall
+	var raw []byte
+	var patches []string
+	err := s.db.QueryRow(r.Context(), `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(p.metadata,'{}'::jsonb) FROM calls c LEFT JOIN pending_uploads p ON p.completed_call_id=c.id LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE c.id=$1`, id).Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.RadioID, &c.RadioName, &c.Frequency, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &raw)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	rows, err := s.db.Query(r.Context(), `SELECT talkgroup_id||coalesce(' '||talkgroup_name,'') FROM call_targets WHERE call_id=$1 ORDER BY talkgroup_id`, id)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var p string
+			_ = rows.Scan(&p)
+			patches = append(patches, p)
+		}
+	}
+	s.render(w, "detail.html", map[string]any{"Call": c, "Patches": patches, "Metadata": string(raw)})
+}
+func (s *server) adminAuthorized(w http.ResponseWriter, r *http.Request) bool {
+	headerOK := subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Call-Recorder-Admin")), []byte(s.cfg.AdminToken)) == 1
+	cookieOK := false
+	if c, err := r.Cookie("call_recorder_admin"); err == nil {
+		expected := sha256.Sum256([]byte(s.cfg.AdminToken))
+		cookieOK = subtle.ConstantTimeCompare([]byte(c.Value), []byte(hex.EncodeToString(expected[:]))) == 1
+	}
+	if !headerOK && !cookieOK {
+		http.Error(w, "administration authorization required", http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+func (s *server) adminLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		s.render(w, "admin_login.html", nil)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(r.Form.Get("token")), []byte(s.cfg.AdminToken)) != 1 {
+		http.Error(w, "administration authorization required", http.StatusUnauthorized)
+		return
+	}
+	h := sha256.Sum256([]byte(s.cfg.AdminToken))
+	http.SetCookie(w, &http.Cookie{Name: "call_recorder_admin", Value: hex.EncodeToString(h[:]), Path: "/admin", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, MaxAge: 3600})
+	http.Redirect(w, r, "/admin/talkgroups", http.StatusSeeOther)
+}
+func adminForm(r *http.Request) (url.Values, error) {
+	if err := r.ParseForm(); err != nil {
+		return nil, err
+	}
+	return r.PostForm, nil
+}
+func aliasInput(v url.Values) (system, id, alias, description, category, source string, priority int, enabled bool, err error) {
+	system, id, alias = strings.TrimSpace(v.Get("system")), strings.TrimSpace(v.Get("id")), strings.TrimSpace(v.Get("alias"))
+	description, category, source = strings.TrimSpace(v.Get("description")), strings.TrimSpace(v.Get("category")), strings.TrimSpace(v.Get("source"))
+	if system == "" || id == "" || len(system) > 120 || len(id) > 80 || len(alias) > 240 || len(description) > 2000 || len(category) > 120 {
+		err = errors.New("invalid system, ID, or field length")
+		return
+	}
+	if source != "manual" && source != "imported" {
+		source = "manual"
+	}
+	if raw := strings.TrimSpace(v.Get("priority")); raw != "" {
+		if priority, err = strconv.Atoi(raw); err != nil {
+			err = errors.New("priority must be an integer")
+			return
+		}
+	}
+	enabled = v.Get("enabled") == "on"
+	return
+}
+func (s *server) adminSaveTalkgroup(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	v, err := adminForm(r)
+	if err != nil {
+		http.Error(w, "invalid form", 400)
+		return
+	}
+	system, id, alias, desc, category, source, priority, enabled, err := aliasInput(v)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	_, err = s.db.Exec(r.Context(), `INSERT INTO talkgroup_aliases(system_id,talkgroup_id,alias,description,category,priority,enabled,source) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(system_id,talkgroup_id) DO UPDATE SET alias=EXCLUDED.alias,description=EXCLUDED.description,category=EXCLUDED.category,priority=EXCLUDED.priority,enabled=EXCLUDED.enabled,source=EXCLUDED.source,updated_at=now()`, system, id, alias, desc, category, priority, enabled, source)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	http.Redirect(w, r, "/admin/talkgroups", http.StatusSeeOther)
+}
+func (s *server) adminSaveRadio(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	v, err := adminForm(r)
+	if err != nil {
+		http.Error(w, "invalid form", 400)
+		return
+	}
+	system, id, alias, desc, category, source, _, enabled, err := aliasInput(v)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	_, err = s.db.Exec(r.Context(), `INSERT INTO radio_aliases(system_id,radio_id,alias,description,category,enabled,source) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(system_id,radio_id) DO UPDATE SET alias=EXCLUDED.alias,description=EXCLUDED.description,category=EXCLUDED.category,enabled=EXCLUDED.enabled,source=EXCLUDED.source,updated_at=now()`, system, id, alias, desc, category, enabled, source)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	http.Redirect(w, r, "/admin/radios", http.StatusSeeOther)
+}
+func (s *server) adminTalkgroups(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	q := r.URL.Query().Get("q")
+	rows, err := s.db.Query(r.Context(), `SELECT a.system_id,a.talkgroup_id,coalesce(a.alias,''),coalesce(a.description,''),coalesce(a.category,''),a.priority,a.enabled,a.source,count(c.id),max(c.start_time) FROM talkgroup_aliases a LEFT JOIN calls c ON c.system_id=a.system_id AND c.talkgroup_id=a.talkgroup_id WHERE $1='' OR a.system_id ILIKE '%'||$1||'%' OR a.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(a.alias,'') ILIKE '%'||$1||'%' GROUP BY a.system_id,a.talkgroup_id,a.alias,a.description,a.category,a.priority,a.enabled,a.source ORDER BY a.system_id,a.talkgroup_id LIMIT 500`, q)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	defer rows.Close()
+	type row struct {
+		System, ID, Alias, Description, Category, Source string
+		Priority                                         int
+		Enabled                                          bool
+		Calls                                            int
+		Latest                                           *time.Time
+	}
+	list := []row{}
+	for rows.Next() {
+		var x row
+		if err := rows.Scan(&x.System, &x.ID, &x.Alias, &x.Description, &x.Category, &x.Priority, &x.Enabled, &x.Source, &x.Calls, &x.Latest); err != nil {
+			s.internal(w, err)
+			return
+		}
+		list = append(list, x)
+	}
+	s.render(w, "admin_aliases.html", map[string]any{"Title": "Talkgroup aliases", "Kind": "talkgroups", "Aliases": list})
+}
+func (s *server) adminRadios(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	q := r.URL.Query().Get("q")
+	rows, err := s.db.Query(r.Context(), `SELECT a.system_id,a.radio_id,coalesce(a.alias,''),coalesce(a.description,''),coalesce(a.category,''),a.enabled,a.source,count(c.id),max(c.start_time) FROM radio_aliases a LEFT JOIN calls c ON c.system_id=a.system_id AND c.radio_id=a.radio_id WHERE $1='' OR a.system_id ILIKE '%'||$1||'%' OR a.radio_id ILIKE '%'||$1||'%' OR coalesce(a.alias,'') ILIKE '%'||$1||'%' GROUP BY a.system_id,a.radio_id,a.alias,a.description,a.category,a.enabled,a.source ORDER BY a.system_id,a.radio_id LIMIT 500`, q)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	defer rows.Close()
+	type row struct {
+		System, ID, Alias, Description, Category, Source string
+		Enabled                                          bool
+		Calls                                            int
+		Latest                                           *time.Time
+		Priority                                         int
+	}
+	list := []row{}
+	for rows.Next() {
+		var x row
+		if err := rows.Scan(&x.System, &x.ID, &x.Alias, &x.Description, &x.Category, &x.Enabled, &x.Source, &x.Calls, &x.Latest); err != nil {
+			s.internal(w, err)
+			return
+		}
+		list = append(list, x)
+	}
+	s.render(w, "admin_aliases.html", map[string]any{"Title": "Radio aliases", "Kind": "radios", "Aliases": list})
+}
+func (s *server) adminRetention(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	rows, err := s.db.Query(r.Context(), `SELECT id,name,enabled,dry_run,retention_days,coalesce(sender_filter,''),coalesce(system_filter,''),coalesce(talkgroup_filter,''),coalesce(call_type_filter,''),priority,coalesce(min_duration_ms::text,''),coalesce(max_duration_ms::text,'') FROM retention_policies ORDER BY priority DESC,id`)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	defer rows.Close()
+	type policy struct {
+		ID, Days, Priority                        int
+		Name, Sender, System, Talkgroup, CallType string
+		Min, Max                                  string
+		Enabled, DryRun                           bool
+	}
+	items := []policy{}
+	for rows.Next() {
+		var p policy
+		if err := rows.Scan(&p.ID, &p.Name, &p.Enabled, &p.DryRun, &p.Days, &p.Sender, &p.System, &p.Talkgroup, &p.CallType, &p.Priority, &p.Min, &p.Max); err != nil {
+			s.internal(w, err)
+			return
+		}
+		items = append(items, p)
+	}
+	var edit *policy
+	if raw := r.URL.Query().Get("edit"); raw != "" {
+		id, parseErr := strconv.Atoi(raw)
+		if parseErr != nil {
+			http.Error(w, "invalid policy ID", http.StatusBadRequest)
+			return
+		}
+		var selected policy
+		if err := s.db.QueryRow(r.Context(), `SELECT id,name,enabled,dry_run,retention_days,coalesce(sender_filter,''),coalesce(system_filter,''),coalesce(talkgroup_filter,''),coalesce(call_type_filter,''),priority,coalesce(min_duration_ms::text,''),coalesce(max_duration_ms::text,'') FROM retention_policies WHERE id=$1`, id).Scan(&selected.ID, &selected.Name, &selected.Enabled, &selected.DryRun, &selected.Days, &selected.Sender, &selected.System, &selected.Talkgroup, &selected.CallType, &selected.Priority, &selected.Min, &selected.Max); err != nil {
+			http.Error(w, "policy not found", http.StatusNotFound)
+			return
+		}
+		edit = &selected
+	}
+	history, _ := s.db.Query(r.Context(), `SELECT id,coalesce(policy_id,0),dry_run,calls_matched,calls_deleted,audio_files_deleted,failures,ended_at FROM retention_runs ORDER BY id DESC LIMIT 25`)
+	type run struct {
+		ID, Policy, Matched, Deleted, Audio, Failures int
+		Dry                                           bool
+		Ended                                         *time.Time
+	}
+	runs := []run{}
+	if history != nil {
+		defer history.Close()
+		for history.Next() {
+			var x run
+			if history.Scan(&x.ID, &x.Policy, &x.Dry, &x.Matched, &x.Deleted, &x.Audio, &x.Failures, &x.Ended) == nil {
+				runs = append(runs, x)
+			}
+		}
+	}
+	s.render(w, "admin_retention.html", map[string]any{"Policies": items, "Runs": runs, "Edit": edit})
+}
+func (s *server) adminSaveRetention(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	v, err := adminForm(r)
+	if err != nil {
+		http.Error(w, "invalid form", 400)
+		return
+	}
+	days, err := strconv.Atoi(v.Get("retention_days"))
+	if err != nil || days < 1 || days > 36500 {
+		http.Error(w, "retention days must be between 1 and 36500", 400)
+		return
+	}
+	priority, err := strconv.Atoi(v.Get("priority"))
+	if err != nil {
+		http.Error(w, "priority must be an integer", 400)
+		return
+	}
+	min, max := v.Get("min_duration_ms"), v.Get("max_duration_ms")
+	if min != "" {
+		if _, e := strconv.ParseInt(min, 10, 64); e != nil {
+			http.Error(w, "invalid minimum duration", 400)
+			return
+		}
+	}
+	if max != "" {
+		if _, e := strconv.ParseInt(max, 10, 64); e != nil {
+			http.Error(w, "invalid maximum duration", 400)
+			return
+		}
+	}
+	name := strings.TrimSpace(v.Get("name"))
+	if name == "" || len(name) > 160 {
+		http.Error(w, "invalid policy name", 400)
+		return
+	}
+	id := v.Get("id")
+	args := []any{name, v.Get("sender"), v.Get("system"), v.Get("talkgroup"), v.Get("call_type"), min, max, days, priority, v.Get("enabled") == "on", v.Get("dry_run") != "off"}
+	var q string
+	if id == "" {
+		q = `INSERT INTO retention_policies(name,sender_filter,system_filter,talkgroup_filter,call_type_filter,min_duration_ms,max_duration_ms,retention_days,priority,enabled,dry_run) VALUES(NULLIF($1,''),NULLIF($2,''),NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,'')::bigint,NULLIF($7,'')::bigint,$8,$9,$10,$11)`
+	} else {
+		pid, e := strconv.Atoi(id)
+		if e != nil {
+			http.Error(w, "invalid policy ID", 400)
+			return
+		}
+		args = append(args, pid)
+		q = `UPDATE retention_policies SET name=$1,sender_filter=NULLIF($2,''),system_filter=NULLIF($3,''),talkgroup_filter=NULLIF($4,''),call_type_filter=NULLIF($5,''),min_duration_ms=NULLIF($6,'')::bigint,max_duration_ms=NULLIF($7,'')::bigint,retention_days=$8,priority=$9,enabled=$10,dry_run=$11,updated_at=now() WHERE id=$12`
+	}
+	if _, err = s.db.Exec(r.Context(), q, args...); err != nil {
+		s.internal(w, err)
+		return
+	}
+	http.Redirect(w, r, "/admin/retention", 303)
+}
+func (s *server) adminDeleteRetention(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	v, e := adminForm(r)
+	if e != nil {
+		http.Error(w, "invalid form", 400)
+		return
+	}
+	id, e := strconv.Atoi(v.Get("id"))
+	if e != nil {
+		http.Error(w, "invalid policy ID", 400)
+		return
+	}
+	if _, e = s.db.Exec(r.Context(), `DELETE FROM retention_policies WHERE id=$1`, id); e != nil {
+		s.internal(w, e)
+		return
+	}
+	http.Redirect(w, r, "/admin/retention", 303)
+}
+func (s *server) adminRunRetention(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	v, e := adminForm(r)
+	if e != nil {
+		http.Error(w, "invalid form", 400)
+		return
+	}
+	id, e := strconv.Atoi(v.Get("id"))
+	if e != nil {
+		http.Error(w, "invalid policy ID", 400)
+		return
+	}
+	var days int
+	var sender, system, tg, ct *string
+	e = s.db.QueryRow(r.Context(), `SELECT retention_days,sender_filter,system_filter,talkgroup_filter,call_type_filter FROM retention_policies WHERE id=$1`, id).Scan(&days, &sender, &system, &tg, &ct)
+	if e != nil {
+		http.Error(w, "policy not found", 404)
+		return
+	}
+	q := `SELECT count(*) FROM calls WHERE start_time < now()-($1::int * interval '1 day')`
+	a := []any{days}
+	for _, f := range []struct {
+		v *string
+		c string
+	}{{sender, "sender_id"}, {system, "system_id"}, {tg, "talkgroup_id"}, {ct, "call_type"}} {
+		if f.v != nil {
+			a = append(a, *f.v)
+			q += fmt.Sprintf(" AND %s=$%d", f.c, len(a))
+		}
+	}
+	var n int
+	if e = s.db.QueryRow(r.Context(), q, a...).Scan(&n); e != nil {
+		s.internal(w, e)
+		return
+	}
+	_, e = s.db.Exec(r.Context(), `INSERT INTO retention_runs(policy_id,ended_at,dry_run,calls_matched,summary) VALUES($1,now(),true,$2,'{"mode":"admin-dry-run"}')`, id, n)
+	if e != nil {
+		s.internal(w, e)
+		return
+	}
+	http.Redirect(w, r, "/admin/retention", 303)
+}
 func (s *server) queryCalls(ctx context.Context, q url.Values) ([]completedCall, error) {
-	query := `SELECT id,sender_id,coalesce(receiver_id,''),system_id,coalesce(system_name,''),coalesce(site_id,''),coalesce(site_name,''),talkgroup_id,coalesce(talkgroup_name,''),coalesce(radio_id,''),coalesce(radio_name,''),coalesce(frequency,''),start_time,duration_ms,audio_path,audio_format,audio_size,coalesce(transcript,''),coalesce(notes,'') FROM calls WHERE ($1='' OR system_id ILIKE '%'||$1||'%' OR talkgroup_id ILIKE '%'||$1||'%' OR coalesce(talkgroup_name,'') ILIKE '%'||$1||'%' OR coalesce(radio_id,'') ILIKE '%'||$1||'%' OR coalesce(radio_name,'') ILIKE '%'||$1||'%' OR coalesce(transcript,'') ILIKE '%'||$1||'%') AND ($2='' OR sender_id=$2) AND ($3='' OR system_id=$3) AND ($4='' OR talkgroup_id=$4) AND ($5='' OR radio_id=$5) AND ($6='' OR start_time::date=$6::date) ORDER BY start_time DESC LIMIT 100`
+	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,'') FROM calls c LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE ($1='' OR c.system_id ILIKE '%'||$1||'%' OR c.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(ta.alias,c.talkgroup_name,'') ILIKE '%'||$1||'%' OR coalesce(c.radio_id,'') ILIKE '%'||$1||'%' OR coalesce(ra.alias,c.radio_name,'') ILIKE '%'||$1||'%' OR coalesce(c.transcript,'') ILIKE '%'||$1||'%') AND ($2='' OR c.sender_id=$2) AND ($3='' OR c.system_id=$3) AND ($4='' OR c.talkgroup_id=$4) AND ($5='' OR c.radio_id=$5) AND ($6='' OR c.start_time::date=$6::date) ORDER BY c.start_time DESC LIMIT 100`
 	result, err := s.db.Query(ctx, query, q.Get("q"), q.Get("sender"), q.Get("system"), q.Get("talkgroup"), q.Get("radio"), q.Get("date"))
 	if err != nil {
 		return nil, err

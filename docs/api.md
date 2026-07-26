@@ -4,7 +4,11 @@
 
 `POST /api/v1/uploads` accepts JSON with `sender_id`, optional `idempotency_key`, `audio_format` (`mp3` or `wav`), and a `call` object. Send the per-sender key in `X-Call-Recorder-Key`. A successful non-duplicate response returns an opaque `upload_token` and expiry.
 
-`POST /api/v1/uploads/{upload_token}` accepts the matching raw `audio/mpeg` or WAV content and returns a completed call ID. It repeats both `X-Call-Recorder-Sender` and `X-Call-Recorder-Key`; they must match the authenticated sender that created the pending upload. Tokens are stored only as hashes in PostgreSQL and expire. The browser uses `GET /`, `GET /calls?q=&sender=&system=&talkgroup=&radio=&date=`, and `GET /media/{call-id}`. Media supports HTTP byte ranges.
+`POST /api/v1/uploads/{upload_token}` accepts the matching raw `audio/mpeg` or WAV content and returns a completed call ID. It repeats both `X-Call-Recorder-Sender` and `X-Call-Recorder-Key`; they must match the authenticated sender that created the pending upload. Tokens are stored only as hashes in PostgreSQL and expire. The browser uses `GET /`, `GET /calls?q=&sender=&system=&talkgroup=&radio=&date=`, `GET /call/{call-id}`, and `GET /media/{call-id}`. Media supports HTTP byte ranges.
+
+## Administration surface
+
+`/admin/login`, `/admin/talkgroups`, `/admin/radios`, and `/admin/retention` exist only when `CALL_RECORDER_ADMIN_ENABLED=true` and `CALL_RECORDER_ADMIN_TOKEN` is configured. They require the `X-Call-Recorder-Admin` header or the session cookie issued by the login form. See [administration.md](administration.md).
 
 ## Start with Docker Compose
 
