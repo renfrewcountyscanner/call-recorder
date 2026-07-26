@@ -307,7 +307,8 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"Status": 400, "StatusMessage": "invalid JSON"})
 		return
 	}
-	if !s.authenticate(r.Context(), request.AuthID, request.APIKey) {
+	canonicalSender, authenticated := s.authenticateLegacy(r.Context(), request.AuthID, request.APIKey)
+	if !authenticated {
 		if s.cfg.LegacyDebug {
 			s.logger.Info("legacy metadata result", "sender_id", request.AuthID, "status", 403, "message", "authentication failed")
 		}
@@ -332,7 +333,7 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 	target := request.RecordedCall.TalkGroupInfo.CallTargets[0]
 	info := request.RecordedCall.TalkGroupInfo
 	call := callMetadata{StartTime: start, DurationMS: int64(request.RecordedCall.Duration * 1000), ReceiverID: info.Receiver, SystemID: fmt.Sprint(info.SystemID), SystemName: info.SystemLabel, SiteID: fmt.Sprint(info.SiteID), SiteName: info.SiteLabel, TalkgroupID: target.ID.String(), TalkgroupName: target.Label, TalkgroupTag: target.Tag, RadioID: fmt.Sprint(info.SourceID), RadioName: info.SourceLabel, RadioTag: info.SourceTag, Frequency: fmt.Sprint(info.Frequency), LCN: fmt.Sprint(info.LCN), VoiceService: info.VoiceService, CallType: fmt.Sprint(info.CallType)}
-	body, _ := json.Marshal(createUploadRequest{SenderID: request.AuthID, IdempotencyKey: "legacy-" + request.RecordedCall.StartTime + "-" + target.ID.String(), AudioFormat: strings.ToLower(request.AudioFormat), Call: call})
+	body, _ := json.Marshal(createUploadRequest{SenderID: canonicalSender, IdempotencyKey: "legacy-" + request.RecordedCall.StartTime + "-" + target.ID.String(), AudioFormat: strings.ToLower(request.AudioFormat), Call: call})
 	forward := r.Clone(r.Context())
 	forward.Body = io.NopCloser(bytes.NewReader(body))
 	forward.ContentLength = int64(len(body))
@@ -349,7 +350,7 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 		message = response.Error
 	}
 	if s.cfg.LegacyDebug {
-		s.logger.Info("legacy metadata result", "sender_id", request.AuthID, "status", status, "duplicate", response.Duplicate, "call_audio_id_present", response.UploadToken != "", "message", message)
+		s.logger.Info("legacy metadata result", "sender_id", request.AuthID, "canonical_sender_id", canonicalSender, "status", status, "duplicate", response.Duplicate, "call_audio_id_present", response.UploadToken != "", "message", message)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"Status": status, "StatusMessage": message, "Duplicate": response.Duplicate, "CallAudioID": response.UploadToken})
 }
@@ -1234,6 +1235,23 @@ func (s *server) authenticate(ctx context.Context, sender, key string) bool {
 	var enabled bool
 	err := s.db.QueryRow(ctx, `SELECT key_hash,enabled FROM remote_senders WHERE sender_id=$1`, sender).Scan(&hash, &enabled)
 	return err == nil && enabled && verifyAPIKey(string(hash), key)
+}
+
+// authenticateLegacy accepts case variations from legacy senders while keeping
+// the canonical sender_id stored in remote_senders and calls. Modern API
+// authentication remains case-sensitive.
+func (s *server) authenticateLegacy(ctx context.Context, sender, key string) (string, bool) {
+	if sender == "" || key == "" {
+		return "", false
+	}
+	var canonical string
+	var hash []byte
+	var enabled bool
+	err := s.db.QueryRow(ctx, `SELECT sender_id,key_hash,enabled FROM remote_senders WHERE lower(sender_id)=lower($1) LIMIT 1`, sender).Scan(&canonical, &hash, &enabled)
+	if err != nil || !enabled || !verifyAPIKey(string(hash), key) {
+		return "", false
+	}
+	return canonical, true
 }
 func (s *server) findDuplicate(ctx context.Context, senderID string, c callMetadata) (string, bool, error) {
 	var id string
