@@ -6,7 +6,7 @@
 <div class="detail-hero">
   <button type="button" class="play-btn" data-play="{{.Call.ID}}" data-title="{{if .Call.TalkgroupName}}{{.Call.TalkgroupName}}{{else}}Talkgroup {{.Call.TalkgroupID}}{{end}}" data-meta="{{.Call.SystemID}} · {{.Call.StartTime.Local.Format "2006-01-02 15:04:05"}}" aria-label="Play this call"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg></button>
   <div>
-    <span class="alias" title="{{.Call.TalkgroupName}}">{{if .Call.TalkgroupName}}{{.Call.TalkgroupName}}{{else}}Talkgroup {{.Call.TalkgroupID}}{{end}}</span>
+    <h1 class="alias" title="{{.Call.TalkgroupName}}">{{if .Call.TalkgroupName}}{{.Call.TalkgroupName}}{{else}}Talkgroup {{.Call.TalkgroupID}}{{end}}</h1>
     <div class="muted">{{.Call.SystemID}}{{if .Call.SystemName}} · {{.Call.SystemName}}{{end}} · {{.Call.StartTime.Local.Format "2006-01-02 15:04:05"}}</div>
   </div>
   <div>

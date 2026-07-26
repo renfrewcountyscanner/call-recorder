@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.0 (unreleased)
+## v0.3.0 (2026-07-26)
 
 - Redesigned web interface: dark-first theme system with light and system options, shared layout and navigation, and a small internal design system.
 - Scanner-oriented call log: alias-primary rows with secondary ID chips, call-type and patch badges, responsive stacked cards on mobile, total counts, and pagination.

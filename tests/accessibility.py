@@ -31,9 +31,9 @@ def audit(name, driver):
     critical = [v for v in result if v.get("impact") == "critical"]
     serious = [v for v in result if v.get("impact") == "serious"]
     print(f"  {name}: {len(critical)} critical, {len(serious)} serious, {len(result) - len(critical) - len(serious)} other violations")
-    for v in critical + serious:
+    for v in result:
         print(f"    [{v.get('impact')}] {v.get('id')}: {v.get('help')} ({len(v.get('nodes', []))} nodes)")
-    return critical
+    return result
 
 failures = []
 try:
@@ -75,5 +75,5 @@ finally:
     driver.quit()
 
 if failures:
-    raise SystemExit(f"{len(failures)} critical accessibility violations")
+    raise SystemExit(f"{len(failures)} accessibility violations")
 print("accessibility checks passed")

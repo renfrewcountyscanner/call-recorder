@@ -38,7 +38,7 @@ var templatesFS embed.FS
 var staticFS embed.FS
 
 // version is reported by /healthz and shown in the interface header.
-const version = "v0.3.0-dev"
+const version = "v0.3.0"
 
 type config struct {
 	ListenAddr                string
@@ -157,6 +157,7 @@ func main() {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("GET /readyz", s.health)
 	mux.HandleFunc("GET /", s.callsPage)
 	mux.HandleFunc("GET /calls", s.callsFragment)
 	mux.HandleFunc("GET /call/", s.callDetail)
@@ -737,27 +738,55 @@ func (s *server) exportCallsCSV(w http.ResponseWriter, r *http.Request) {
 	}
 	f.Page = 1
 	f.PageSize = 200
-	var all []completedCall
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="call-export.csv"`)
+	cw := csv.NewWriter(w)
+	_ = cw.Write([]string{"Call ID", "Timestamp", "Sender", "Receiver", "System", "Site", "Talkgroup ID", "Talkgroup Alias", "Radio ID", "Radio Alias", "Frequency", "LCN", "Duration Seconds", "Call Type", "Patched Targets", "Transcript", "Notes", "Audio Format"})
 	for {
 		page, total, e := s.queryCalls(r.Context(), f)
 		if e != nil {
 			s.internal(w, e)
 			return
 		}
-		all = append(all, page...)
-		if len(all) >= total || len(page) == 0 {
+		for _, c := range page {
+			_ = cw.Write([]string{c.ID, c.StartTime.UTC().Format(time.RFC3339Nano), c.SenderID, c.ReceiverID, c.SystemID, c.SiteID, c.TalkgroupID, c.TalkgroupName, c.RadioID, c.RadioName, c.Frequency, c.LCN, fmt.Sprintf("%.3f", float64(c.DurationMS)/1000), c.CallType, strconv.Itoa(c.Patches), c.Transcript, c.Notes, c.AudioFormat})
+		}
+		cw.Flush()
+		if cw.Error() != nil {
+			return
+		}
+		if f.Page*f.PageSize >= total || len(page) == 0 {
 			break
 		}
 		f.Page++
 	}
-	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="call-export.csv"`)
-	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{"Call ID", "Timestamp", "Sender", "Receiver", "System", "Site", "Talkgroup ID", "Talkgroup Alias", "Radio ID", "Radio Alias", "Frequency", "LCN", "Duration Seconds", "Call Type", "Patched Targets", "Transcript", "Notes", "Audio Format"})
-	for _, c := range all {
-		_ = cw.Write([]string{c.ID, c.StartTime.UTC().Format(time.RFC3339Nano), c.SenderID, c.ReceiverID, c.SystemID, c.SiteID, c.TalkgroupID, c.TalkgroupName, c.RadioID, c.RadioName, c.Frequency, c.LCN, fmt.Sprintf("%.3f", float64(c.DurationMS)/1000), c.CallType, strconv.Itoa(c.Patches), c.Transcript, c.Notes, c.AudioFormat})
+}
+
+func sanitizeExportMetadata(raw json.RawMessage) any {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return map[string]any{}
 	}
-	cw.Flush()
+	var clean func(any) any
+	clean = func(v any) any {
+		switch x := v.(type) {
+		case map[string]any:
+			for k := range x {
+				switch strings.ToLower(k) {
+				case "apikey", "api_key", "authorization", "cookie", "uploadtoken", "upload_token", "callaudiouploadid", "audiopath", "audio_path", "databaseurl", "database_url":
+					delete(x, k)
+				default:
+					x[k] = clean(x[k])
+				}
+			}
+		case []any:
+			for i := range x {
+				x[i] = clean(x[i])
+			}
+		}
+		return v
+	}
+	return clean(value)
 }
 
 func (s *server) exportCallJSON(w http.ResponseWriter, r *http.Request) {
@@ -780,7 +809,16 @@ func (s *server) exportCallJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="call-`+id+`.json"`)
-	_ = json.NewEncoder(w).Encode(out)
+	// The preserved sender document is useful for interoperability, but exports
+	// must never carry credentials, upload tokens, or server-local paths.
+	clean := sanitizeExportMetadata(out.Raw)
+	_ = json.NewEncoder(w).Encode(struct {
+		ID, SenderID, ReceiverID, SystemID, SystemName, SiteID, SiteName, TalkgroupID, TalkgroupName, RadioID, RadioName, Frequency, LCN, CallType, AudioFormat, Transcript, Notes string
+		StartTime                                                                                                                                                                  time.Time
+		DurationMS, AudioSize                                                                                                                                                      int64
+		GroupCall                                                                                                                                                                  *bool
+		Raw                                                                                                                                                                        any
+	}{out.ID, out.SenderID, out.ReceiverID, out.SystemID, out.SystemName, out.SiteID, out.SiteName, out.TalkgroupID, out.TalkgroupName, out.RadioID, out.RadioName, out.Frequency, out.LCN, out.CallType, out.AudioFormat, out.Transcript, out.Notes, out.StartTime, out.DurationMS, out.AudioSize, out.GroupCall, clean})
 }
 
 func (s *server) downloadCall(w http.ResponseWriter, r *http.Request) {
@@ -846,11 +884,19 @@ func (s *server) eventsCalls(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, "event: ready\ndata: {}\n\n")
 	flusher.Flush()
 	last := -1
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	maxDuration := time.NewTimer(30 * time.Minute)
+	defer maxDuration.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
-		case <-time.After(10 * time.Second):
+		case <-maxDuration.C:
+			_, _ = io.WriteString(w, "event: reconnect\ndata: {}\n\n")
+			flusher.Flush()
+			return
+		case <-ticker.C:
 		}
 		_, total, e := s.queryCalls(r.Context(), f)
 		if e != nil {

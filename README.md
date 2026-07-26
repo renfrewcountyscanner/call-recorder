@@ -1,8 +1,8 @@
 # Call Recorder
 
-## v0.3.0 development
+## v0.3.0
 
-The current development branch redesigns the web interface: a dark-first theme system, scanner-oriented call log with pagination and date-range filters, a shared playback bar with speed control, sectioned call detail, redesigned administration pages with a retention history view, and automated accessibility and browser acceptance suites. See [docs/web-interface.md](docs/web-interface.md).
+This release includes the scanner-oriented web interface: dark/light themes, a readable call log with filtering and live updates, a shared playback bar with speed control, sectioned call detail, safe exports/downloads, receiver status, redesigned administration pages, and automated accessibility and browser acceptance suites. See [docs/web-interface.md](docs/web-interface.md).
 
 Call Recorder is an initial working Linux-native release for receiving completed calls from Linux Trunk Recorder installations. It uses Go, PostgreSQL, Docker Compose, bind-mounted Linux audio storage, durable sender spooling, browser playback, and verified backup/restore tooling. See [CHANGELOG.md](CHANGELOG.md) and [known limitations](docs/known-limitations.md).
 

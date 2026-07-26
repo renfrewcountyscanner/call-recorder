@@ -25,10 +25,13 @@ No migration stores audio in PostgreSQL or enables deletion automatically.
 
 ## Upgrade from v0.2.0 to v0.3.0
 
-v0.3.0 changes only the web interface and requires no schema migration:
+Perform this upgrade during a short maintenance window. It is additive and does not remove calls or audio.
 
-1. Create and verify a backup: `deploy/backup.sh /safe/backup-directory`.
-2. Pull the v0.3.0 release when available.
-3. Rebuild and restart: `cd deploy && docker-compose up -d --build`.
+1. Create and verify a fresh backup (database checksum and audio manifest):
+   `deploy/backup.sh /safe/backup-directory`.
+2. Pull and check out the v0.3.0 release.
+3. Apply migration 004 explicitly: `deploy/migrate.sh` (it is safe to rerun; already-applied migrations are skipped).
+4. Build and start the v0.3.0 image: `cd deploy && docker-compose build backend && docker-compose up -d`.
+5. Verify `docker-compose ps`, `/healthz`, `/readyz`, one synthetic or normal ingestion, browser call listing, and byte-range playback.
 
-Existing filters, playback, administration authentication, aliases, and retention behaviour are unchanged.
+Rollback: stop the backend, keep the PostgreSQL/audio runtime directories intact, restore the verified backup with `CONFIRM_RESTORE=YES deploy/restore.sh`, then start the previously known-good image/commit. Do not use `docker-compose down -v`.

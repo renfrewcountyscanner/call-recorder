@@ -11,4 +11,6 @@ The web interface is built for practical accessibility:
 
 ## Automated checks
 
-`tests/accessibility.sh` runs vendored axe-core against the isolated environment on port 18080: call list, call detail, admin login, talkgroup/radio/retention administration, retention history, and the unauthorized-administration state. The suite fails on any critical violation. Run it after interface changes.
+`tests/accessibility.sh` runs vendored axe-core against the isolated environment on port 18080: call list, call detail, admin login, talkgroup/radio/retention administration, retention history, and the unauthorized-administration state. The suite fails on any known violation and reports its rule, impact, and affected nodes.
+
+The final review found one moderate `page-has-heading-one` violation on the call-detail page: its talkgroup title used a styled `span` instead of a level-one heading. The title is now a semantic `<h1 class="alias">`; axe-core reports zero violations on every reviewed page after the fix.

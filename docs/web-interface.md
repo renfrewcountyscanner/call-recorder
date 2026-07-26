@@ -1,6 +1,6 @@
 # Web interface
 
-The v0.3.0-dev web interface is a server-rendered Go-template application with vendored HTMX for partial refresh and vanilla JavaScript for playback. All assets are self-contained in the backend binary (`/static/…`); there are no CDN dependencies. Dark theme is the default; a light theme and a system-following option are available from the header toggle (persisted in the browser).
+The v0.3.0 web interface is a server-rendered Go-template application with vendored HTMX for partial refresh and vanilla JavaScript for playback. All assets are self-contained in the backend binary (`/static/…`); there are no CDN dependencies. Dark theme is the default; a light theme and a system-following option are available from the header toggle (persisted in the browser).
 
 ## Navigation
 
