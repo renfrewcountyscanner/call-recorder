@@ -41,6 +41,14 @@ func main() {
 		aliases(pool, os.Args[2:])
 		return
 	}
+	if os.Args[1] == "notifications" {
+		notifications(pool, os.Args[2:])
+		return
+	}
+	if os.Args[1] == "transcription" {
+		transcription(pool, os.Args[2:])
+		return
+	}
 	if os.Args[1] != "sender" || len(os.Args) < 3 {
 		usage()
 	}
@@ -138,7 +146,7 @@ func verifyAPIKey(encoded, value string) bool {
 	return subtle.ConstantTimeCompare(actual, expected) == 1
 }
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: call-recorder-admin sender <create|replace|disable> --name NAME")
+	fmt.Fprintln(os.Stderr, "usage: call-recorder-admin sender|aliases|retention|notifications|transcription ...")
 	os.Exit(2)
 }
 func fatal(err error) { fmt.Fprintln(os.Stderr, "error:", err); os.Exit(1) }

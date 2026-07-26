@@ -16,3 +16,4 @@ CONFIRM_RESTORE=YES deploy/restore.sh /secure/backup-directory/call-recorder-TIM
 The active data paths are `runtime/postgres` and `runtime/audio`. Never restore over a live deployment without a current verified backup and maintenance window.
 
 The isolated restore acceptance procedure uses a temporary PostgreSQL container, temporary audio extraction, and a temporary backend on a non-production port. It verifies a restored call-list page plus normal and HTTP range media responses before tearing those resources down.
+Migration 005 is additive. Back up before applying it, verify the manifest/checksums, and leave optional notification/transcription workers disabled during the upgrade. Roll back by restoring the verified pre-upgrade backup and the prior backend image.

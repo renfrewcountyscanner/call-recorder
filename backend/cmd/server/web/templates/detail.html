@@ -3,6 +3,7 @@
 {{template "top" .}}
 <p class="small"><a href="/?system={{.Call.SystemID}}&talkgroup={{.Call.TalkgroupID}}">← Calls for this talkgroup</a></p>
 <p class="small"><a href="/export/call/{{.Call.ID}}">Export JSON</a> · <a href="/download/{{.Call.ID}}">Download audio</a></p>
+{{if .Nav.Authorized}}<form method="post" action="/admin/protect/{{.Call.ID}}" class="card"><label><input type="checkbox" name="protected" {{if .Call.Protected}}checked{{end}}> Protect from retention</label><label>Reason <input name="reason" maxlength="500"></label><button class="btn" type="submit">Save protection</button></form>{{end}}
 <div class="detail-hero">
   <button type="button" class="play-btn" data-play="{{.Call.ID}}" data-title="{{if .Call.TalkgroupName}}{{.Call.TalkgroupName}}{{else}}Talkgroup {{.Call.TalkgroupID}}{{end}}" data-meta="{{.Call.SystemID}} · {{.Call.StartTime.Local.Format "2006-01-02 15:04:05"}}" aria-label="Play this call"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg></button>
   <div>
@@ -11,6 +12,7 @@
   </div>
   <div>
     {{if .Call.CallType}}<span class="badge info">{{.Call.CallType}}</span>{{end}}
+    {{if .Call.Protected}}<span class="badge warn">Protected</span>{{end}}
     {{if gt .Call.Patches 0}}<span class="badge warn" title="{{.Call.Patches}} patched talkgroups">+{{.Call.Patches}} patch</span>{{end}}
     <span class="badge">{{.Call.AudioFormat}}</span>
   </div>

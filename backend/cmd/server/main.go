@@ -38,7 +38,7 @@ var templatesFS embed.FS
 var staticFS embed.FS
 
 // version is reported by /healthz and shown in the interface header.
-const version = "v0.3.0"
+const version = "v0.4.0-dev"
 
 type config struct {
 	ListenAddr                string
@@ -117,6 +117,7 @@ type errorResponse struct {
 }
 type completedCall struct {
 	ID, SenderID, ReceiverID, SystemID, SystemName, SiteID, SiteName, TalkgroupID, TalkgroupName, RadioID, RadioName, Frequency, LCN, AudioPath, AudioFormat, Transcript, Notes, CallType string
+	Protected                                                                                                                                                                             bool
 	GroupCall                                                                                                                                                                             *bool
 	StartTime                                                                                                                                                                             time.Time
 	DurationMS                                                                                                                                                                            int64
@@ -184,6 +185,15 @@ func main() {
 		mux.HandleFunc("POST /admin/senders/replace", s.adminReplaceSender)
 		mux.HandleFunc("POST /admin/senders/disable", s.adminDisableSender)
 		mux.HandleFunc("POST /admin/call/", s.adminUpdateCallNotes)
+		mux.HandleFunc("POST /admin/protect/", s.adminProtectCall)
+		mux.HandleFunc("GET /admin/favourites", s.adminFavourites)
+		mux.HandleFunc("POST /admin/favourites", s.adminSaveFavourite)
+		mux.HandleFunc("POST /admin/favourites/member", s.adminSaveFavouriteMember)
+		mux.HandleFunc("GET /admin/notifications", s.adminNotifications)
+		mux.HandleFunc("POST /admin/notifications/destination", s.adminSaveDestination)
+		mux.HandleFunc("POST /admin/notifications/rule", s.adminSaveNotificationRule)
+		mux.HandleFunc("GET /admin/transcription", s.adminTranscription)
+		mux.HandleFunc("POST /admin/transcription/queue/", s.adminQueueTranscription)
 		mux.HandleFunc("POST /admin/talkgroups", s.adminSaveTalkgroup)
 		mux.HandleFunc("GET /admin/radios", s.adminRadios)
 		mux.HandleFunc("POST /admin/radios", s.adminSaveRadio)
@@ -571,12 +581,26 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
+	s.enqueueNotifications(r.Context(), callID)
+	_, _ = s.db.Exec(r.Context(), `INSERT INTO transcription_jobs(call_id,provider) SELECT $1,c.provider FROM transcription_config c JOIN talkgroup_aliases a ON a.system_id=(SELECT system_id FROM calls WHERE id=$1) AND a.talkgroup_id=(SELECT talkgroup_id FROM calls WHERE id=$1) WHERE c.id=true AND c.enabled AND a.transcription_enabled ON CONFLICT(call_id,provider) DO NOTHING`, callID)
 	writeJSON(w, 201, map[string]string{"call_id": callID, "audio_path": rel})
 }
 
 func (s *server) callsPage(w http.ResponseWriter, r *http.Request) {
 	f, ferr := filterFromQuery(r.URL.Query())
 	data := map[string]any{"Filter": f, "RawQuery": r.URL.RawQuery}
+	if rows, err := s.db.Query(r.Context(), `SELECT id,name FROM favourite_groups WHERE enabled ORDER BY display_order,id`); err == nil {
+		var groups []map[string]any
+		for rows.Next() {
+			var id int64
+			var name string
+			if rows.Scan(&id, &name) == nil {
+				groups = append(groups, map[string]any{"ID": id, "Name": name})
+			}
+		}
+		rows.Close()
+		data["FavouriteGroups"] = groups
+	}
 	if ferr != nil {
 		data["Error"] = "Invalid filter values: dates must use YYYY-MM-DD."
 	}
@@ -609,6 +633,7 @@ func callsURL(f callFilter, drop string, page int) string {
 	set("date", f.Date)
 	set("from", f.From)
 	set("to", f.To)
+	set("favourite", f.Favourite)
 	if f.PageSize != 50 {
 		v.Set("page_size", strconv.Itoa(f.PageSize))
 	}
@@ -645,6 +670,7 @@ func chipsFor(f callFilter) []filterChip {
 	add("On ", "date", f.Date)
 	add("From ", "from", f.From)
 	add("To ", "to", f.To)
+	add("Favourite: ", "favourite", f.Favourite)
 	return chips
 }
 
@@ -679,7 +705,7 @@ func (s *server) callDetail(w http.ResponseWriter, r *http.Request) {
 	var c completedCall
 	var raw []byte
 	var patches []string
-	err := s.db.QueryRow(r.Context(), `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),coalesce(c.lcn,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(p.metadata,'{}'::jsonb),coalesce(c.call_type,''),c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id) FROM calls c LEFT JOIN pending_uploads p ON p.completed_call_id=c.id LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE c.id=$1`, id).Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.RadioID, &c.RadioName, &c.Frequency, &c.LCN, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &raw, &c.CallType, &c.GroupCall, &c.Patches)
+	err := s.db.QueryRow(r.Context(), `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),coalesce(c.lcn,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(p.metadata,'{}'::jsonb),coalesce(c.call_type,''),c.protected,c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id) FROM calls c LEFT JOIN pending_uploads p ON p.completed_call_id=c.id LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE c.id=$1`, id).Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.RadioID, &c.RadioName, &c.Frequency, &c.LCN, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &raw, &c.CallType, &c.Protected, &c.GroupCall, &c.Patches)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -1371,7 +1397,7 @@ func (s *server) adminRunRetention(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "policy not found", 404)
 		return
 	}
-	q := `SELECT count(*) FROM calls WHERE start_time < now()-($1::int * interval '1 day')`
+	q := `SELECT count(*) FROM calls WHERE start_time < now()-($1::int * interval '1 day') AND (NOT protected OR protection_expires_at IS NOT NULL AND protection_expires_at <= now())`
 	a := []any{days}
 	for _, f := range []struct {
 		v *string
@@ -1396,13 +1422,13 @@ func (s *server) adminRunRetention(w http.ResponseWriter, r *http.Request) {
 }
 
 type callFilter struct {
-	Q, Sender, System, Site, Receiver, Talkgroup, Radio, CallType, Frequency, MinDuration, MaxDuration, Date, From, To string
-	Patched                                                                                                            bool
-	Page, PageSize                                                                                                     int
+	Q, Sender, System, Site, Receiver, Talkgroup, Radio, CallType, Frequency, MinDuration, MaxDuration, Date, From, To, Favourite string
+	Patched                                                                                                                       bool
+	Page, PageSize                                                                                                                int
 }
 
 func filterFromQuery(q url.Values) (callFilter, error) {
-	f := callFilter{Q: strings.TrimSpace(q.Get("q")), Sender: strings.TrimSpace(q.Get("sender")), System: strings.TrimSpace(q.Get("system")), Site: strings.TrimSpace(q.Get("site")), Receiver: strings.TrimSpace(q.Get("receiver")), Talkgroup: strings.TrimSpace(q.Get("talkgroup")), Radio: strings.TrimSpace(q.Get("radio")), CallType: strings.TrimSpace(q.Get("call_type")), Frequency: strings.TrimSpace(q.Get("frequency")), MinDuration: strings.TrimSpace(q.Get("min_duration")), MaxDuration: strings.TrimSpace(q.Get("max_duration")), Date: q.Get("date"), From: q.Get("from"), To: q.Get("to"), Page: 1, PageSize: 50, Patched: q.Get("patched") == "1" || strings.EqualFold(q.Get("patched"), "true")}
+	f := callFilter{Q: strings.TrimSpace(q.Get("q")), Sender: strings.TrimSpace(q.Get("sender")), System: strings.TrimSpace(q.Get("system")), Site: strings.TrimSpace(q.Get("site")), Receiver: strings.TrimSpace(q.Get("receiver")), Talkgroup: strings.TrimSpace(q.Get("talkgroup")), Radio: strings.TrimSpace(q.Get("radio")), CallType: strings.TrimSpace(q.Get("call_type")), Frequency: strings.TrimSpace(q.Get("frequency")), MinDuration: strings.TrimSpace(q.Get("min_duration")), MaxDuration: strings.TrimSpace(q.Get("max_duration")), Date: q.Get("date"), From: q.Get("from"), To: q.Get("to"), Favourite: strings.TrimSpace(q.Get("favourite")), Page: 1, PageSize: 50, Patched: q.Get("patched") == "1" || strings.EqualFold(q.Get("patched"), "true")}
 	for _, d := range []string{f.Date, f.From, f.To} {
 		if d != "" {
 			if _, err := time.Parse("2006-01-02", d); err != nil {
@@ -1430,15 +1456,15 @@ func filterFromQuery(q url.Values) (callFilter, error) {
 }
 
 const callsFrom = ` FROM calls c LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled`
-const callsWhere = ` WHERE ($1='' OR c.search_document @@ plainto_tsquery('simple',$1) OR c.search_document::text ILIKE '%'||lower($1)||'%') AND ($2='' OR c.sender_id=$2) AND ($3='' OR c.system_id=$3) AND ($4='' OR c.site_id=$4) AND ($5='' OR c.receiver_id=$5) AND ($6='' OR c.talkgroup_id=$6) AND ($7='' OR c.radio_id=$7) AND ($8='' OR c.call_type=$8) AND ($9='' OR c.frequency ILIKE '%'||$9||'%') AND ($10='' OR c.duration_ms >= ($10::double precision*1000)) AND ($11='' OR c.duration_ms <= ($11::double precision*1000)) AND ($12='' OR c.start_time::date=$12::date) AND ($13='' OR c.start_time::date>=$13::date) AND ($14='' OR c.start_time::date<=$14::date) AND (NOT $15 OR EXISTS (SELECT 1 FROM call_targets ct WHERE ct.call_id=c.id))`
+const callsWhere = ` WHERE ($1='' OR c.search_document @@ plainto_tsquery('simple',$1) OR c.search_document::text ILIKE '%'||lower($1)||'%') AND ($2='' OR c.sender_id=$2) AND ($3='' OR c.system_id=$3) AND ($4='' OR c.site_id=$4) AND ($5='' OR c.receiver_id=$5) AND ($6='' OR c.talkgroup_id=$6) AND ($7='' OR c.radio_id=$7) AND ($8='' OR c.call_type=$8) AND ($9='' OR c.frequency ILIKE '%'||$9||'%') AND ($10='' OR c.duration_ms >= ($10::double precision*1000)) AND ($11='' OR c.duration_ms <= ($11::double precision*1000)) AND ($12='' OR c.start_time::date=$12::date) AND ($13='' OR c.start_time::date>=$13::date) AND ($14='' OR c.start_time::date<=$14::date) AND (NOT $15 OR EXISTS (SELECT 1 FROM call_targets ct WHERE ct.call_id=c.id)) AND ($16='' OR EXISTS (SELECT 1 FROM favourite_members fm WHERE fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id AND fm.group_id=$16::bigint))`
 
 func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall, int, error) {
-	args := []any{f.Q, f.Sender, f.System, f.Site, f.Receiver, f.Talkgroup, f.Radio, f.CallType, f.Frequency, f.MinDuration, f.MaxDuration, f.Date, f.From, f.To, f.Patched}
+	args := []any{f.Q, f.Sender, f.System, f.Site, f.Receiver, f.Talkgroup, f.Radio, f.CallType, f.Frequency, f.MinDuration, f.MaxDuration, f.Date, f.From, f.To, f.Patched, f.Favourite}
 	var total int
 	if err := s.db.QueryRow(ctx, `SELECT count(*)`+callsFrom+callsWhere, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),coalesce(c.lcn,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id)` + callsFrom + callsWhere + ` ORDER BY c.start_time DESC LIMIT $16 OFFSET $17`
+	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),coalesce(c.lcn,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.protected,c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id)` + callsFrom + callsWhere + ` ORDER BY c.start_time DESC LIMIT $17 OFFSET $18`
 	result, err := s.db.Query(ctx, query, append(args, f.PageSize, (f.Page-1)*f.PageSize)...)
 	if err != nil {
 		return nil, 0, err
@@ -1447,7 +1473,7 @@ func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall,
 	calls := []completedCall{}
 	for result.Next() {
 		var c completedCall
-		if err := result.Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.RadioID, &c.RadioName, &c.Frequency, &c.LCN, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &c.CallType, &c.GroupCall, &c.Patches); err != nil {
+		if err := result.Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.RadioID, &c.RadioName, &c.Frequency, &c.LCN, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &c.CallType, &c.Protected, &c.GroupCall, &c.Patches); err != nil {
 			return nil, 0, err
 		}
 		calls = append(calls, c)

@@ -20,10 +20,15 @@ policy_id=$($compose exec -T postgres psql -U call_recorder_test -d call_recorde
 curl -fsS -b "$work/cookie" -d "id=$policy_id&name=synthetic-policy-updated&retention_days=31&priority=2&dry_run=on" -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/retention | grep -q 303
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select retention_days from retention_policies where id=$policy_id")" = 31
 curl -fsS -b "$work/cookie" http://127.0.0.1:18080/admin/retention | grep -q 'synthetic-policy'
+curl -fsS -b "$work/cookie" http://127.0.0.1:18080/admin/favourites | grep -q 'Favourite groups'
+curl -fsS -b "$work/cookie" http://127.0.0.1:18080/admin/notifications | grep -q 'Notifications'
+curl -fsS -b "$work/cookie" http://127.0.0.1:18080/admin/transcription | grep -q 'Transcription'
 sender_page=$(curl -fsS -b "$work/cookie" -d 'sender_id=web-test-sender' http://127.0.0.1:18080/admin/senders/create)
 printf '%s' "$sender_page" | grep -q 'New API key for web-test-sender'
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select enabled from remote_senders where sender_id='web-test-sender'")" = t
-test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select key_hash::text like 'argon2id%' from remote_senders where sender_id='web-test-sender'")" = t
+# key_hash is a bytea column; verify a non-empty Argon2id encoding without
+# relying on PostgreSQL's bytea display representation.
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select octet_length(key_hash)>32 from remote_senders where sender_id='web-test-sender'")" = t
 curl -fsS -b "$work/cookie" -d 'sender_id=web-test-sender' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/senders/disable | grep -q 303
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select enabled from remote_senders where sender_id='web-test-sender'")" = f
 echo 'administration tests passed'

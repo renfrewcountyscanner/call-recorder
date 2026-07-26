@@ -14,6 +14,7 @@
       <label>Site <input name="site" value="{{.Filter.Site}}" autocomplete="off"></label>
       <label>Receiver <input name="receiver" value="{{.Filter.Receiver}}" autocomplete="off"></label>
       <label>Talkgroup <input name="talkgroup" value="{{.Filter.Talkgroup}}" autocomplete="off"></label>
+      <label>Favourite group <select name="favourite"><option value="">All groups</option>{{range .FavouriteGroups}}<option value="{{.ID}}" {{if eq $.Filter.Favourite (printf "%d" .ID)}}selected{{end}}>{{.Name}}</option>{{end}}</select></label>
       <label>Radio ID <input name="radio" value="{{.Filter.Radio}}" autocomplete="off"></label>
       <label>Call type <input name="call_type" value="{{.Filter.CallType}}" autocomplete="off"></label>
       <label>Frequency <input name="frequency" value="{{.Filter.Frequency}}" autocomplete="off"></label>
