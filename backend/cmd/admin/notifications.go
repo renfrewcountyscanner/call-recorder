@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"html"
+	"io"
 	"net"
 	"net/http"
+	"net/smtp"
 	"net/url"
 	"os"
 	"strings"
@@ -92,7 +96,10 @@ func notificationRun(pool *pgxpool.Pool) {
 		jobs = append(jobs, j)
 	}
 	for _, j := range jobs {
-		_, _ = conn.Exec(ctx, `UPDATE notification_deliveries SET status='sending',attempt_count=attempt_count+1,last_attempt_at=now(),updated_at=now() WHERE id=$1`, j.id)
+		result, _ := conn.Exec(ctx, `UPDATE notification_deliveries SET status='sending',attempt_count=attempt_count+1,last_attempt_at=now(),updated_at=now() WHERE id=$1 AND status IN ('pending','failed')`, j.id)
+		if result.RowsAffected() != 1 {
+			continue
+		}
 		err := deliverNotification(ctx, conn, j.dest, j)
 		if err == nil {
 			_, _ = conn.Exec(ctx, `UPDATE notification_deliveries SET status='sent',successful_at=now(),updated_at=now() WHERE id=$1`, j.id)
@@ -133,6 +140,9 @@ func deliverNotification(ctx context.Context, conn *pgxpool.Conn, destID int64, 
 	if len(body) > 4000 {
 		body = body[:4000]
 	}
+	if typ == "smtp" {
+		return sendSMTPNotification(config, secret, body)
+	}
 	endpoint, _ := config["url"].(string)
 	if endpoint == "" {
 		return errors.New("destination URL missing")
@@ -143,15 +153,24 @@ func deliverNotification(ctx context.Context, conn *pgxpool.Conn, destID int64, 
 	if err := validateNotificationURL(endpoint); err != nil {
 		return err
 	}
-	payload := map[string]any{"content": body, "text": body, "call_id": j.call}
+	var payload map[string]any
+	switch typ {
+	case "discord":
+		payload = map[string]any{"content": body}
+	case "telegram":
+		payload = map[string]any{"text": body, "chat_id": config["chat_id"]}
+	default:
+		payload = map[string]any{"call_id": j.call, "text": body}
+	}
 	b, _ := json.Marshal(payload)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(b)))
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	resp, err := safeHTTPClient().Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("destination returned HTTP %d", resp.StatusCode)
 	}
@@ -160,9 +179,65 @@ func deliverNotification(ctx context.Context, conn *pgxpool.Conn, destID int64, 
 	return nil
 }
 
+func sendSMTPNotification(config map[string]any, secret *string, body string) error {
+	host, _ := config["host"].(string)
+	port, _ := config["port"].(string)
+	from, _ := config["from"].(string)
+	to, _ := config["to"].(string)
+	user, _ := config["username"].(string)
+	useTLS, _ := config["tls"].(bool)
+	if host == "" || port == "" || from == "" || to == "" {
+		return errors.New("SMTP host, port, from, and to are required")
+	}
+	password := ""
+	if secret != nil && *secret != "" {
+		password = os.Getenv(*secret)
+	}
+	dialer := &net.Dialer{Timeout: 15 * time.Second}
+	conn, err := dialer.Dial("tcp", net.JoinHostPort(host, port))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	client, err := smtp.NewClient(conn, host)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	if useTLS {
+		if ok, _ := client.Extension("STARTTLS"); !ok {
+			return errors.New("SMTP server does not support STARTTLS")
+		}
+		if err := client.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
+			return err
+		}
+	}
+	if user != "" {
+		if err := client.Auth(smtp.PlainAuth("", user, password, host)); err != nil {
+			return err
+		}
+	}
+	if err := client.Mail(from); err != nil {
+		return err
+	}
+	if err := client.Rcpt(to); err != nil {
+		return err
+	}
+	writer, err := client.Data()
+	if err != nil {
+		return err
+	}
+	headers := "From: " + from + "\r\nTo: " + to + "\r\nSubject: Call Recorder notification\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n"
+	if _, err = io.WriteString(writer, headers+"<p>"+html.EscapeString(body)+"</p>"); err != nil {
+		_ = writer.Close()
+		return err
+	}
+	return writer.Close()
+}
+
 func validateNotificationURL(raw string) error {
 	u, err := url.Parse(raw)
-	if err != nil || u.Hostname() == "" {
+	if err != nil || u.Hostname() == "" || u.User != nil {
 		return errors.New("invalid destination URL")
 	}
 	if strings.EqualFold(os.Getenv("CALL_RECORDER_ALLOW_PRIVATE_DESTINATIONS"), "true") {
@@ -172,10 +247,30 @@ func validateNotificationURL(raw string) error {
 	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
 		return errors.New("private notification destinations are disabled")
 	}
-	if ip := net.ParseIP(h); ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()) {
+	if ip := net.ParseIP(h); ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsLinkLocalMulticast()) {
 		return errors.New("private notification destinations are disabled")
 	}
 	return nil
+}
+
+func safeHTTPClient() *http.Client {
+	return &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return errors.New("redirects are disabled") }, Transport: &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := net.LookupIP(host)
+		if err != nil {
+			return nil, err
+		}
+		for _, ip := range ips {
+			if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+				continue
+			}
+			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		}
+		return nil, errors.New("destination resolves to a private address")
+	}}}
 }
 func sendTestNotification(pool *pgxpool.Pool, id int64) {
 	ctx := context.Background()

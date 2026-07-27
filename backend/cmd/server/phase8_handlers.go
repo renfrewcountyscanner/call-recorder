@@ -10,7 +10,26 @@ import (
 )
 
 func (s *server) enqueueNotifications(ctx context.Context, callID string) {
-	_, _ = s.db.Exec(ctx, `INSERT INTO notification_deliveries(rule_id,destination_id,call_id) SELECT r.id,r.destination_id,$1 FROM notification_rules r JOIN notification_destinations d ON d.id=r.destination_id WHERE r.enabled AND d.enabled AND (r.sender_filter IS NULL OR r.sender_filter=(SELECT sender_id FROM calls WHERE id=$1)) AND (r.system_filter IS NULL OR r.system_filter=(SELECT system_id FROM calls WHERE id=$1)) AND (r.site_filter IS NULL OR r.site_filter=(SELECT site_id FROM calls WHERE id=$1)) AND (r.talkgroup_filter IS NULL OR r.talkgroup_filter=(SELECT talkgroup_id FROM calls WHERE id=$1)) AND (r.radio_filter IS NULL OR r.radio_filter=(SELECT radio_id FROM calls WHERE id=$1)) ON CONFLICT(rule_id,call_id) DO NOTHING`, callID)
+	_, _ = s.db.Exec(ctx, `INSERT INTO notification_deliveries(rule_id,destination_id,call_id)
+		SELECT r.id,r.destination_id,c.id
+		FROM notification_rules r
+		JOIN notification_destinations d ON d.id=r.destination_id
+		JOIN calls c ON c.id=$1
+		WHERE r.enabled AND d.enabled
+		  AND (r.sender_filter IS NULL OR r.sender_filter=c.sender_id)
+		  AND (r.system_filter IS NULL OR r.system_filter=c.system_id)
+		  AND (r.site_filter IS NULL OR r.site_filter=c.site_id)
+		  AND (r.talkgroup_filter IS NULL OR r.talkgroup_filter=c.talkgroup_id)
+		  AND (r.radio_filter IS NULL OR r.radio_filter=c.radio_id)
+		  AND (r.call_type_filter IS NULL OR r.call_type_filter=c.call_type)
+		  AND (r.frequency_min IS NULL OR (c.frequency ~ '^[0-9]+([.][0-9]+)?$' AND c.frequency::numeric >= r.frequency_min))
+		  AND (r.frequency_max IS NULL OR (c.frequency ~ '^[0-9]+([.][0-9]+)?$' AND c.frequency::numeric <= r.frequency_max))
+		  AND (r.min_duration_ms IS NULL OR c.duration_ms >= r.min_duration_ms)
+		  AND (r.max_duration_ms IS NULL OR c.duration_ms <= r.max_duration_ms)
+		  AND (NOT r.patched_only OR EXISTS (SELECT 1 FROM call_targets ct WHERE ct.call_id=c.id))
+		  AND (r.keyword IS NULL OR c.search_document::text ILIKE '%'||lower(r.keyword)||'%')
+		  AND (r.favourite_group_id IS NULL OR EXISTS (SELECT 1 FROM favourite_members fm WHERE fm.group_id=r.favourite_group_id AND fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id))
+		ON CONFLICT(rule_id,call_id) DO NOTHING`, callID)
 }
 
 func (s *server) adminProtectCall(w http.ResponseWriter, r *http.Request) {

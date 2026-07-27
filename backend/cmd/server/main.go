@@ -38,7 +38,7 @@ var templatesFS embed.FS
 var staticFS embed.FS
 
 // version is reported by /healthz and shown in the interface header.
-const version = "v0.4.0-dev"
+const version = "v0.4.0"
 
 type config struct {
 	ListenAddr                string
@@ -939,6 +939,17 @@ func (s *server) eventsCalls(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (s *server) adminOK(r *http.Request) bool {
+	if r.Method == http.MethodPost {
+		if strings.EqualFold(r.Header.Get("Sec-Fetch-Site"), "cross-site") {
+			return false
+		}
+		if origin := r.Header.Get("Origin"); origin != "" {
+			u, err := url.Parse(origin)
+			if err != nil || u.Host != r.Host {
+				return false
+			}
+		}
+	}
 	if s.cfg.CloudflareAccessEnabled {
 		remote, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err != nil {

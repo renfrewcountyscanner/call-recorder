@@ -7,7 +7,12 @@ work=$(mktemp -d)
 trap cleanup EXIT
 mkdir -p "$root/.test-runtime/postgres" "$root/.test-runtime/audio"
 $compose up -d --build
-for n in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/healthz >/dev/null && break; sleep 1; done
+ready=0
+for n in $(seq 1 60); do
+  if curl -fsS --max-time 2 http://127.0.0.1:18080/healthz >/dev/null 2>&1; then ready=1; break; fi
+  sleep 1
+done
+test "$ready" = 1
 test "$(curl -s -o "$work/malformed.json" -w '%{http_code}' -H 'Content-Type: application/json' -H 'X-Call-Recorder-Key: synthetic-integration-key' --data '{' http://127.0.0.1:18080/api/v1/uploads)" = 400
 grep -q 'invalid JSON metadata' "$work/malformed.json"
 test "$(curl -s -o "$work/no-key.json" -w '%{http_code}' -H 'Content-Type: application/json' --data '{"sender_id":"integration-sender","audio_format":"wav","call":{}}' http://127.0.0.1:18080/api/v1/uploads)" = 400

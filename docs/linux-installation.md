@@ -43,4 +43,16 @@ Rollback: stop the backend, keep the PostgreSQL/audio runtime directories intact
 3. Build and start the backend: `cd deploy && docker-compose build backend && docker-compose up -d`.
 4. Verify `/healthz`, `/readyz`, call ingestion, search, and playback. Leave notification and transcription workers disabled until their secret references and test endpoints are configured.
 
+Optional workers, after configuration and an isolated test, can be enabled independently:
+
+```bash
+cd /app/call-recorder/deploy
+docker-compose --profile notifications up -d notification-worker
+docker-compose --profile transcription up -d transcription-worker
+# or enable both profiles together
+docker-compose --profile notifications --profile transcription up -d
+```
+
+Notification destinations use secret reference names; transcription uses the configured endpoint, model, and secret reference. Do not put secret values in Git or PostgreSQL.
+
 Rollback by stopping the backend, restoring the verified backup with `CONFIRM_RESTORE=YES deploy/restore.sh`, and restarting the v0.3.0 image. Never use `down -v`.

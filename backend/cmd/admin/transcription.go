@@ -120,7 +120,10 @@ func runTranscription(pool *pgxpool.Pool) {
 		}
 	}
 	for _, j := range jobs {
-		_, _ = conn.Exec(ctx, `UPDATE transcription_jobs SET status='running',attempt_count=attempt_count+1,started_at=now(),updated_at=now() WHERE id=$1`, j.id)
+		claimed, _ := conn.Exec(ctx, `UPDATE transcription_jobs SET status='running',attempt_count=attempt_count+1,started_at=now(),updated_at=now() WHERE id=$1 AND status IN ('pending','failed')`, j.id)
+		if claimed.RowsAffected() != 1 {
+			continue
+		}
 		text, err := transcribeFile(endpoint, model, apiKey, language, filepath.Join(os.Getenv("CALL_RECORDER_AUDIO_ROOT"), j.path), maxSize, maxDur)
 		if err != nil {
 			safe := sanitizeError(err)
@@ -176,7 +179,9 @@ func transcribeFile(endpoint, model, key string, language *string, path string, 
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
-	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	client := safeHTTPClient()
+	client.Timeout = 60 * time.Second
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}

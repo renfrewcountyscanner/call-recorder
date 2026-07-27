@@ -7,6 +7,12 @@ cleanup(){ $compose down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$r
 trap cleanup EXIT
 KEEP_TEST_ENV=1 "$root/tests/integration.sh"
 psql(){ $compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "$1"; }
+ready=0
+for n in $(seq 1 60); do
+  if curl -fsS --max-time 2 http://127.0.0.1:18080/healthz >/dev/null 2>&1; then ready=1; break; fi
+  sleep 1
+done
+test "$ready" = 1
 $compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/005_phase8_notifications_transcription.sql >/dev/null
 group=$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "INSERT INTO favourite_groups(name) VALUES('synthetic-favourites') RETURNING id" | grep -E '^[0-9]+$' | head -n 1)
 $compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -c "INSERT INTO favourite_members(group_id,system_id,talkgroup_id) VALUES($group,'system-a','100')" >/dev/null
