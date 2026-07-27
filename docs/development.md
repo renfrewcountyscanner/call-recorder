@@ -27,7 +27,7 @@ Web interface suites (Chromium + vendored axe-core, isolated only):
 ```bash
 tests/browser-sequential.sh   # sequential playback via the shared player
 tests/browser-acceptance.sh   # layout, filters, playback, admin, themes, console errors
-tests/accessibility.sh        # axe-core audits; fails on critical violations
+tests/accessibility.sh        # axe-core audits; fails on any known violation
 tests/screenshots.sh          # sanitized captures into tests/output/ (ignored)
 ```
 
@@ -46,3 +46,6 @@ tests/browser-sequential.sh
 ```
 
 It injects a controlled media `play()` stub in Chromium, dispatches actual `ended` events, and verifies that the page’s playback handler advances through synthetic calls. The production duplicate resend is deferred to the real Trunk Recorder host; see `docs/production-duplicate-test.md`.
+Phase 8 isolated tests must use `callrecorder_it`, port `18080`, and `.test-runtime`. Apply migrations 001–005 to a fresh database, reapply 005, then run the existing integration, alias, retention, administration, browser, accessibility, and screenshot suites. Never point workers or retention tests at `runtime/`.
+
+The Phase 8 smoke command is `tests/phase8.sh`; it exercises system-scoped favourite membership, protected-call state, notification destination metadata, and durable transcription jobs with synthetic calls only.

@@ -7,3 +7,4 @@ Administration routes are disabled unless explicitly enabled and protected by a 
 ## Web interface
 
 All interface assets (CSS, JavaScript, HTMX, icons) are self-contained in the backend binary; no content is loaded from third-party origins. A strict Content-Security-Policy (`default-src 'self'`, no object embeds, form actions restricted to self) is sent on every response, alongside `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin`. The interface never renders absolute filesystem paths, API keys, or upload tokens, and administration session cookies remain HttpOnly and SameSite=Strict.
+Notification destination secrets are references only; values are supplied outside PostgreSQL. Workers use request timeouts, bounded retries, sanitized errors, and no public ports. Keep webhook endpoints restricted to approved HTTPS destinations and place the service behind Cloudflare Access or a private reverse proxy.

@@ -103,7 +103,7 @@ func runRetention(pool *pgxpool.Pool, policyID int, forceDry bool) {
 		sender, system, tg, ctype, min, max := p.sender, p.system, p.tg, p.ctype, p.min, p.max
 		started := time.Now().UTC()
 		effectiveDry := dry || forceDry
-		query := `SELECT count(*) FROM calls WHERE start_time < now() - ($1::int * interval '1 day')`
+		query := `SELECT count(*) FROM calls WHERE start_time < now() - ($1::int * interval '1 day') AND (NOT protected OR protection_expires_at IS NOT NULL AND protection_expires_at <= now())`
 		qargs := []any{days}
 		for _, f := range []struct {
 			v   *string

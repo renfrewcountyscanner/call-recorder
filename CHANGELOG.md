@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.0 (2026-07-26)
+
+- Additive Phase 8 schema for favourite groups, protected calls, notifications, and transcription jobs.
+- Admin surfaces and Linux CLI commands for favourite groups, protection, notification history, and transcription queueing.
+- Optional notification and transcription worker profiles; both are disabled by default.
+- Generated transcript storage remains separate from received sender text and administrative notes.
+
 ## v0.3.0 (2026-07-26)
 
 - Redesigned web interface: dark-first theme system with light and system options, shared layout and navigation, and a small internal design system.
