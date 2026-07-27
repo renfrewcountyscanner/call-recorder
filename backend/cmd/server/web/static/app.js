@@ -146,13 +146,20 @@
   applyRate();
 
   function reindex() {
+    var prior = null;
+    if (playingId) {
+      for (var p = 0; p < queue.length; p++) if (queue[p].id === playingId) { prior = queue[p]; break; }
+    }
     queue = Array.prototype.map.call(document.querySelectorAll('[data-play]'), function (btn) {
       return { id: btn.getAttribute('data-play'), title: btn.getAttribute('data-title') || 'call', meta: btn.getAttribute('data-meta') || '', btn: btn };
     });
     if (playingId) {
       var still = -1;
       queue.forEach(function (item, i) { if (item.id === playingId) still = i; });
-      if (still === -1) { stopPlayback(); } else { index = still; }
+      // Keep the currently playing item in the in-memory queue if a refresh or
+      // filter removes its row. This prevents SSE updates from interrupting it.
+      if (still === -1 && prior) { queue.splice(Math.max(0, index), 0, prior); still = Math.max(0, index); }
+      if (still !== -1) index = still;
     }
     paintButtons();
   }

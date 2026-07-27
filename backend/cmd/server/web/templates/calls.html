@@ -26,7 +26,7 @@
       <td class="col-radio" data-label="Radio"><span class="alias" title="{{.RadioName}}">{{if .RadioName}}{{.RadioName}}{{else}}<span class="muted">—</span>{{end}}</span> {{if .RadioID}}<span class="id-chip">{{.RadioID}}</span>{{end}}</td>
       <td class="col-freq" data-label="Freq">{{.Frequency}}{{if .LCN}} <span class="muted small">/ {{.LCN}}</span>{{end}}</td>
       <td class="col-dur" data-label="Dur">{{dur .DurationMS}}</td>
-      <td class="col-type" data-label="Type">{{if .CallType}}<span class="badge">{{.CallType}}</span>{{end}}{{if .Protected}}<span class="badge info" title="Protected from retention">Protected</span>{{end}}{{if gt .Patches 0}}<span class="badge warn" title="{{.Patches}} patched talkgroup{{if ne .Patches 1}}s{{end}}">+{{.Patches}}</span>{{end}}</td>
+      <td class="col-type" data-label="Type">{{if .CallType}}<span class="badge">{{.CallType}}</span>{{end}}{{if .Protected}}<span class="badge info" title="Protected from retention">Protected</span>{{end}}{{if .Notes}}<span class="badge" title="Administrative notes present">Notes</span>{{end}}{{if .Transcript}}<span class="badge" title="Received call text present">Text</span>{{end}}{{if gt .Patches 0}}<span class="badge warn" title="{{.Patches}} patched talkgroup{{if ne .Patches 1}}s{{end}}">+{{.Patches}}</span>{{end}}</td>
     </tr>
     {{end}}
   </tbody>
