@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.0 (2026-07-26)
+## v0.4.0-dev (2026-07-26)
 
 - Additive Phase 8 schema for favourite groups, protected calls, notifications, and transcription jobs.
 - Admin surfaces and Linux CLI commands for favourite groups, protection, notification history, and transcription queueing.
