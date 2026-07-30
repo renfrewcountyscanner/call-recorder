@@ -31,7 +31,7 @@
           <option value="25" {{if eq .Filter.PageSize 25}}selected{{end}}>25</option>
           <option value="50" {{if eq .Filter.PageSize 50}}selected{{end}}>50</option>
           <option value="100" {{if eq .Filter.PageSize 100}}selected{{end}}>100</option>
-          <option value="250" {{if eq .Filter.PageSize 250}}selected{{end}}>250</option>
+          <option value="250" {{if eq .Filter.PageSize 250}}selected{{end}}>250 (maximum)</option>
         </select>
       </label>
       <label>Sort
@@ -51,6 +51,7 @@
       <a class="btn ghost" href="/" id="filter-reset">Reset</a>
       <a class="btn ghost" href="/export/calls.csv?{{.RawQuery}}">Export CSV</a>
     </div>
+    <p class="muted small">Large result sets are capped at 250 rows per page. Use CSV export for a complete filtered result.</p>
   </form>
   <datalist id="sender-values">{{range .Senders}}<option value="{{.}}">{{end}}</datalist><datalist id="system-values">{{range .Systems}}<option value="{{.}}">{{end}}</datalist><datalist id="site-values">{{range .Sites}}<option value="{{.}}">{{end}}</datalist><datalist id="receiver-values">{{range .Receivers}}<option value="{{.}}">{{end}}</datalist><datalist id="talkgroup-values">{{range .Talkgroups}}<option value="{{.}}">{{end}}</datalist><datalist id="radio-values">{{range .Radios}}<option value="{{.}}">{{end}}</datalist><datalist id="call-type-values">{{range .CallTypes}}<option value="{{.}}">{{end}}</datalist>
 </details>
