@@ -34,9 +34,9 @@
 </div>
 {{if or .PrevURL .NextURL}}
 <nav class="pager" aria-label="Call list pages">
-  {{if .PrevURL}}<a class="btn small" href="{{.PrevURL}}" hx-get="{{.PrevURL}}" hx-target="#calls">← Newer</a>{{end}}
+  {{if .PrevURL}}<a class="btn small" href="{{.FirstURL}}" hx-get="{{.FirstURL}}" hx-target="#calls">« First</a><a class="btn small" href="{{.PrevURL}}" hx-get="{{.PrevURL}}" hx-target="#calls">← Newer</a>{{end}}
   <span class="page-of">Page {{.Filter.Page}} of {{.Pages}}</span>
-  {{if .NextURL}}<a class="btn small" href="{{.NextURL}}" hx-get="{{.NextURL}}" hx-target="#calls">Older →</a>{{end}}
+  {{if .NextURL}}<a class="btn small" href="{{.NextURL}}" hx-get="{{.NextURL}}" hx-target="#calls">Older →</a><a class="btn small" href="{{.LastURL}}" hx-get="{{.LastURL}}" hx-target="#calls">Last »</a>{{end}}
 </nav>
 {{end}}
 {{else}}

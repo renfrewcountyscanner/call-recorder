@@ -725,9 +725,11 @@ func (s *server) callsFragment(w http.ResponseWriter, r *http.Request) {
 	data := map[string]any{"Calls": calls, "Total": total, "Pages": pages, "Filter": f, "Chips": chipsFor(f)}
 	if f.Page > 1 {
 		data["PrevURL"] = callsURL(f, "", f.Page-1)
+		data["FirstURL"] = callsURL(f, "", 1)
 	}
 	if f.Page < pages {
 		data["NextURL"] = callsURL(f, "", f.Page+1)
+		data["LastURL"] = callsURL(f, "", pages)
 	}
 	s.render(w, "calls.html", data)
 }
