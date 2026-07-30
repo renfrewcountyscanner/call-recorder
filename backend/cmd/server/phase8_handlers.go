@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func (s *server) enqueueNotifications(ctx context.Context, callID string) {
@@ -419,28 +422,40 @@ func (s *server) adminTranscription(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
 		return
 	}
-	var enabled bool
-	var provider, endpoint, model, secret string
-	var pending, failed, done int64
-	_ = s.db.QueryRow(r.Context(), `SELECT enabled,provider,coalesce(endpoint_url,''),coalesce(model,''),coalesce(secret_ref,'') FROM transcription_config WHERE id=true`).Scan(&enabled, &provider, &endpoint, &model, &secret)
-	_ = s.db.QueryRow(r.Context(), `SELECT count(*) FILTER(WHERE status='pending'),count(*) FILTER(WHERE status='failed'),count(*) FILTER(WHERE status='completed') FROM transcription_jobs`).Scan(&pending, &failed, &done)
-	rows, _ := s.db.Query(r.Context(), `SELECT j.id,j.call_id,j.status,j.provider,j.attempt_count,coalesce(j.error,''),coalesce(j.created_at::text,''),coalesce(j.completed_at::text,'') FROM transcription_jobs j ORDER BY j.id DESC LIMIT 200`)
+	var enabled, vad, prompts bool
+	var provider, endpoint, model, secret, language, phrase string
+	var pending, running, failed, done int64
+	var minDur, maxDur, maxSize int64
+	var timeout int
+	var temperature *float64
+	_ = s.db.QueryRow(r.Context(), `SELECT enabled,provider,coalesce(endpoint_url,''),coalesce(model,''),coalesce(secret_ref,''),coalesce(default_language,''),min_audio_duration_ms,max_audio_duration_ms,max_file_size,request_timeout_seconds,temperature,vad_enabled,phrase_prompts_enabled,coalesce(phrase_prompts,'') FROM transcription_config WHERE id=true`).Scan(&enabled, &provider, &endpoint, &model, &secret, &language, &minDur, &maxDur, &maxSize, &timeout, &temperature, &vad, &prompts, &phrase)
+	_ = s.db.QueryRow(r.Context(), `SELECT count(*) FILTER(WHERE status='pending'),count(*) FILTER(WHERE status='running'),count(*) FILTER(WHERE status='failed'),count(*) FILTER(WHERE status='completed') FROM transcription_jobs`).Scan(&pending, &running, &failed, &done)
+	rows, _ := s.db.Query(r.Context(), `SELECT j.id,j.call_id,j.status,j.provider,j.attempt_count,coalesce(j.error,''),coalesce(j.created_at::text,''),coalesce(j.started_at::text,''),coalesce(j.completed_at::text,''),coalesce(j.next_attempt_at::text,'') FROM transcription_jobs j WHERE ($1='' OR j.status=$1) AND ($2='' OR j.provider=$2) AND ($3='' OR j.call_id ILIKE '%'||$3||'%') AND ($4='' OR j.created_at::date >= $4::date) AND ($5='' OR j.created_at::date <= $5::date) ORDER BY j.id DESC LIMIT 100`, r.URL.Query().Get("status"), r.URL.Query().Get("provider"), r.URL.Query().Get("call"), r.URL.Query().Get("from"), r.URL.Query().Get("to"))
 	type job struct {
-		ID                                                int64
-		Call, Status, Provider, Error, Created, Completed string
-		Attempts                                          int
+		ID                                                               int64
+		Call, Status, Provider, Error, Created, Started, Completed, Next string
+		Attempts                                                         int
 	}
 	jobs := []job{}
 	if rows != nil {
 		defer rows.Close()
 		for rows.Next() {
 			var j job
-			if rows.Scan(&j.ID, &j.Call, &j.Status, &j.Provider, &j.Attempts, &j.Error, &j.Created, &j.Completed) == nil {
+			if rows.Scan(&j.ID, &j.Call, &j.Status, &j.Provider, &j.Attempts, &j.Error, &j.Created, &j.Started, &j.Completed, &j.Next) == nil {
 				jobs = append(jobs, j)
 			}
 		}
 	}
-	s.page(w, r, "admin_transcription.html", "Transcription", "transcription", map[string]any{"Enabled": enabled, "Provider": provider, "Endpoint": endpoint, "Model": model, "Secret": secret, "Pending": pending, "Failed": failed, "Completed": done, "Jobs": jobs})
+	secretState := "Missing"
+	if secret != "" {
+		if os.Getenv(secret) != "" {
+			secretState = "Available"
+		} else {
+			secretState = "Unavailable"
+		}
+	}
+	worker := os.Getenv("CALL_RECORDER_TRANSCRIPTION_WORKER_RUNNING") == "true"
+	s.page(w, r, "admin_transcription.html", "Transcription", "transcription", map[string]any{"Enabled": enabled, "Provider": provider, "Endpoint": endpoint, "Model": model, "Secret": secret, "SecretState": secretState, "Language": language, "MinSeconds": float64(minDur) / 1000, "MaxMinutes": float64(maxDur) / 60000, "MaxMB": float64(maxSize) / (1024 * 1024), "Timeout": timeout, "Temperature": temperature, "VAD": vad, "Prompts": prompts, "Phrase": phrase, "Pending": pending, "Running": running, "Failed": failed, "Completed": done, "WorkerRunning": worker, "Jobs": jobs, "Saved": r.URL.Query().Get("saved"), "Test": r.URL.Query().Get("test")})
 }
 
 func (s *server) adminRetryTranscription(w http.ResponseWriter, r *http.Request) {
@@ -467,22 +482,69 @@ func (s *server) adminSaveTranscriptionConfig(w http.ResponseWriter, r *http.Req
 		http.Error(w, "invalid form", 400)
 		return
 	}
-	maxSize, _ := strconv.ParseInt(r.FormValue("max_file_size"), 10, 64)
-	maxDur, _ := strconv.ParseInt(r.FormValue("max_duration_ms"), 10, 64)
+	mb, e1 := strconv.ParseFloat(r.FormValue("max_mb"), 64)
+	maxMin, e2 := strconv.ParseFloat(r.FormValue("max_minutes"), 64)
+	minSec, e3 := strconv.ParseFloat(r.FormValue("min_seconds"), 64)
 	concurrency, _ := strconv.Atoi(r.FormValue("concurrency"))
 	retries, _ := strconv.Atoi(r.FormValue("retry_limit"))
+	if e1 != nil || e2 != nil || e3 != nil || mb <= 0 || maxMin <= 0 || minSec < 0 {
+		http.Error(w, "durations and file size must be valid positive values", 400)
+		return
+	}
+	maxSize := int64(mb * 1024 * 1024)
+	maxDur := int64(maxMin * 60000)
+	minDur := int64(minSec * 1000)
 	if concurrency < 1 {
 		concurrency = 1
 	}
 	if retries < 0 {
 		retries = 0
 	}
-	_, err := s.db.Exec(r.Context(), `UPDATE transcription_config SET enabled=$1,provider=$2,default_language=NULLIF($3,''),endpoint_url=NULLIF($4,''),model=NULLIF($5,''),secret_ref=NULLIF($6,''),max_file_size=$7,max_audio_duration_ms=$8,concurrency=$9,retry_limit=$10,updated_at=now() WHERE id=true`, r.FormValue("enabled") == "on", strings.TrimSpace(r.FormValue("provider")), strings.TrimSpace(r.FormValue("language")), strings.TrimSpace(r.FormValue("endpoint")), strings.TrimSpace(r.FormValue("model")), strings.TrimSpace(r.FormValue("secret_ref")), maxSize, maxDur, concurrency, retries)
+	timeout, _ := strconv.Atoi(r.FormValue("timeout"))
+	if timeout < 1 || timeout > 300 {
+		http.Error(w, "timeout must be 1–300 seconds", 400)
+		return
+	}
+	var temp any = nil
+	if raw := strings.TrimSpace(r.FormValue("temperature")); raw != "" {
+		t, e := strconv.ParseFloat(raw, 64)
+		if e != nil || t < 0 || t > 2 {
+			http.Error(w, "temperature must be between 0 and 2", 400)
+			return
+		}
+		temp = t
+	}
+	_, err := s.db.Exec(r.Context(), `UPDATE transcription_config SET enabled=$1,provider=$2,default_language=NULLIF($3,''),endpoint_url=NULLIF($4,''),model=NULLIF($5,''),secret_ref=NULLIF($6,''),max_file_size=$7,max_audio_duration_ms=$8,min_audio_duration_ms=$9,concurrency=$10,retry_limit=$11,request_timeout_seconds=$12,temperature=$13,vad_enabled=$14,phrase_prompts_enabled=$15,phrase_prompts=NULLIF($16,''),updated_at=now() WHERE id=true`, r.FormValue("enabled") == "on", strings.TrimSpace(r.FormValue("provider")), strings.TrimSpace(r.FormValue("language")), strings.TrimSpace(r.FormValue("endpoint")), strings.TrimSpace(r.FormValue("model")), strings.TrimSpace(r.FormValue("secret_ref")), maxSize, maxDur, minDur, concurrency, retries, timeout, temp, r.FormValue("vad") == "on", r.FormValue("prompts") == "on", strings.TrimSpace(r.FormValue("phrase_prompts")))
 	if err != nil {
 		s.internal(w, err)
 		return
 	}
-	http.Redirect(w, r, "/admin/transcription", 303)
+	http.Redirect(w, r, "/admin/transcription?saved=1", 303)
+}
+
+func (s *server) adminTestTranscription(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	var endpoint, model, secret string
+	_ = s.db.QueryRow(r.Context(), `SELECT coalesce(endpoint_url,''),coalesce(model,''),coalesce(secret_ref,'') FROM transcription_config WHERE id=true`).Scan(&endpoint, &model, &secret)
+	u, e := url.Parse(endpoint)
+	if e != nil || u.Scheme == "" || model == "" {
+		http.Redirect(w, r, "/admin/transcription?test=configuration+incomplete", 303)
+		return
+	}
+	if secret != "" && os.Getenv(secret) == "" {
+		http.Redirect(w, r, "/admin/transcription?test=secret+unavailable", 303)
+		return
+	}
+	c := http.Client{Timeout: 5 * time.Second}
+	req, _ := http.NewRequestWithContext(r.Context(), http.MethodOptions, endpoint, nil)
+	_, e = c.Do(req)
+	if e != nil {
+		http.Redirect(w, r, "/admin/transcription?test=connection+failed", 303)
+		return
+	}
+	http.Redirect(w, r, "/admin/transcription?test=connection+ok", 303)
 }
 
 func (s *server) adminEditTranscript(w http.ResponseWriter, r *http.Request) {

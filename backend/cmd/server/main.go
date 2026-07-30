@@ -204,6 +204,7 @@ func main() {
 		mux.HandleFunc("POST /admin/transcription/queue/", s.adminQueueTranscription)
 		mux.HandleFunc("POST /admin/transcription/retry", s.adminRetryTranscription)
 		mux.HandleFunc("POST /admin/transcription/config", s.adminSaveTranscriptionConfig)
+		mux.HandleFunc("POST /admin/transcription/test", s.adminTestTranscription)
 		mux.HandleFunc("POST /admin/transcription/edit", s.adminEditTranscript)
 		mux.HandleFunc("POST /admin/talkgroups", s.adminSaveTalkgroup)
 		mux.HandleFunc("GET /admin/radios", s.adminRadios)
