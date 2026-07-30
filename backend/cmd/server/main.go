@@ -38,7 +38,7 @@ var templatesFS embed.FS
 var staticFS embed.FS
 
 // version is reported by /healthz and shown in the interface header.
-const version = "v0.4.0-dev"
+const version = "v0.4.0"
 
 type config struct {
 	ListenAddr                string

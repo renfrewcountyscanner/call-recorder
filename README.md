@@ -1,6 +1,6 @@
 # Call Recorder
 
-## v0.4.0 development
+## v0.4.0
 
 This release adds favourite groups, retention-protected calls, durable notification deliveries, and an optional OpenAI-compatible transcription queue while retaining the v0.3.0 scanner-oriented interface. See [docs/favourites.md](docs/favourites.md), [docs/protected-calls.md](docs/protected-calls.md), [docs/notifications.md](docs/notifications.md), and [docs/transcription.md](docs/transcription.md).
 
