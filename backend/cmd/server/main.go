@@ -38,7 +38,7 @@ var templatesFS embed.FS
 var staticFS embed.FS
 
 // version is reported by /healthz and shown in the interface header.
-const version = "v0.4.0"
+const version = "v0.4.1"
 
 type config struct {
 	ListenAddr                string
@@ -56,6 +56,7 @@ type config struct {
 	LegacyAPIKey              string
 	TestFailFinalize          bool
 	AdminEnabled              bool
+	AdminOpen                 bool
 	AdminToken                string
 	CloudflareAccessEnabled   bool
 	CloudflareAdminEmail      string
@@ -147,7 +148,7 @@ func main() {
 		slog.Error("ping postgres", "error", err)
 		os.Exit(2)
 	}
-	s := &server{cfg: cfg, db: pool, logger: slog.Default(), templates: template.Must(template.New("cr").Funcs(template.FuncMap{"dur": formatDuration, "tdate": formatTimePtr, "srcBadge": sourceBadge}).ParseFS(templatesFS, "web/templates/*.html"))}
+	s := &server{cfg: cfg, db: pool, logger: slog.Default(), templates: template.Must(template.New("cr").Funcs(template.FuncMap{"dur": formatDuration, "tdate": formatTimePtr, "srcBadge": sourceBadge, "inc": func(n int) int { return n + 1 }, "dec": func(n int) int { return n - 1 }, "slice": func(v ...string) []string { return v }}).ParseFS(templatesFS, "web/templates/*.html"))}
 	if err := s.bootstrapSender(context.Background()); err != nil {
 		slog.Error("bootstrap sender", "error", err)
 		os.Exit(2)
@@ -178,7 +179,7 @@ func main() {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 		http.FileServerFS(staticSub).ServeHTTP(w, r)
 	})))
-	if cfg.AdminEnabled && (cfg.AdminToken != "" || (cfg.CloudflareAccessEnabled && cfg.CloudflareAdminEmail != "")) {
+	if cfg.AdminEnabled && (cfg.AdminOpen || cfg.AdminToken != "" || (cfg.CloudflareAccessEnabled && cfg.CloudflareAdminEmail != "")) {
 		mux.HandleFunc("GET /admin/login", s.adminLogin)
 		mux.HandleFunc("POST /admin/login", s.adminLogin)
 		mux.HandleFunc("GET /admin/talkgroups", s.adminTalkgroups)
@@ -230,7 +231,7 @@ func main() {
 }
 
 func loadConfig() config {
-	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyDebug: env("CALL_RECORDER_LEGACY_DEBUG", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS"))}
+	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyDebug: env("CALL_RECORDER_LEGACY_DEBUG", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminOpen: env("CALL_RECORDER_ADMIN_OPEN", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS"))}
 }
 func splitCSV(value string) []string {
 	var out []string
@@ -612,6 +613,23 @@ func (s *server) callsPage(w http.ResponseWriter, r *http.Request) {
 		rows.Close()
 		data["FavouriteGroups"] = groups
 	}
+	// Suggestions are deliberately bounded and remain optional: typed query-string
+	// filters continue to work for values not included here.
+	for key, column := range map[string]string{"Senders": "sender_id", "Systems": "system_id", "Sites": "site_id", "Receivers": "receiver_id", "Talkgroups": "talkgroup_id", "Radios": "radio_id", "CallTypes": "call_type"} {
+		rows, err := s.db.Query(r.Context(), `SELECT DISTINCT `+column+` FROM calls WHERE coalesce(`+column+`,'')<>'' ORDER BY `+column+` LIMIT 250`)
+		if err != nil {
+			continue
+		}
+		values := []string{}
+		for rows.Next() {
+			var value string
+			if rows.Scan(&value) == nil {
+				values = append(values, value)
+			}
+		}
+		rows.Close()
+		data[key] = values
+	}
 	if ferr != nil {
 		data["Error"] = "Invalid filter values: dates must use YYYY-MM-DD."
 	}
@@ -991,6 +1009,9 @@ func (s *server) adminOK(r *http.Request) bool {
 			return false
 		}
 		return s.cfg.CloudflareAdminEmail != "" && strings.EqualFold(strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email")), s.cfg.CloudflareAdminEmail)
+	}
+	if s.cfg.AdminOpen {
+		return true
 	}
 	if s.cfg.AdminToken == "" {
 		return false
@@ -1484,7 +1505,7 @@ func filterFromQuery(q url.Values) (callFilter, error) {
 	}
 	if n, err := strconv.Atoi(q.Get("page_size")); err == nil {
 		switch n {
-		case 25, 50, 100, 200:
+		case 25, 50, 100, 250:
 			f.PageSize = n
 		}
 	}

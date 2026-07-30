@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.1 (2026-07-30)
+
+- Added explicit pause/resume live updates with queued new-call indication.
+- Added safe bounded call-list page sizes: 25, 50, 100, and 250.
+- Added print-friendly call-list and call-detail output that omits controls and administration actions.
+- Preserved existing ingestion, PostgreSQL storage, playback, aliases, retention, notifications, and transcription behavior.
+
 ## v0.4.0 (2026-07-30)
 
 - Additive Phase 8 schema for favourite groups, protected calls, notifications, and transcription jobs.

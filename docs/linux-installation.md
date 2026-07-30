@@ -36,6 +36,13 @@ Perform this upgrade during a short maintenance window. It is additive and does 
 
 Rollback: stop the backend, keep the PostgreSQL/audio runtime directories intact, restore the verified backup with `CONFIRM_RESTORE=YES deploy/restore.sh`, then start the previously known-good image/commit. Do not use `docker-compose down -v`.
 
+## Upgrade from v0.4.0 to v0.4.1
+
+1. Create and verify a fresh backup with `deploy/backup.sh /secure/backups`.
+2. Check out the v0.4.1 release; no database migration is required.
+3. Build and restart the backend with Docker Compose.
+4. Verify `/healthz`, `/readyz`, call ingestion, playback, and the live-update controls.
+
 ## Upgrade from v0.3.0 to v0.4.0
 
 1. Take and verify a fresh backup: `deploy/backup.sh /safe/backup-directory`.
