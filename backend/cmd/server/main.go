@@ -117,15 +117,15 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 type completedCall struct {
-	ID, SenderID, ReceiverID, SystemID, SystemName, SiteID, SiteName, TalkgroupID, TalkgroupName, RadioID, RadioName, Frequency, LCN, AudioPath, AudioFormat, Transcript, Notes, CallType string
-	Protected                                                                                                                                                                             bool
-	ProtectionReason, ProtectedBy                                                                                                                                                         string
-	ProtectedAt, ProtectionExpiresAt                                                                                                                                                      *time.Time
-	GroupCall                                                                                                                                                                             *bool
-	StartTime                                                                                                                                                                             time.Time
-	DurationMS                                                                                                                                                                            int64
-	AudioSize                                                                                                                                                                             int64
-	Patches                                                                                                                                                                               int
+	ID, SenderID, ReceiverID, SystemID, SystemName, SiteID, SiteName, TalkgroupID, TalkgroupName, TalkgroupTag, RadioID, RadioName, RadioTag, Frequency, LCN, VoiceService, AudioPath, AudioFormat, Transcript, Notes, CallType string
+	Protected                                                                                                                                                                                                                   bool
+	ProtectionReason, ProtectedBy                                                                                                                                                                                               string
+	ProtectedAt, ProtectionExpiresAt                                                                                                                                                                                            *time.Time
+	GroupCall                                                                                                                                                                                                                   *bool
+	StartTime                                                                                                                                                                                                                   time.Time
+	DurationMS                                                                                                                                                                                                                  int64
+	AudioSize                                                                                                                                                                                                                   int64
+	Patches                                                                                                                                                                                                                     int
 }
 
 func main() {
@@ -740,7 +740,7 @@ func (s *server) callDetail(w http.ResponseWriter, r *http.Request) {
 	var c completedCall
 	var raw []byte
 	var patches []string
-	err := s.db.QueryRow(r.Context(), `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),coalesce(c.lcn,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(p.metadata,'{}'::jsonb),coalesce(c.call_type,''),c.protected,coalesce(c.protection_reason,''),coalesce(c.protected_by,''),c.protected_at,c.protection_expires_at,c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id) FROM calls c LEFT JOIN pending_uploads p ON p.completed_call_id=c.id LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE c.id=$1`, id).Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.RadioID, &c.RadioName, &c.Frequency, &c.LCN, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &raw, &c.CallType, &c.Protected, &c.ProtectionReason, &c.ProtectedBy, &c.ProtectedAt, &c.ProtectionExpiresAt, &c.GroupCall, &c.Patches)
+	err := s.db.QueryRow(r.Context(), `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.talkgroup_tag,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.radio_tag,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.voice_service,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(p.metadata,'{}'::jsonb),coalesce(c.call_type,''),c.protected,coalesce(c.protection_reason,''),coalesce(c.protected_by,''),c.protected_at,c.protection_expires_at,c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id) FROM calls c LEFT JOIN pending_uploads p ON p.completed_call_id=c.id LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE c.id=$1`, id).Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.TalkgroupTag, &c.RadioID, &c.RadioName, &c.RadioTag, &c.Frequency, &c.LCN, &c.VoiceService, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &raw, &c.CallType, &c.Protected, &c.ProtectionReason, &c.ProtectedBy, &c.ProtectedAt, &c.ProtectionExpiresAt, &c.GroupCall, &c.Patches)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -1493,7 +1493,21 @@ type callFilter struct {
 }
 
 func filterFromQuery(q url.Values) (callFilter, error) {
-	f := callFilter{Q: strings.TrimSpace(q.Get("q")), Sender: strings.TrimSpace(q.Get("sender")), System: strings.TrimSpace(q.Get("system")), Site: strings.TrimSpace(q.Get("site")), Receiver: strings.TrimSpace(q.Get("receiver")), Talkgroup: strings.TrimSpace(q.Get("talkgroup")), Radio: strings.TrimSpace(q.Get("radio")), CallType: strings.TrimSpace(q.Get("call_type")), Frequency: strings.TrimSpace(q.Get("frequency")), MinDuration: strings.TrimSpace(q.Get("min_duration")), MaxDuration: strings.TrimSpace(q.Get("max_duration")), Date: q.Get("date"), From: q.Get("from"), To: q.Get("to"), Favourite: strings.TrimSpace(q.Get("favourite")), Sort: strings.TrimSpace(q.Get("sort")), SmartSort: q.Get("smart_sort") == "1", Page: 1, PageSize: 50, Patched: q.Get("patched") == "1" || strings.EqualFold(q.Get("patched"), "true")}
+	multi := func(key string) string {
+		var out []string
+		seen := map[string]bool{}
+		for _, raw := range q[key] {
+			for _, part := range strings.Split(raw, ",") {
+				part = strings.TrimSpace(part)
+				if part != "" && !seen[part] {
+					out = append(out, part)
+					seen[part] = true
+				}
+			}
+		}
+		return strings.Join(out, ",")
+	}
+	f := callFilter{Q: strings.TrimSpace(q.Get("q")), Sender: multi("sender"), System: multi("system"), Site: multi("site"), Receiver: multi("receiver"), Talkgroup: multi("talkgroup"), Radio: multi("radio"), CallType: multi("call_type"), Frequency: strings.TrimSpace(q.Get("frequency")), MinDuration: strings.TrimSpace(q.Get("min_duration")), MaxDuration: strings.TrimSpace(q.Get("max_duration")), Date: q.Get("date"), From: q.Get("from"), To: q.Get("to"), Favourite: strings.TrimSpace(q.Get("favourite")), Sort: strings.TrimSpace(q.Get("sort")), SmartSort: q.Get("smart_sort") == "1", Page: 1, PageSize: 50, Patched: q.Get("patched") == "1" || strings.EqualFold(q.Get("patched"), "true")}
 	switch f.Sort {
 	case "oldest", "talkgroup", "radio", "duration", "frequency":
 	default:
@@ -1526,7 +1540,7 @@ func filterFromQuery(q url.Values) (callFilter, error) {
 }
 
 const callsFrom = ` FROM calls c LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled`
-const callsWhere = ` WHERE ($1='' OR c.search_document @@ plainto_tsquery('simple',$1) OR c.search_document::text ILIKE '%'||lower($1)||'%') AND ($2='' OR c.sender_id=$2) AND ($3='' OR c.system_id=$3) AND ($4='' OR c.site_id=$4) AND ($5='' OR c.receiver_id=$5) AND ($6='' OR c.talkgroup_id=$6) AND ($7='' OR c.radio_id=$7) AND ($8='' OR c.call_type=$8) AND ($9='' OR c.frequency ILIKE '%'||$9||'%') AND ($10='' OR c.duration_ms >= ($10::double precision*1000)) AND ($11='' OR c.duration_ms <= ($11::double precision*1000)) AND ($12='' OR c.start_time::date=$12::date) AND ($13='' OR c.start_time::date>=$13::date) AND ($14='' OR c.start_time::date<=$14::date) AND (NOT $15 OR EXISTS (SELECT 1 FROM call_targets ct WHERE ct.call_id=c.id)) AND ($16='' OR EXISTS (SELECT 1 FROM favourite_members fm WHERE fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id AND fm.group_id=$16::bigint))`
+const callsWhere = ` WHERE ($1='' OR c.search_document @@ plainto_tsquery('simple',$1) OR c.search_document::text ILIKE '%'||lower($1)||'%') AND ($2='' OR c.sender_id=ANY(string_to_array($2,','))) AND ($3='' OR c.system_id=ANY(string_to_array($3,','))) AND ($4='' OR c.site_id=ANY(string_to_array($4,','))) AND ($5='' OR c.receiver_id=ANY(string_to_array($5,','))) AND ($6='' OR c.talkgroup_id=ANY(string_to_array($6,','))) AND ($7='' OR c.radio_id=ANY(string_to_array($7,','))) AND ($8='' OR c.call_type=ANY(string_to_array($8,','))) AND ($9='' OR c.frequency ILIKE '%'||$9||'%') AND ($10='' OR c.duration_ms >= ($10::double precision*1000)) AND ($11='' OR c.duration_ms <= ($11::double precision*1000)) AND ($12='' OR c.start_time::date=$12::date) AND ($13='' OR c.start_time::date>=$13::date) AND ($14='' OR c.start_time::date<=$14::date) AND (NOT $15 OR EXISTS (SELECT 1 FROM call_targets ct WHERE ct.call_id=c.id)) AND ($16='' OR EXISTS (SELECT 1 FROM favourite_members fm WHERE fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id AND fm.group_id=$16::bigint))`
 
 func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall, int, error) {
 	args := []any{f.Q, f.Sender, f.System, f.Site, f.Receiver, f.Talkgroup, f.Radio, f.CallType, f.Frequency, f.MinDuration, f.MaxDuration, f.Date, f.From, f.To, f.Patched, f.Favourite}
@@ -1550,7 +1564,7 @@ func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall,
 	case "frequency":
 		orderBy = "c.frequency,c.start_time DESC"
 	}
-	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),coalesce(c.lcn,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.protected,c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id)` + callsFrom + callsWhere + ` ORDER BY ` + orderBy + ` LIMIT $17 OFFSET $18`
+	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.talkgroup_tag,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.radio_tag,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.voice_service,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.protected,c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id)` + callsFrom + callsWhere + ` ORDER BY ` + orderBy + ` LIMIT $17 OFFSET $18`
 	result, err := s.db.Query(ctx, query, append(args, f.PageSize, (f.Page-1)*f.PageSize)...)
 	if err != nil {
 		return nil, 0, err
@@ -1559,7 +1573,7 @@ func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall,
 	calls := []completedCall{}
 	for result.Next() {
 		var c completedCall
-		if err := result.Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.RadioID, &c.RadioName, &c.Frequency, &c.LCN, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &c.CallType, &c.Protected, &c.GroupCall, &c.Patches); err != nil {
+		if err := result.Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.TalkgroupTag, &c.RadioID, &c.RadioName, &c.RadioTag, &c.Frequency, &c.LCN, &c.VoiceService, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &c.CallType, &c.Protected, &c.GroupCall, &c.Patches); err != nil {
 			return nil, 0, err
 		}
 		calls = append(calls, c)

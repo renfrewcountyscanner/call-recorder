@@ -11,7 +11,7 @@ Status values: Missing, Partial, Complete, Better in Logger, User rejected, Bloc
 | Area | Legacy workflow | Logger status | Evidence / required work |
 |---|---|---|---|
 | Group/favourite filter | Searchable group selector | Partial | Favourite filter exists; improve multi-select/search workflow |
-| Talkgroup/radio/site/system/receiver filters | Searchable multi-selects | Partial | Server filters exist; add multi-value controls |
+| Talkgroup/radio/site/system/receiver filters | Searchable multi-selects | Partial | Server filters accept repeated/comma-separated values and bounded known-value suggestions; a full multi-select picker remains |
 | Call type | Individual/group/patch choices | Partial | Manual filter exists; expose known choices |
 | Date range/all dates | Date-range picker and all-dates toggle | Partial | From/to fields work; add clearer range UX |
 | Frequency/duration/patch/text search | Combined filtering | Complete | Query-string filters and PostgreSQL search present |
@@ -21,9 +21,9 @@ Status values: Missing, Partial, Complete, Better in Logger, User rejected, Bloc
 | Pause live updates | Pause/resume and queued count | Complete | Live toggle and queued indication present |
 | Page size/show-all | Bounded sizes and show-all behavior | Partial | 25/50/100/250 exist; implement safe large-result workflow |
 | Sorting | Sortable meaningful columns | Partial | Server-side newest/oldest/talkgroup/radio/duration/frequency sorting added; remaining displayed columns still required |
-| Column visibility/order | User-configurable grid | Missing | Add browser-local column preferences |
+| Column visibility/order | User-configurable grid | Partial | Browser-local column chooser now hides/restores compact columns; drag ordering and the legacy full column set remain |
 | Export/print | CSV/Excel/PDF/print/audio | Partial | CSV/JSON/audio/print present; assess useful export gaps |
-| Call detail | Full metadata and actions | Partial | Detail exists; compare all fields and actions |
+| Call detail | Full metadata and actions | Partial | Detail now exposes tags and voice service; remaining legacy actions/fields require authenticated comparison |
 
 ## Administration
 

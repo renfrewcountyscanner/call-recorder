@@ -39,6 +39,20 @@ func TestFilterSortIsValidatedAndShareable(t *testing.T) {
 	}
 }
 
+func TestFilterSupportsRepeatedAndCommaSeparatedValues(t *testing.T) {
+	f, err := filterFromQuery(url.Values{"system": {"alpha", "beta,gamma"}, "talkgroup": {"100,200"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.System != "alpha,beta,gamma" || f.Talkgroup != "100,200" {
+		t.Fatalf("multi-value filters were not normalized: %#v", f)
+	}
+	u := callsURL(f, "", 1)
+	if !strings.Contains(u, "system=alpha%2Cbeta%2Cgamma") || !strings.Contains(u, "talkgroup=100%2C200") {
+		t.Fatalf("multi-value filters not shareable: %s", u)
+	}
+}
+
 func TestSmartSortIsShareable(t *testing.T) {
 	f, err := filterFromQuery(url.Values{"smart_sort": {"1"}})
 	if err != nil || !f.SmartSort {

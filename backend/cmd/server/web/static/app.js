@@ -35,6 +35,33 @@
     filters.removeAttribute('open');
   }
 
+  /* Browser-local call-list column preferences. The table remains usable with
+     JavaScript disabled; this only hides optional columns after interaction. */
+  var columnDefaults = {time:true, context:true, talkgroup:true, radio:true, freq:true, duration:true, type:true};
+  function columnPrefs() {
+    try { return Object.assign({}, columnDefaults, JSON.parse(localStorage.getItem('cr-columns') || '{}')); }
+    catch (e) { return Object.assign({}, columnDefaults); }
+  }
+  function applyColumns() {
+    var prefs = columnPrefs();
+    document.querySelectorAll('[data-column-toggle]').forEach(function (box) {
+      var key = box.getAttribute('data-column-toggle'); box.checked = prefs[key] !== false;
+    });
+    document.querySelectorAll('[data-column]').forEach(function (cell) {
+      var key = cell.getAttribute('data-column'); cell.hidden = prefs[key] === false;
+    });
+  }
+  document.addEventListener('change', function (e) {
+    var box = e.target.closest ? e.target.closest('[data-column-toggle]') : null;
+    if (!box) return;
+    var prefs = columnPrefs(); prefs[box.getAttribute('data-column-toggle')] = box.checked;
+    try { localStorage.setItem('cr-columns', JSON.stringify(prefs)); } catch (err) {}
+    applyColumns();
+  });
+  on($('columns-reset'), 'click', function () { try { localStorage.removeItem('cr-columns'); } catch (e) {} applyColumns(); });
+  applyColumns();
+  document.body.addEventListener('htmx:afterSwap', applyColumns);
+
   /* ---------- Backend status ---------- */
   var dot = $('status-dot');
   if (dot && window.fetch) {

@@ -23,7 +23,7 @@
     <h2 id="d-tg">Talkgroup</h2>
     <dl>
       <dt>Alias</dt><dd>{{if .Call.TalkgroupName}}{{.Call.TalkgroupName}}{{else}}<span class="muted">none (numeric fallback)</span>{{end}}</dd>
-      <dt>ID</dt><dd class="mono">{{.Call.TalkgroupID}}</dd>
+      <dt>ID</dt><dd class="mono">{{.Call.TalkgroupID}}{{if .Call.TalkgroupTag}} · {{.Call.TalkgroupTag}}{{end}}</dd>
       <dt>Calls</dt><dd><a href="/?system={{.Call.SystemID}}&talkgroup={{.Call.TalkgroupID}}">Filtered call list</a></dd>
       {{if .Nav.Authorized}}<dt>Admin</dt><dd><a href="/admin/talkgroups?q={{.Call.TalkgroupID}}">Edit talkgroup alias</a></dd>{{end}}
     </dl>
@@ -32,7 +32,7 @@
     <h2 id="d-radio">Radio</h2>
     <dl>
       <dt>Alias</dt><dd>{{if .Call.RadioName}}{{.Call.RadioName}}{{else}}<span class="muted">none</span>{{end}}</dd>
-      <dt>ID</dt><dd class="mono">{{if .Call.RadioID}}{{.Call.RadioID}}{{else}}<span class="muted">—</span>{{end}}</dd>
+      <dt>ID</dt><dd class="mono">{{if .Call.RadioID}}{{.Call.RadioID}}{{if .Call.RadioTag}} · {{.Call.RadioTag}}{{end}}{{else}}<span class="muted">—</span>{{end}}</dd>
       {{if .Call.RadioID}}<dt>Calls</dt><dd><a href="/?system={{.Call.SystemID}}&radio={{.Call.RadioID}}">Filtered call list</a></dd>{{end}}
       {{if and .Nav.Authorized .Call.RadioID}}<dt>Admin</dt><dd><a href="/admin/radios?q={{.Call.RadioID}}">Edit radio alias</a></dd>{{end}}
     </dl>
@@ -54,6 +54,7 @@
       <dt>Frequency</dt><dd class="mono">{{if .Call.Frequency}}{{.Call.Frequency}}{{else}}<span class="muted">—</span>{{end}}</dd>
       <dt>LCN</dt><dd class="mono">{{if .Call.LCN}}{{.Call.LCN}}{{else}}<span class="muted">—</span>{{end}}</dd>
       <dt>Call type</dt><dd>{{if .Call.CallType}}{{.Call.CallType}}{{else}}<span class="muted">—</span>{{end}}</dd>
+	  <dt>Voice service</dt><dd>{{if .Call.VoiceService}}{{.Call.VoiceService}}{{else}}<span class="muted">—</span>{{end}}</dd>
 	  <dt>Classification</dt><dd>{{if .Call.GroupCall}}Group{{else}}Private or unknown{{end}}</dd>
       <dt>Audio</dt><dd class="mono">{{.Call.AudioFormat}} · {{.Call.AudioSize}} bytes</dd>
     </dl>
