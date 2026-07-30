@@ -468,10 +468,17 @@ func (s *server) adminTranscription(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
 		return
 	}
-	var enabled bool
-	var provider, endpoint, model, secret string
+	var enabled, processing, vad, prompts, secretAvailable bool
+	var provider, endpoint, model string
+	var language, allowedCIDRs, phrasePrompt string
+	var minDuration, maxDuration, maxSize int64
+	var temperature float64
+	var timeout, concurrency, retryLimit int
 	var pending, failed, done int64
-	_ = s.db.QueryRow(r.Context(), `SELECT enabled,provider,coalesce(endpoint_url,''),coalesce(model,''),coalesce(secret_ref,'') FROM transcription_config WHERE id=true`).Scan(&enabled, &provider, &endpoint, &model, &secret)
+	var heartbeat string
+	_ = s.db.QueryRow(r.Context(), `SELECT enabled,processing_enabled,provider,coalesce(endpoint_url,''),coalesce(model,''),coalesce(default_language,''),min_duration_ms,max_audio_duration_ms,max_file_size,temperature,vad_enabled,phrase_prompts_enabled,coalesce(phrase_prompt,''),request_timeout_seconds,concurrency,retry_limit,allowed_endpoint_cidrs FROM transcription_config WHERE id=true`).Scan(&enabled, &processing, &provider, &endpoint, &model, &language, &minDuration, &maxDuration, &maxSize, &temperature, &vad, &prompts, &phrasePrompt, &timeout, &concurrency, &retryLimit, &allowedCIDRs)
+	_ = s.db.QueryRow(r.Context(), `SELECT count(*)>0 FROM application_secrets WHERE purpose='transcription_api_key'`).Scan(&secretAvailable)
+	_ = s.db.QueryRow(r.Context(), `SELECT coalesce(heartbeat_at::text,'') FROM transcription_worker_heartbeat WHERE id=true`).Scan(&heartbeat)
 	_ = s.db.QueryRow(r.Context(), `SELECT count(*) FILTER(WHERE status='pending'),count(*) FILTER(WHERE status='failed'),count(*) FILTER(WHERE status='completed') FROM transcription_jobs`).Scan(&pending, &failed, &done)
 	q := r.URL.Query()
 	status := strings.TrimSpace(q.Get("status"))
@@ -519,7 +526,9 @@ func (s *server) adminTranscription(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	pages := (total + perPage - 1) / perPage
-	s.page(w, r, "admin_transcription.html", "Transcription", "transcription", map[string]any{"Enabled": enabled, "Provider": provider, "Endpoint": endpoint, "Model": model, "Secret": secret, "Pending": pending, "Failed": failed, "Completed": done, "Jobs": jobs, "Total": total, "Page": page, "Pages": pages, "StatusFilter": status, "ProviderFilter": providerFilter, "CallFilter": callFilter, "Date": date, "FailedOnly": failedOnly, "ReturnURL": r.URL.RequestURI()})
+	saved := r.URL.Query().Get("saved") == "1"
+	removed := r.URL.Query().Get("removed") == "1"
+	s.page(w, r, "admin_transcription.html", "Transcription", "transcription", map[string]any{"Enabled": enabled, "Processing": processing, "Provider": provider, "Endpoint": endpoint, "Model": model, "Language": language, "MinDurationSeconds": float64(minDuration) / 1000, "MaxDurationMinutes": float64(maxDuration) / 60000, "MaxFileSizeMB": float64(maxSize) / (1024 * 1024), "Temperature": temperature, "VAD": vad, "PhrasePrompts": prompts, "PhrasePrompt": phrasePrompt, "Timeout": timeout, "Concurrency": concurrency, "RetryLimit": retryLimit, "AllowedCIDRs": allowedCIDRs, "SecretAvailable": secretAvailable, "Heartbeat": heartbeat, "Pending": pending, "Failed": failed, "Completed": done, "Jobs": jobs, "Total": total, "Page": page, "Pages": pages, "StatusFilter": status, "ProviderFilter": providerFilter, "CallFilter": callFilter, "Date": date, "FailedOnly": failedOnly, "ReturnURL": r.URL.RequestURI(), "Saved": saved, "Removed": removed})
 }
 
 func (s *server) adminRetryTranscription(w http.ResponseWriter, r *http.Request) {
@@ -538,6 +547,48 @@ func (s *server) adminRetryTranscription(w http.ResponseWriter, r *http.Request)
 	http.Redirect(w, r, safeAdminReturn(r.FormValue("return"), "/admin/transcription"), 303)
 }
 
+func (s *server) adminSaveTranscriptionSecret(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", 400)
+		return
+	}
+	value := r.FormValue("api_key")
+	if value == "" || len(value) > 4096 {
+		http.Error(w, "API key is required and must be short enough", 400)
+		return
+	}
+	ciphertext, nonce, err := encryptSecret(s.masterKey, []byte(value))
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	identity := strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email"))
+	if identity == "" {
+		identity = "admin-token"
+	}
+	_, err = s.db.Exec(r.Context(), `INSERT INTO application_secrets(purpose,display_name,ciphertext,nonce,encryption_version,updated_by) VALUES('transcription_api_key','Transcription provider API key',$1,$2,1,$3) ON CONFLICT(purpose) DO UPDATE SET ciphertext=EXCLUDED.ciphertext,nonce=EXCLUDED.nonce,encryption_version=1,updated_by=EXCLUDED.updated_by,updated_at=now()`, ciphertext, nonce, identity)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	http.Redirect(w, r, "/admin/transcription?saved=1", 303)
+}
+
+func (s *server) adminRemoveTranscriptionSecret(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	_, err := s.db.Exec(r.Context(), `DELETE FROM application_secrets WHERE purpose='transcription_api_key'`)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	http.Redirect(w, r, "/admin/transcription?removed=1", 303)
+}
+
 func (s *server) adminSaveTranscriptionConfig(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
 		return
@@ -546,17 +597,42 @@ func (s *server) adminSaveTranscriptionConfig(w http.ResponseWriter, r *http.Req
 		http.Error(w, "invalid form", 400)
 		return
 	}
-	maxSize, _ := strconv.ParseInt(r.FormValue("max_file_size"), 10, 64)
-	maxDur, _ := strconv.ParseInt(r.FormValue("max_duration_ms"), 10, 64)
+	parseFloat := func(name string) float64 {
+		v, _ := strconv.ParseFloat(strings.TrimSpace(r.FormValue(name)), 64)
+		return v
+	}
+	maxSize := int64(parseFloat("max_file_size_mb") * 1024 * 1024)
+	maxDur := int64(parseFloat("max_duration_minutes") * 60000)
+	minDur := int64(parseFloat("min_duration_seconds") * 1000)
+	if maxSize <= 0 {
+		maxSize = 50 * 1024 * 1024
+	}
+	if maxDur <= 0 {
+		maxDur = 15 * 60000
+	}
+	if minDur < 0 {
+		minDur = 0
+	}
 	concurrency, _ := strconv.Atoi(r.FormValue("concurrency"))
 	retries, _ := strconv.Atoi(r.FormValue("retry_limit"))
+	timeout, _ := strconv.Atoi(r.FormValue("request_timeout_seconds"))
+	temperature, _ := strconv.ParseFloat(r.FormValue("temperature"), 64)
 	if concurrency < 1 {
 		concurrency = 1
 	}
 	if retries < 0 {
 		retries = 0
 	}
-	_, err := s.db.Exec(r.Context(), `UPDATE transcription_config SET enabled=$1,provider=$2,default_language=NULLIF($3,''),endpoint_url=NULLIF($4,''),model=NULLIF($5,''),secret_ref=NULLIF($6,''),max_file_size=$7,max_audio_duration_ms=$8,concurrency=$9,retry_limit=$10,updated_at=now() WHERE id=true`, r.FormValue("enabled") == "on", strings.TrimSpace(r.FormValue("provider")), strings.TrimSpace(r.FormValue("language")), strings.TrimSpace(r.FormValue("endpoint")), strings.TrimSpace(r.FormValue("model")), strings.TrimSpace(r.FormValue("secret_ref")), maxSize, maxDur, concurrency, retries)
+	if timeout < 1 {
+		timeout = 60
+	}
+	if temperature < 0 {
+		temperature = 0
+	}
+	if temperature > 2 {
+		temperature = 2
+	}
+	_, err := s.db.Exec(r.Context(), `UPDATE transcription_config SET enabled=$1,processing_enabled=$2,provider=$3,default_language=NULLIF($4,''),endpoint_url=NULLIF($5,''),model=NULLIF($6,''),max_file_size=$7,max_audio_duration_ms=$8,min_duration_ms=$9,temperature=$10,vad_enabled=$11,phrase_prompts_enabled=$12,phrase_prompt=NULLIF($13,''),request_timeout_seconds=$14,concurrency=$15,retry_limit=$16,allowed_endpoint_cidrs=$17,updated_at=now() WHERE id=true`, r.FormValue("enabled") == "on", r.FormValue("processing_enabled") == "on", strings.TrimSpace(r.FormValue("provider")), strings.TrimSpace(r.FormValue("language")), strings.TrimSpace(r.FormValue("endpoint")), strings.TrimSpace(r.FormValue("model")), maxSize, maxDur, minDur, temperature, r.FormValue("vad_enabled") == "on", r.FormValue("phrase_prompts_enabled") == "on", r.FormValue("phrase_prompt"), timeout, concurrency, retries, strings.TrimSpace(r.FormValue("allowed_endpoint_cidrs")))
 	if err != nil {
 		s.internal(w, err)
 		return

@@ -23,6 +23,15 @@ curl -fsS -b "$work/cookie" http://127.0.0.1:18080/admin/retention | grep -q 'sy
 curl -fsS -b "$work/cookie" http://127.0.0.1:18080/admin/favourites | grep -q 'Favourite groups'
 curl -fsS -b "$work/cookie" http://127.0.0.1:18080/admin/notifications | grep -q 'Notifications'
 curl -fsS -b "$work/cookie" http://127.0.0.1:18080/admin/transcription | grep -q 'Transcription'
+secret_page=$(curl -fsSL -b "$work/cookie" -d 'api_key=synthetic-transcription-key' http://127.0.0.1:18080/admin/transcription/secret)
+printf '%s' "$secret_page" | grep -q 'API key configured'
+if printf '%s' "$secret_page" | grep -q 'synthetic-transcription-key'; then echo 'secret disclosure'; exit 1; fi
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select octet_length(ciphertext)>0 and octet_length(nonce)>0 from application_secrets where purpose='transcription_api_key'")" = t
+curl -fsSL -b "$work/cookie" -d 'api_key=synthetic-transcription-key-2' http://127.0.0.1:18080/admin/transcription/secret >/dev/null
+curl -fsSL -b "$work/cookie" -d '' http://127.0.0.1:18080/admin/transcription/secret/remove >/dev/null
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select count(*) from application_secrets where purpose='transcription_api_key'")" = 0
+curl -fsSL -b "$work/cookie" -d 'enabled=on&processing_enabled=on&provider=openai-compatible&endpoint=http%3A%2F%2Ffake-transcriber%3A9912%2Fv1%2Faudio%2Ftranscriptions&model=whisper-v3&language=en&min_duration_seconds=0.5&max_duration_minutes=15&max_file_size_mb=50&temperature=0&vad_enabled=on&request_timeout_seconds=60&concurrency=1&retry_limit=3&allowed_endpoint_cidrs=192.168.2.2%2F32' http://127.0.0.1:18080/admin/transcription/config >/dev/null
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select min_duration_ms||','||max_audio_duration_ms||','||max_file_size||','||processing_enabled from transcription_config where id=true")" = '500,900000,52428800,true'
 curl -fsS -b "$work/cookie" -d 'name=synthetic-favourites&description=web-test&display_order=1&enabled=on' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/favourites | grep -q 303
 group_id=$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select id from favourite_groups where name='synthetic-favourites'")
 curl -fsS -b "$work/cookie" -d "group_id=$group_id&system_id=system-z&talkgroup_id=900" -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/favourites/member | grep -q 303

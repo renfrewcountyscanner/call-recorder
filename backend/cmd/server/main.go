@@ -61,6 +61,7 @@ type config struct {
 	CloudflareAccessEnabled   bool
 	CloudflareAdminEmail      string
 	CloudflareTrustedProxyIPs []string
+	SecretsRoot               string
 }
 
 type server struct {
@@ -68,6 +69,7 @@ type server struct {
 	db        *pgxpool.Pool
 	logger    *slog.Logger
 	templates *template.Template
+	masterKey []byte
 }
 
 type callMetadata struct {
@@ -150,7 +152,12 @@ func main() {
 		slog.Error("ping postgres", "error", err)
 		os.Exit(2)
 	}
-	s := &server{cfg: cfg, db: pool, logger: slog.Default(), templates: template.Must(template.New("cr").Funcs(template.FuncMap{"dur": formatDuration, "tdate": formatTimePtr, "srcBadge": sourceBadge, "inc": func(n int) int { return n + 1 }, "dec": func(n int) int { return n - 1 }, "slice": func(v ...string) []string { return v }}).ParseFS(templatesFS, "web/templates/*.html"))}
+	masterKey, err := loadSecretMasterKey(cfg.SecretsRoot)
+	if err != nil {
+		slog.Error("load application secrets key", "error", err)
+		os.Exit(2)
+	}
+	s := &server{cfg: cfg, db: pool, logger: slog.Default(), masterKey: masterKey, templates: template.Must(template.New("cr").Funcs(template.FuncMap{"dur": formatDuration, "tdate": formatTimePtr, "srcBadge": sourceBadge, "inc": func(n int) int { return n + 1 }, "dec": func(n int) int { return n - 1 }, "slice": func(v ...string) []string { return v }}).ParseFS(templatesFS, "web/templates/*.html"))}
 	if err := s.bootstrapSender(context.Background()); err != nil {
 		slog.Error("bootstrap sender", "error", err)
 		os.Exit(2)
@@ -207,6 +214,8 @@ func main() {
 		mux.HandleFunc("POST /admin/transcription/queue/", s.adminQueueTranscription)
 		mux.HandleFunc("POST /admin/transcription/retry", s.adminRetryTranscription)
 		mux.HandleFunc("POST /admin/transcription/config", s.adminSaveTranscriptionConfig)
+		mux.HandleFunc("POST /admin/transcription/secret", s.adminSaveTranscriptionSecret)
+		mux.HandleFunc("POST /admin/transcription/secret/remove", s.adminRemoveTranscriptionSecret)
 		mux.HandleFunc("POST /admin/transcription/edit", s.adminEditTranscript)
 		mux.HandleFunc("POST /admin/talkgroups", s.adminSaveTalkgroup)
 		mux.HandleFunc("GET /admin/radios", s.adminRadios)
@@ -233,7 +242,7 @@ func main() {
 }
 
 func loadConfig() config {
-	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyDebug: env("CALL_RECORDER_LEGACY_DEBUG", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminOpen: env("CALL_RECORDER_ADMIN_OPEN", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS"))}
+	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), SecretsRoot: env("CALL_RECORDER_SECRETS_ROOT", "/var/lib/call-recorder/secrets"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyDebug: env("CALL_RECORDER_LEGACY_DEBUG", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminOpen: env("CALL_RECORDER_ADMIN_OPEN", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS"))}
 }
 func splitCSV(value string) []string {
 	var out []string

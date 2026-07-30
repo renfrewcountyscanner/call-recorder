@@ -102,6 +102,28 @@ func TestValidateMetadata(t *testing.T) {
 		t.Fatal("expected format rejection")
 	}
 }
+
+func TestApplicationSecretEncryptionRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	key, err := loadSecretMasterKey(dir)
+	if err != nil || len(key) != secretKeySize {
+		t.Fatalf("master key: %v", err)
+	}
+	if got, _ := os.Stat(filepath.Join(dir, "master.key")); got.Mode().Perm() != 0o600 {
+		t.Fatalf("master key permissions: %o", got.Mode().Perm())
+	}
+	ciphertext, nonce, err := encryptSecret(key, []byte("synthetic-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := decryptSecret(key, ciphertext, nonce)
+	if err != nil || string(plain) != "synthetic-key" {
+		t.Fatalf("decrypt: %q %v", plain, err)
+	}
+	if _, err := decryptSecret(make([]byte, secretKeySize), ciphertext, nonce); err == nil {
+		t.Fatal("wrong key decrypted secret")
+	}
+}
 func TestValidateAudioHeader(t *testing.T) {
 	dir := t.TempDir()
 	wav := filepath.Join(dir, "a.wav")

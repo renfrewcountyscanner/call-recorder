@@ -17,3 +17,14 @@ rm -rf "$root/runtime/audio"
 mv "$staging/audio" "$root/runtime/audio"
 chown -R 10001:10001 "$root/runtime/audio"
 chmod 750 "$root/runtime/audio"
+if [ -f "$backup/secrets.tar.gz" ]; then
+  staging_secrets=$(mktemp -d "$root/runtime/.secrets-restore.XXXXXX")
+  tar -C "$staging_secrets" -xzf "$backup/secrets.tar.gz"
+  test -f "$staging_secrets/secrets/master.key"
+  chmod 600 "$staging_secrets/secrets/master.key"
+  rm -rf "$root/runtime/secrets"
+  mv "$staging_secrets/secrets" "$root/runtime/secrets"
+  chown -R 10001:10001 "$root/runtime/secrets"
+  chmod 750 "$root/runtime/secrets"
+  rm -rf "$staging_secrets"
+fi
