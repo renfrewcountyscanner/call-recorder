@@ -46,7 +46,7 @@ func main() {
 		return
 	}
 	if os.Args[1] == "transcription" {
-		transcription(pool, os.Args[2:])
+		transcriptionCommand(pool, os.Args[2:])
 		return
 	}
 	if os.Args[1] != "sender" || len(os.Args) < 3 {

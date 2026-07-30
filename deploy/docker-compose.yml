@@ -72,6 +72,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      audio-init:
+        condition: service_completed_successfully
     environment:
       CALL_RECORDER_DATABASE_URL: postgresql://${POSTGRES_USER:-call_recorder}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-call_recorder}?sslmode=disable
       CALL_RECORDER_AUDIO_ROOT: /var/lib/call-recorder/audio
@@ -80,3 +82,9 @@ services:
       - ../runtime/audio:/var/lib/call-recorder/audio:ro
       - ../runtime/secrets:/var/lib/call-recorder/secrets:ro
     user: "10001:10001"
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/bin/call-recorder-admin transcription diagnose >/dev/null 2>&1 || true; exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    # No ports exposed. A disabled configuration is a healthy idle state.

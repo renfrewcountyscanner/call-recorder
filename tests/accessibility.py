@@ -58,6 +58,10 @@ try:
     wait_css("#alias-form")
     failures += audit("radio administration", driver)
 
+    driver.get(BASE + "/admin/transcription")
+    wait_css("h1")
+    failures += audit("transcription administration", driver)
+
     driver.get(BASE + "/admin/retention")
     wait_css("h1")
     failures += audit("retention administration", driver)

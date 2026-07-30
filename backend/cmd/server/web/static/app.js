@@ -121,6 +121,12 @@
     if (source && btn.dataset.source) source.value = btn.dataset.source === 'received' ? 'manual' : btn.dataset.source;
     var enabled = form.elements['enabled'];
     if (enabled) enabled.checked = btn.dataset.enabled === 'true';
+    var transcriptionEnabled = form.elements['transcription_enabled'];
+    if (transcriptionEnabled) transcriptionEnabled.checked = btn.dataset.transcription_enabled === 'true';
+    var transcriptionLanguage = form.elements['transcription_language'];
+    if (transcriptionLanguage && btn.dataset.transcription_language !== undefined) transcriptionLanguage.value = btn.dataset.transcription_language;
+    var notificationEligible = form.elements['notification_eligible'];
+    if (notificationEligible) notificationEligible.checked = btn.dataset.notification_eligible !== 'false';
     var heading = $('alias-form-heading');
     if (heading) heading.textContent = 'Edit alias ' + (btn.dataset.system || '') + ' / ' + (btn.dataset.id || '');
     var aliasField = form.elements['alias'];

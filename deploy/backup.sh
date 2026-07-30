@@ -3,12 +3,17 @@ set -eu
 umask 077
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 compose="$root/deploy/docker-compose.yml"
+docker_compose="${COMPOSE:-docker compose}"
 destination=${1:?usage: backup.sh DESTINATION_DIRECTORY}
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 backup="$destination/call-recorder-$timestamp"
 mkdir -p "$backup"
-git_commit=$(git -C "$root" rev-parse HEAD)
-docker-compose -f "$compose" exec -T postgres pg_dump -U "${POSTGRES_USER:-call_recorder}" -d "${POSTGRES_DB:-call_recorder}" -Fc > "$backup/postgres.dump"
+if git -C "$root" rev-parse HEAD >/dev/null 2>&1; then
+  git_commit=$(git -C "$root" rev-parse HEAD)
+else
+  git_commit=unknown
+fi
+$docker_compose -f "$compose" exec -T postgres pg_dump -U "${POSTGRES_USER:-call_recorder}" -d "${POSTGRES_DB:-call_recorder}" -Fc > "$backup/postgres.dump"
 tar -C "$root/runtime" -czf "$backup/audio.tar.gz" audio
 if [ -d "$root/runtime/secrets" ]; then tar -C "$root/runtime" -czf "$backup/secrets.tar.gz" secrets; fi
 test -s "$backup/postgres.dump"

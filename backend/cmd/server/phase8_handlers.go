@@ -1,12 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/renfrewcountyscanner/call-recorder/backend/internal/transcription"
 )
 
 func (s *server) enqueueNotifications(ctx context.Context, callID string) {
@@ -464,22 +471,59 @@ func (s *server) adminSaveNotificationRule(w http.ResponseWriter, r *http.Reques
 	http.Redirect(w, r, "/admin/notifications", 303)
 }
 
+type transcriptionStatus struct {
+	Enabled, Processing, SecretAvailable, EndpointAllowed, WorkerOnline bool
+	Provider, ProviderType, Endpoint, Model, Language, AllowedCIDRs    string
+	PhrasePrompt                                                       string
+	MinDurationMS, MaxAudioDurationMS, MaxFileSize                     int64
+	Temperature                                                        float64
+	VADEnabled, PhrasePromptsEnabled                                   bool
+	Timeout, Concurrency, RetryLimit                                   int
+	Pending, Failed, Completed                                         int64
+	Heartbeat                                                        *time.Time
+	LastTestAt                                                       *time.Time
+	LastTestOK                                                       *bool
+	LastTestError                                                    string
+}
+
+func (s *server) loadTranscriptionStatus(ctx context.Context) (transcriptionStatus, error) {
+	var st transcriptionStatus
+	var heartbeat, lastTestAt *time.Time
+	var lastTestOK *bool
+	err := s.db.QueryRow(ctx, `SELECT enabled,processing_enabled,provider,provider_type,coalesce(endpoint_url,''),coalesce(model,''),coalesce(default_language,''),min_duration_ms,max_audio_duration_ms,max_file_size,temperature,vad_enabled,phrase_prompts_enabled,coalesce(phrase_prompt,''),request_timeout_seconds,concurrency,retry_limit,allowed_endpoint_cidrs,heartbeat_at,last_test_at,last_test_ok,coalesce(last_test_error,'') FROM transcription_config LEFT JOIN transcription_worker_heartbeat ON true WHERE transcription_config.id=true`).Scan(
+		&st.Enabled, &st.Processing, &st.Provider, &st.ProviderType, &st.Endpoint, &st.Model, &st.Language,
+		&st.MinDurationMS, &st.MaxAudioDurationMS, &st.MaxFileSize, &st.Temperature, &st.VADEnabled, &st.PhrasePromptsEnabled, &st.PhrasePrompt,
+		&st.Timeout, &st.Concurrency, &st.RetryLimit, &st.AllowedCIDRs,
+		&heartbeat, &lastTestAt, &lastTestOK, &st.LastTestError)
+	if err != nil {
+		return st, err
+	}
+	st.Heartbeat = heartbeat
+	st.LastTestAt = lastTestAt
+	st.LastTestOK = lastTestOK
+	if st.Heartbeat != nil && time.Since(*st.Heartbeat) < 2*time.Minute {
+		st.WorkerOnline = true
+	}
+	_ = s.db.QueryRow(ctx, `SELECT count(*)>0 FROM application_secrets WHERE purpose='transcription_api_key'`).Scan(&st.SecretAvailable)
+	_ = s.db.QueryRow(ctx, `SELECT count(*) FILTER(WHERE status='pending'),count(*) FILTER(WHERE status='failed'),count(*) FILTER(WHERE status='completed') FROM transcription_jobs`).Scan(&st.Pending, &st.Failed, &st.Completed)
+	if st.Endpoint != "" {
+		if _, e := transcription.HTTPClient(st.Endpoint, st.AllowedCIDRs); e == nil {
+			st.EndpointAllowed = true
+		}
+	}
+	return st, nil
+}
+
 func (s *server) adminTranscription(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
 		return
 	}
-	var enabled, processing, vad, prompts, secretAvailable bool
-	var provider, endpoint, model string
-	var language, allowedCIDRs, phrasePrompt string
-	var minDuration, maxDuration, maxSize int64
-	var temperature float64
-	var timeout, concurrency, retryLimit int
-	var pending, failed, done int64
-	var heartbeat string
-	_ = s.db.QueryRow(r.Context(), `SELECT enabled,processing_enabled,provider,coalesce(endpoint_url,''),coalesce(model,''),coalesce(default_language,''),min_duration_ms,max_audio_duration_ms,max_file_size,temperature,vad_enabled,phrase_prompts_enabled,coalesce(phrase_prompt,''),request_timeout_seconds,concurrency,retry_limit,allowed_endpoint_cidrs FROM transcription_config WHERE id=true`).Scan(&enabled, &processing, &provider, &endpoint, &model, &language, &minDuration, &maxDuration, &maxSize, &temperature, &vad, &prompts, &phrasePrompt, &timeout, &concurrency, &retryLimit, &allowedCIDRs)
-	_ = s.db.QueryRow(r.Context(), `SELECT count(*)>0 FROM application_secrets WHERE purpose='transcription_api_key'`).Scan(&secretAvailable)
-	_ = s.db.QueryRow(r.Context(), `SELECT coalesce(heartbeat_at::text,'') FROM transcription_worker_heartbeat WHERE id=true`).Scan(&heartbeat)
-	_ = s.db.QueryRow(r.Context(), `SELECT count(*) FILTER(WHERE status='pending'),count(*) FILTER(WHERE status='failed'),count(*) FILTER(WHERE status='completed') FROM transcription_jobs`).Scan(&pending, &failed, &done)
+	ctx := r.Context()
+	st, err := s.loadTranscriptionStatus(ctx)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
 	q := r.URL.Query()
 	status := strings.TrimSpace(q.Get("status"))
 	providerFilter := strings.TrimSpace(q.Get("provider"))
@@ -507,9 +551,9 @@ func (s *server) adminTranscription(w http.ResponseWriter, r *http.Request) {
 	}
 	clause := strings.Join(where, " AND ")
 	var total int
-	_ = s.db.QueryRow(r.Context(), `SELECT count(*) FROM transcription_jobs j WHERE `+clause, args...).Scan(&total)
+	_ = s.db.QueryRow(ctx, `SELECT count(*) FROM transcription_jobs j WHERE `+clause, args...).Scan(&total)
 	args = append(args, perPage, (page-1)*perPage)
-	rows, _ := s.db.Query(r.Context(), `SELECT j.id,j.call_id,j.status,j.provider,j.attempt_count,coalesce(j.error,''),coalesce(j.created_at::text,''),coalesce(j.completed_at::text,'') FROM transcription_jobs j WHERE `+clause+fmt.Sprintf(` ORDER BY j.id DESC LIMIT $%d OFFSET $%d`, len(args)-1, len(args)), args...)
+	rows, _ := s.db.Query(ctx, `SELECT j.id,j.call_id,j.status,j.provider,j.attempt_count,coalesce(j.error,''),coalesce(j.created_at::text,''),coalesce(j.completed_at::text,'') FROM transcription_jobs j WHERE `+clause+fmt.Sprintf(` ORDER BY j.id DESC LIMIT $%d OFFSET $%d`, len(args)-1, len(args)), args...)
 	type job struct {
 		ID                                                int64
 		Call, Status, Provider, Error, Created, Completed string
@@ -526,9 +570,48 @@ func (s *server) adminTranscription(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	pages := (total + perPage - 1) / perPage
-	saved := r.URL.Query().Get("saved") == "1"
-	removed := r.URL.Query().Get("removed") == "1"
-	s.page(w, r, "admin_transcription.html", "Transcription", "transcription", map[string]any{"Enabled": enabled, "Processing": processing, "Provider": provider, "Endpoint": endpoint, "Model": model, "Language": language, "MinDurationSeconds": float64(minDuration) / 1000, "MaxDurationMinutes": float64(maxDuration) / 60000, "MaxFileSizeMB": float64(maxSize) / (1024 * 1024), "Temperature": temperature, "VAD": vad, "PhrasePrompts": prompts, "PhrasePrompt": phrasePrompt, "Timeout": timeout, "Concurrency": concurrency, "RetryLimit": retryLimit, "AllowedCIDRs": allowedCIDRs, "SecretAvailable": secretAvailable, "Heartbeat": heartbeat, "Pending": pending, "Failed": failed, "Completed": done, "Jobs": jobs, "Total": total, "Page": page, "Pages": pages, "StatusFilter": status, "ProviderFilter": providerFilter, "CallFilter": callFilter, "Date": date, "FailedOnly": failedOnly, "ReturnURL": r.URL.RequestURI(), "Saved": saved, "Removed": removed})
+
+	// Talkgroups eligible for transcription
+	tgRows, err := s.db.Query(ctx, `SELECT a.system_id,a.talkgroup_id,coalesce(a.alias,''),a.transcription_enabled,coalesce(a.transcription_language,''),count(c.id) FROM talkgroup_aliases a LEFT JOIN calls c ON c.system_id=a.system_id AND c.talkgroup_id=a.talkgroup_id WHERE ($1='' OR a.system_id ILIKE '%'||$1||'%' OR a.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(a.alias,'') ILIKE '%'||$1||'%') GROUP BY a.system_id,a.talkgroup_id,a.alias,a.transcription_enabled,a.transcription_language ORDER BY a.system_id,a.talkgroup_id LIMIT 250`, strings.TrimSpace(q.Get("tgq")))
+	type tgRow struct {
+		System, ID, Alias, Language string
+		Enabled                     bool
+		Calls                       int64
+	}
+	talkgroups := []tgRow{}
+	var enabledCount int64
+	if err == nil {
+		defer tgRows.Close()
+		for tgRows.Next() {
+			var t tgRow
+			if tgRows.Scan(&t.System, &t.ID, &t.Alias, &t.Enabled, &t.Language, &t.Calls) == nil {
+				talkgroups = append(talkgroups, t)
+				if t.Enabled {
+					enabledCount++
+				}
+			}
+		}
+	}
+
+	saved := q.Get("saved") == "1"
+	removed := q.Get("removed") == "1"
+	tested := q.Get("tested") == "1"
+	s.page(w, r, "admin_transcription.html", "Transcription", "transcription", map[string]any{
+		"Enabled": st.Enabled, "Processing": st.Processing, "Provider": st.Provider, "ProviderType": st.ProviderType,
+		"Endpoint": st.Endpoint, "Model": st.Model, "Language": st.Language,
+		"MinDurationSeconds": float64(st.MinDurationMS) / 1000, "MaxDurationMinutes": float64(st.MaxAudioDurationMS) / 60000,
+		"MaxFileSizeMB": float64(st.MaxFileSize) / (1024 * 1024), "Temperature": st.Temperature,
+		"VAD": st.VADEnabled, "PhrasePrompts": st.PhrasePromptsEnabled, "PhrasePrompt": st.PhrasePrompt,
+		"Timeout": st.Timeout, "Concurrency": st.Concurrency, "RetryLimit": st.RetryLimit,
+		"AllowedCIDRs": st.AllowedCIDRs, "SecretAvailable": st.SecretAvailable,
+		"EndpointAllowed": st.EndpointAllowed, "WorkerOnline": st.WorkerOnline,
+		"Heartbeat": st.Heartbeat, "Pending": st.Pending, "Failed": st.Failed, "Completed": st.Completed,
+		"LastTestAt": st.LastTestAt, "LastTestOK": st.LastTestOK, "LastTestError": st.LastTestError,
+		"Jobs": jobs, "Total": total, "Page": page, "Pages": pages,
+		"StatusFilter": status, "ProviderFilter": providerFilter, "CallFilter": callFilter, "Date": date, "FailedOnly": failedOnly,
+		"ReturnURL": r.URL.RequestURI(), "Saved": saved, "Removed": removed, "Tested": tested,
+		"Talkgroups": talkgroups, "TalkgroupSearch": strings.TrimSpace(q.Get("tgq")), "EnabledTalkgroupCount": enabledCount,
+	})
 }
 
 func (s *server) adminRetryTranscription(w http.ResponseWriter, r *http.Request) {
@@ -540,7 +623,11 @@ func (s *server) adminRetryTranscription(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "invalid job", 400)
 		return
 	}
-	if _, err := s.db.Exec(r.Context(), `UPDATE transcription_jobs SET status='pending',next_attempt_at=now(),error=NULL,updated_at=now() WHERE id=$1`, id); err != nil {
+	identity := strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email"))
+	if identity == "" {
+		identity = "admin-token"
+	}
+	if _, err := s.db.Exec(r.Context(), `UPDATE transcription_jobs SET status='pending',next_attempt_at=now(),error=NULL,retry_identity=$2,retry_at=now(),updated_at=now() WHERE id=$1`, id, identity); err != nil {
 		s.internal(w, err)
 		return
 	}
@@ -620,6 +707,9 @@ func (s *server) adminSaveTranscriptionConfig(w http.ResponseWriter, r *http.Req
 	if concurrency < 1 {
 		concurrency = 1
 	}
+	if concurrency > 8 {
+		concurrency = 8
+	}
 	if retries < 0 {
 		retries = 0
 	}
@@ -632,7 +722,18 @@ func (s *server) adminSaveTranscriptionConfig(w http.ResponseWriter, r *http.Req
 	if temperature > 2 {
 		temperature = 2
 	}
-	_, err := s.db.Exec(r.Context(), `UPDATE transcription_config SET enabled=$1,processing_enabled=$2,provider=$3,default_language=NULLIF($4,''),endpoint_url=NULLIF($5,''),model=NULLIF($6,''),max_file_size=$7,max_audio_duration_ms=$8,min_duration_ms=$9,temperature=$10,vad_enabled=$11,phrase_prompts_enabled=$12,phrase_prompt=NULLIF($13,''),request_timeout_seconds=$14,concurrency=$15,retry_limit=$16,allowed_endpoint_cidrs=$17,updated_at=now() WHERE id=true`, r.FormValue("enabled") == "on", r.FormValue("processing_enabled") == "on", strings.TrimSpace(r.FormValue("provider")), strings.TrimSpace(r.FormValue("language")), strings.TrimSpace(r.FormValue("endpoint")), strings.TrimSpace(r.FormValue("model")), maxSize, maxDur, minDur, temperature, r.FormValue("vad_enabled") == "on", r.FormValue("phrase_prompts_enabled") == "on", r.FormValue("phrase_prompt"), timeout, concurrency, retries, strings.TrimSpace(r.FormValue("allowed_endpoint_cidrs")))
+	providerType := strings.TrimSpace(r.FormValue("provider_type"))
+	if providerType != "faster-whisper" {
+		providerType = "openai-compatible"
+	}
+	allowedCIDRs := strings.TrimSpace(r.FormValue("allowed_endpoint_cidrs"))
+	if allowedCIDRs != "" {
+		if err := transcription.ValidateAllowedCIDRs(allowedCIDRs); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	_, err := s.db.Exec(r.Context(), `UPDATE transcription_config SET enabled=$1,processing_enabled=$2,provider=$3,provider_type=$4,default_language=NULLIF($5,''),endpoint_url=NULLIF($6,''),model=NULLIF($7,''),max_file_size=$8,max_audio_duration_ms=$9,min_duration_ms=$10,temperature=$11,vad_enabled=$12,phrase_prompts_enabled=$13,phrase_prompt=NULLIF($14,''),request_timeout_seconds=$15,concurrency=$16,retry_limit=$17,allowed_endpoint_cidrs=$18,updated_at=now() WHERE id=true`, r.FormValue("enabled") == "on", r.FormValue("processing_enabled") == "on", strings.TrimSpace(r.FormValue("provider")), providerType, strings.TrimSpace(r.FormValue("language")), strings.TrimSpace(r.FormValue("endpoint")), strings.TrimSpace(r.FormValue("model")), maxSize, maxDur, minDur, temperature, r.FormValue("vad_enabled") == "on", r.FormValue("phrase_prompts_enabled") == "on", r.FormValue("phrase_prompt"), timeout, concurrency, retries, allowedCIDRs)
 	if err != nil {
 		s.internal(w, err)
 		return
@@ -654,13 +755,79 @@ func (s *server) adminEditTranscript(w http.ResponseWriter, r *http.Request) {
 	if identity == "" {
 		identity = "admin-token"
 	}
-	_, err := s.db.Exec(r.Context(), `UPDATE transcripts SET edited_text=$2,edited_at=now(),edited_by=$3,updated_at=now() WHERE id=$1`, id, text, identity)
+	var callID string
+	err := s.db.QueryRow(r.Context(), `UPDATE transcripts SET edited_text=$2,edited_at=now(),edited_by=$3,updated_at=now() WHERE id=$1 RETURNING call_id`, id, text, identity).Scan(&callID)
 	if err != nil {
 		s.internal(w, err)
 		return
 	}
+	_, _ = s.db.Exec(r.Context(), `UPDATE calls SET search_document=to_tsvector('simple',coalesce(search_document::text,'')||' '||$2) WHERE id=$1`, callID, text)
 	http.Redirect(w, r, "/admin/transcription", 303)
 }
+type transcriptionEligibilityResult struct {
+	Eligible bool
+	Reason   string
+}
+
+func (s *server) transcriptionEligibility(ctx context.Context, callID string) (transcriptionEligibilityResult, error) {
+	var cfg struct {
+		Enabled, Processing bool
+		Provider            string
+		MaxFileSize         int64
+		MinDurationMS       int64
+		MaxAudioDurationMS  int64
+	}
+	err := s.db.QueryRow(ctx, `SELECT enabled,processing_enabled,provider,max_file_size,min_duration_ms,max_audio_duration_ms FROM transcription_config WHERE id=true`).Scan(&cfg.Enabled, &cfg.Processing, &cfg.Provider, &cfg.MaxFileSize, &cfg.MinDurationMS, &cfg.MaxAudioDurationMS)
+	if err != nil {
+		return transcriptionEligibilityResult{}, err
+	}
+	if !cfg.Enabled {
+		return transcriptionEligibilityResult{Reason: "Provider is disabled."}, nil
+	}
+	if !cfg.Processing {
+		return transcriptionEligibilityResult{Reason: "Processing is disabled."}, nil
+	}
+	var secretAvailable bool
+	_ = s.db.QueryRow(ctx, `SELECT count(*)>0 FROM application_secrets WHERE purpose='transcription_api_key'`).Scan(&secretAvailable)
+	if !secretAvailable {
+		return transcriptionEligibilityResult{Reason: "API key is not configured."}, nil
+	}
+	var c struct {
+		System, Talkgroup, AudioPath, AudioFormat string
+		DurationMS, AudioSize                     int64
+	}
+	err = s.db.QueryRow(ctx, `SELECT system_id,talkgroup_id,audio_path,audio_format,duration_ms,audio_size FROM calls WHERE id=$1`, callID).Scan(&c.System, &c.Talkgroup, &c.AudioPath, &c.AudioFormat, &c.DurationMS, &c.AudioSize)
+	if err != nil {
+		return transcriptionEligibilityResult{}, err
+	}
+	if c.AudioPath == "" {
+		return transcriptionEligibilityResult{Reason: "Call has no audio file."}, nil
+	}
+	if c.AudioFormat != "mp3" && c.AudioFormat != "wav" {
+		return transcriptionEligibilityResult{Reason: fmt.Sprintf("Audio format %q is not supported.", c.AudioFormat)}, nil
+	}
+	if cfg.MinDurationMS > 0 && c.DurationMS < cfg.MinDurationMS {
+		return transcriptionEligibilityResult{Reason: fmt.Sprintf("Call duration %.2fs is below the minimum %.2fs.", float64(c.DurationMS)/1000, float64(cfg.MinDurationMS)/1000)}, nil
+	}
+	if cfg.MaxAudioDurationMS > 0 && c.DurationMS > cfg.MaxAudioDurationMS {
+		return transcriptionEligibilityResult{Reason: fmt.Sprintf("Call duration %.2fs exceeds the maximum %.2fs.", float64(c.DurationMS)/1000, float64(cfg.MaxAudioDurationMS)/1000)}, nil
+	}
+	if cfg.MaxFileSize > 0 && c.AudioSize > cfg.MaxFileSize {
+		return transcriptionEligibilityResult{Reason: fmt.Sprintf("Audio file size exceeds the maximum %d MB.", cfg.MaxFileSize/(1024*1024))}, nil
+	}
+	var tgEnabled bool
+	err = s.db.QueryRow(ctx, `SELECT coalesce(transcription_enabled,false) FROM talkgroup_aliases WHERE system_id=$1 AND talkgroup_id=$2`, c.System, c.Talkgroup).Scan(&tgEnabled)
+	if err != nil || !tgEnabled {
+		return transcriptionEligibilityResult{Reason: "Talkgroup is not enabled for transcription."}, nil
+	}
+	var active int64
+	_ = s.db.QueryRow(ctx, `SELECT count(*) FROM transcription_jobs WHERE call_id=$1 AND status IN ('pending','running')`, callID).Scan(&active)
+	if active > 0 {
+		return transcriptionEligibilityResult{Reason: "A transcription job is already active for this call."}, nil
+	}
+	return transcriptionEligibilityResult{Eligible: true}, nil
+}
+
 func (s *server) adminQueueTranscription(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
 		return
@@ -668,6 +835,15 @@ func (s *server) adminQueueTranscription(w http.ResponseWriter, r *http.Request)
 	id := strings.TrimPrefix(r.URL.Path, "/admin/transcription/queue/")
 	if id == "" || strings.Contains(id, "/") {
 		http.Error(w, "invalid call ID", 400)
+		return
+	}
+	elig, err := s.transcriptionEligibility(r.Context(), id)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	if !elig.Eligible {
+		http.Error(w, elig.Reason, http.StatusConflict)
 		return
 	}
 	var provider string
@@ -682,9 +858,190 @@ func (s *server) adminQueueTranscription(w http.ResponseWriter, r *http.Request)
 	http.Redirect(w, r, "/call/"+id, 303)
 }
 
+func (s *server) loadTranscriptionAPIKey(ctx context.Context) (string, error) {
+	var encryptedKey, keyNonce []byte
+	_ = s.db.QueryRow(ctx, `SELECT ciphertext,nonce FROM application_secrets WHERE purpose='transcription_api_key'`).Scan(&encryptedKey, &keyNonce)
+	if len(encryptedKey) == 0 {
+		return "", nil
+	}
+	plain, err := decryptSecret(s.masterKey, encryptedKey, keyNonce)
+	if err != nil {
+		return "", err
+	}
+	return string(plain), nil
+}
+
+func (s *server) adminTestTranscription(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ctx := r.Context()
+	var cfg struct {
+		Enabled      bool
+		Provider     string
+		ProviderType string
+		Endpoint     string
+		Model        string
+		Language     *string
+		Timeout      int
+		VADEnabled   bool
+	}
+	err := s.db.QueryRow(ctx, `SELECT enabled,provider,provider_type,endpoint_url,model,default_language,request_timeout_seconds,vad_enabled FROM transcription_config WHERE id=true`).Scan(&cfg.Enabled, &cfg.Provider, &cfg.ProviderType, &cfg.Endpoint, &cfg.Model, &cfg.Language, &cfg.Timeout, &cfg.VADEnabled)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	if cfg.Endpoint == "" || cfg.Model == "" {
+		http.Error(w, "Endpoint and model are required before testing.", http.StatusBadRequest)
+		return
+	}
+	identity := strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email"))
+	if identity == "" {
+		identity = "admin-token"
+	}
+	var lastTest *time.Time
+	_ = s.db.QueryRow(ctx, `SELECT last_test_at FROM transcription_config WHERE id=true`).Scan(&lastTest)
+	if lastTest != nil && time.Since(*lastTest) < 30*time.Second {
+		http.Error(w, "Provider test is rate-limited. Please wait 30 seconds.", http.StatusTooManyRequests)
+		return
+	}
+
+	key, err := s.loadTranscriptionAPIKey(ctx)
+	if err != nil {
+		_, _ = s.db.Exec(ctx, `UPDATE transcription_config SET last_test_at=now(),last_test_ok=false,last_test_error=$1 WHERE id=true`, "Failed to load encrypted API key")
+		s.internal(w, err)
+		return
+	}
+
+	st, err := s.loadTranscriptionStatus(ctx)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	if !st.EndpointAllowed {
+		_, _ = s.db.Exec(ctx, `UPDATE transcription_config SET last_test_at=now(),last_test_ok=false,last_test_error=$1 WHERE id=true`, "Endpoint is not allowed by the configured CIDR allowlist")
+		http.Error(w, "Endpoint is not allowed by the configured CIDR allowlist", http.StatusBadRequest)
+		return
+	}
+
+	client, err := transcription.HTTPClient(cfg.Endpoint, st.AllowedCIDRs)
+	if err != nil {
+		_, _ = s.db.Exec(ctx, `UPDATE transcription_config SET last_test_at=now(),last_test_ok=false,last_test_error=$1 WHERE id=true`, err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if cfg.Timeout < 1 {
+		cfg.Timeout = 60
+	}
+	client.Timeout = time.Duration(cfg.Timeout) * time.Second
+
+	wav, err := transcription.SyntheticWAV()
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, _ := mw.CreateFormFile("file", "synthetic.wav")
+	part.Write(wav)
+	_ = mw.WriteField("model", cfg.Model)
+	if cfg.Language != nil && *cfg.Language != "" {
+		_ = mw.WriteField("language", *cfg.Language)
+	}
+	if cfg.ProviderType == "faster-whisper" && cfg.VADEnabled {
+		_ = mw.WriteField("vad_filter", "true")
+	}
+	_ = mw.Close()
+
+	req, err := http.NewRequest(http.MethodPost, cfg.Endpoint, &body)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	resp, err := client.Do(req)
+	result := "ok"
+	ok := false
+	var errText string
+	if err != nil {
+		errText = err.Error()
+		result = errText
+	} else {
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			errText = fmt.Sprintf("provider returned HTTP %d", resp.StatusCode)
+			result = errText
+		} else {
+			var out struct{ Text string }
+			if json.Unmarshal(raw, &out) != nil {
+				errText = "provider response is not valid JSON with a text field"
+				result = errText
+			} else {
+				ok = true
+			}
+		}
+	}
+	_, _ = s.db.Exec(ctx, `UPDATE transcription_config SET last_test_at=now(),last_test_ok=$1,last_test_error=NULLIF($2,'') WHERE id=true`, ok, errText)
+	s.phase8JSON(w, map[string]any{"ok": ok, "result": result, "vad_sent": cfg.ProviderType == "faster-whisper" && cfg.VADEnabled})
+}
+
+func (s *server) adminToggleTalkgroupTranscription(w http.ResponseWriter, r *http.Request, enabled bool) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", 400)
+		return
+	}
+	var systems, talkgroups []string
+	for _, v := range r.Form["talkgroup"] {
+		parts := strings.SplitN(v, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		systems = append(systems, parts[0])
+		talkgroups = append(talkgroups, parts[1])
+	}
+	if len(systems) == 0 {
+		http.Error(w, "no talkgroups selected", http.StatusBadRequest)
+		return
+	}
+	identity := strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email"))
+	if identity == "" {
+		identity = "admin-token"
+	}
+	language := strings.TrimSpace(r.FormValue("language"))
+	for i := range systems {
+		if language != "" {
+			_, _ = s.db.Exec(r.Context(), `UPDATE talkgroup_aliases SET transcription_enabled=$1,transcription_language=NULLIF($2,''),updated_at=now() WHERE system_id=$3 AND talkgroup_id=$4`, enabled, language, systems[i], talkgroups[i])
+		} else {
+			_, _ = s.db.Exec(r.Context(), `UPDATE talkgroup_aliases SET transcription_enabled=$1,updated_at=now() WHERE system_id=$2 AND talkgroup_id=$3`, enabled, systems[i], talkgroups[i])
+		}
+	}
+	http.Redirect(w, r, "/admin/transcription?saved=1", 303)
+}
+
+func (s *server) adminEnableTalkgroupTranscription(w http.ResponseWriter, r *http.Request) {
+	s.adminToggleTalkgroupTranscription(w, r, true)
+}
+
+func (s *server) adminDisableTalkgroupTranscription(w http.ResponseWriter, r *http.Request) {
+	s.adminToggleTalkgroupTranscription(w, r, false)
+}
+
 func (s *server) phase8JSON(w http.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(value)
 }
 
 var _ = fmt.Sprintf
+var _ = os.Getenv
+var _ = time.Now

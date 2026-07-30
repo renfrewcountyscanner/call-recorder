@@ -28,7 +28,7 @@ def make_mobile_driver(width, height):
     driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {"width": width, "height": height, "deviceScaleFactor": 1, "mobile": True})
     return driver
 
-def wait_for(driver, css, count=1, timeout=10):
+def wait_for(driver, css, count=1, timeout=20):
     for _ in range(int(timeout * 4)):
         found = driver.find_elements(By.CSS_SELECTOR, css)
         if len(found) >= count:

@@ -20,6 +20,7 @@
   --ok: #4cc38a;
   --ok-soft: rgba(76, 195, 138, 0.14);
   --danger: #e5534b;
+  --danger-contrast: #000000;
   --danger-soft: rgba(229, 83, 75, 0.14);
   --info: #5aa2f0;
   --info-soft: rgba(90, 162, 240, 0.14);
@@ -50,6 +51,7 @@
   --ok: #14714b;
   --ok-soft: rgba(20, 113, 75, 0.12);
   --danger: #c0332b;
+  --danger-contrast: #ffffff;
   --danger-soft: rgba(192, 51, 43, 0.1);
   --info: #1f6fd6;
   --info-soft: rgba(31, 111, 214, 0.1);
@@ -186,7 +188,8 @@ a:hover { text-decoration: underline; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); font-weight: 600; }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
 .btn.ghost:hover { color: var(--text); border-color: var(--border-strong); }
-.btn.danger { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
+.btn.danger { background: var(--danger); border-color: var(--danger); color: var(--danger-contrast, #fff); }
+.btn.danger:hover { background: var(--danger); border-color: var(--danger); color: var(--danger-contrast, #fff); }
 .btn.small { min-height: 2.25rem; padding: 0.25rem 0.6rem; font-size: 0.85rem; }
 .btn.icon { min-width: 2.75rem; justify-content: center; padding: 0.45rem 0.5rem; }
 .btn[disabled] { opacity: 0.45; cursor: not-allowed; }

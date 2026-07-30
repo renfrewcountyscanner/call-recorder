@@ -1,34 +1,95 @@
 {{define "admin_transcription.html"}}
 {{template "head" .}}{{template "top" .}}
 <div class="page-head"><div><p class="eyebrow">Administration</p><h1>Transcription</h1><p class="muted">Configure the provider, worker and jobs without editing deployment files. Generated text remains separate from received sender text and notes.</p></div></div>
-{{if .Saved}}<div class="alert success" role="status">Transcription settings saved.</div>{{end}}{{if .Removed}}<div class="alert success" role="status">The stored API key was removed.</div>{{end}}
-<section class="card"><h2>Provider</h2><form method="post" action="/admin/transcription/config" class="form-grid">
+{{if .Saved}}<div class="alert success" role="status">Transcription settings saved.</div>{{end}}{{if .Removed}}<div class="alert success" role="status">The stored API key was removed.</div>{{end}}{{if .Tested}}<div class="alert success" role="status">Provider test completed.</div>{{end}}
+
+<section class="card"><h2>Provider</h2>
+{{if .LastTestAt}}<p class="muted">Last provider test: {{if .LastTestOK}}passed{{else}}failed{{end}} at {{.LastTestAt}} {{if .LastTestError}}— {{.LastTestError}}{{end}}</p>{{end}}
+<form method="post" action="/admin/transcription/config" class="form-grid">
   <label class="check"><input type="checkbox" name="enabled" {{if .Enabled}}checked{{end}}> Provider enabled</label>
   <label class="check"><input type="checkbox" name="processing_enabled" {{if .Processing}}checked{{end}}> Queue processing enabled</label>
-  <label>Provider type <input name="provider" value="{{.Provider}}" required></label>
+  <label>Provider type
+    <select name="provider_type">
+      <option value="faster-whisper" {{if eq .ProviderType "faster-whisper"}}selected{{end}}>Faster-Whisper-compatible</option>
+      <option value="openai-compatible" {{if eq .ProviderType "openai-compatible"}}selected{{end}}>Generic OpenAI-compatible</option>
+    </select>
+  </label>
+  <label>Provider label <input name="provider" value="{{.Provider}}" required></label>
   <label>Endpoint <input name="endpoint" type="url" value="{{.Endpoint}}" required></label>
   <label>Model <input name="model" value="{{.Model}}" required></label>
   <label>Default language <input name="language" value="{{.Language}}" placeholder="en"></label>
   <label>Request timeout <span class="input-unit"><input name="request_timeout_seconds" type="number" min="1" max="600" value="{{.Timeout}}"><span>seconds</span></span></label>
   <label>Allowed endpoint CIDRs <input name="allowed_endpoint_cidrs" value="{{.AllowedCIDRs}}" placeholder="192.168.2.2/32"><span class="help">Private endpoints remain blocked unless explicitly listed.</span></label>
+  <input type="hidden" name="min_duration_seconds" value="{{.MinDurationSeconds}}">
+  <input type="hidden" name="max_duration_minutes" value="{{.MaxDurationMinutes}}">
+  <input type="hidden" name="max_file_size_mb" value="{{.MaxFileSizeMB}}">
+  <input type="hidden" name="temperature" value="{{.Temperature}}">
+  <input type="hidden" name="vad_enabled" value="{{if .VAD}}on{{end}}">
+  <input type="hidden" name="phrase_prompts_enabled" value="{{if .PhrasePrompts}}on{{end}}">
+  <input type="hidden" name="phrase_prompt" value="{{.PhrasePrompt}}">
+  <input type="hidden" name="concurrency" value="{{.Concurrency}}">
+  <input type="hidden" name="retry_limit" value="{{.RetryLimit}}">
   <button class="btn primary">Save provider settings</button>
 </form>
 <hr><h3>API key</h3><p class="muted">Enter the key itself only here. It is encrypted locally and never shown again, logged or stored in PostgreSQL as plaintext.</p>
-<p>{{if .SecretAvailable}}<span class="badge success">API key configured</span>{{else}}<span class="badge">API key missing</span>{{end}}</p>
+<p>{{if .SecretAvailable}}<span class="badge ok">API key configured</span>{{else}}<span class="badge">API key missing</span>{{end}}</p>
 <form method="post" action="/admin/transcription/secret" class="toolbar"><label>Replace API key <input name="api_key" type="password" autocomplete="new-password" required></label><button class="btn">Save encrypted key</button></form>
 {{if .SecretAvailable}}<form method="post" action="/admin/transcription/secret/remove" data-confirm="Remove the stored transcription API key?"><button class="btn danger small">Remove API key</button></form>{{end}}
+<form method="post" action="/admin/transcription/test" class="toolbar" data-confirm="Test the provider with a synthetic WAV?">
+  <button class="btn secondary">Test Provider</button>
+  <span class="help">Uses the saved endpoint, model, language and key. Limited to one test per 30 seconds.</span>
+</form>
 </section>
+
 <section class="card"><h2>Audio processing</h2><form method="post" action="/admin/transcription/config" class="form-grid">
-  <input type="hidden" name="enabled" value="{{if .Enabled}}on{{end}}"><input type="hidden" name="processing_enabled" value="{{if .Processing}}on{{end}}"><input type="hidden" name="provider" value="{{.Provider}}"><input type="hidden" name="endpoint" value="{{.Endpoint}}"><input type="hidden" name="model" value="{{.Model}}"><input type="hidden" name="language" value="{{.Language}}"><input type="hidden" name="request_timeout_seconds" value="{{.Timeout}}"><input type="hidden" name="allowed_endpoint_cidrs" value="{{.AllowedCIDRs}}">
+  <input type="hidden" name="enabled" value="{{if .Enabled}}on{{end}}"><input type="hidden" name="processing_enabled" value="{{if .Processing}}on{{end}}"><input type="hidden" name="provider" value="{{.Provider}}"><input type="hidden" name="provider_type" value="{{.ProviderType}}"><input type="hidden" name="endpoint" value="{{.Endpoint}}"><input type="hidden" name="model" value="{{.Model}}"><input type="hidden" name="language" value="{{.Language}}"><input type="hidden" name="request_timeout_seconds" value="{{.Timeout}}"><input type="hidden" name="allowed_endpoint_cidrs" value="{{.AllowedCIDRs}}">
   <label>Minimum call duration <span class="input-unit"><input name="min_duration_seconds" type="number" min="0" step="0.1" value="{{.MinDurationSeconds}}"><span>seconds</span></span></label>
   <label>Maximum call duration <span class="input-unit"><input name="max_duration_minutes" type="number" min="0.1" step="0.1" value="{{.MaxDurationMinutes}}"><span>minutes</span></span></label>
   <label>Maximum file size <span class="input-unit"><input name="max_file_size_mb" type="number" min="1" step="0.1" value="{{.MaxFileSizeMB}}"><span>MB</span></span></label>
   <label>Temperature <input name="temperature" type="number" min="0" max="2" step="0.1" value="{{.Temperature}}"></label>
-  <label class="check"><input name="vad_enabled" type="checkbox" {{if .VAD}}checked{{end}}> Voice activity detection</label>
+  <label class="check"><input name="vad_enabled" type="checkbox" {{if .VAD}}checked{{end}}> Voice activity detection <span class="help">Sent as vad_filter=true only for Faster-Whisper-compatible providers.</span></label>
   <label class="check"><input name="phrase_prompts_enabled" type="checkbox" {{if .PhrasePrompts}}checked{{end}}> Phrase prompts</label>
   <label>Phrase prompt text <textarea name="phrase_prompt" rows="3" maxlength="2000">{{.PhrasePrompt}}</textarea></label>
-  <input type="hidden" name="concurrency" value="{{.Concurrency}}"><input type="hidden" name="retry_limit" value="{{.RetryLimit}}"><button class="btn primary">Save audio settings</button>
+  <button class="btn primary">Save audio settings</button>
 </form></section>
-<section class="card"><h2>Worker</h2><dl class="stats"><dt>Provider</dt><dd>{{if .Enabled}}enabled{{else}}disabled{{end}}</dd><dt>Queue processing</dt><dd>{{if .Processing}}enabled{{else}}disabled{{end}}</dd><dt>Heartbeat</dt><dd>{{if .Heartbeat}}{{.Heartbeat}}{{else}}No heartbeat yet{{end}}</dd><dt>Queue</dt><dd>{{.Pending}} pending · {{.Failed}} failed · {{.Completed}} completed</dd><dt>Concurrency</dt><dd>{{.Concurrency}}</dd><dt>Retry limit</dt><dd>{{.RetryLimit}}</dd></dl><p class="muted">The normal Compose stack includes an unprivileged worker with no public port. It remains idle while processing is disabled.</p></section>
-<section class="card"><h2>Jobs and history</h2><form method="get" class="toolbar"><label>Status <input name="status" value="{{.StatusFilter}}"></label><label>Provider <input name="provider" value="{{.ProviderFilter}}"></label><label>Call ID <input name="call" value="{{.CallFilter}}"></label><label>Date <input name="date" type="date" value="{{.Date}}"></label><label class="check"><input type="checkbox" name="failed" value="1" {{if .FailedOnly}}checked{{end}}> Failed only</label><button class="btn">Filter</button><a class="btn ghost" href="/admin/transcription">Reset</a></form><p class="list-meta">{{.Total}} job{{if ne .Total 1}}s{{end}}</p><div class="table-wrap"><table class="data"><thead><tr><th>ID</th><th>Call</th><th>Status</th><th>Provider</th><th>Attempts</th><th>Created</th><th>Error</th><th></th></tr></thead><tbody>{{range .Jobs}}<tr><td>{{.ID}}</td><td><a href="/call/{{.Call}}">{{.Call}}</a></td><td><span class="badge">{{.Status}}</span></td><td>{{.Provider}}</td><td>{{.Attempts}}</td><td>{{.Created}}</td><td>{{.Error}}</td><td>{{if eq .Status "failed"}}<form method="post" action="/admin/transcription/retry"><input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="return" value="{{$.ReturnURL}}"><button class="btn small">Retry</button></form>{{end}}</td></tr>{{else}}<tr><td colspan="8" class="muted">No jobs.</td></tr>{{end}}</tbody></table></div>{{if gt .Pages 1}}<nav class="pager" aria-label="Transcription job pages">{{if gt .Page 1}}<a class="btn small" href="?status={{.StatusFilter}}&provider={{.ProviderFilter}}&call={{.CallFilter}}&date={{.Date}}&failed={{if .FailedOnly}}1{{end}}&page={{dec .Page}}">← Newer</a>{{end}}<span>Page {{.Page}} of {{.Pages}}</span>{{if lt .Page .Pages}}<a class="btn small" href="?status={{.StatusFilter}}&provider={{.ProviderFilter}}&call={{.CallFilter}}&date={{.Date}}&failed={{if .FailedOnly}}1{{end}}&page={{inc .Page}}">Older →</a>{{end}}</nav>{{end}}</section>
+
+<section class="card"><h2>Worker</h2><dl class="stats">
+  <dt>Provider</dt><dd>{{if .Enabled}}enabled{{else}}disabled{{end}}</dd>
+  <dt>Queue processing</dt><dd>{{if .Processing}}enabled{{else}}disabled{{end}}</dd>
+  <dt>API key</dt><dd>{{if .SecretAvailable}}configured{{else}}missing{{end}}</dd>
+  <dt>Endpoint allowlist</dt><dd>{{if .EndpointAllowed}}allowed{{else}}blocked{{end}}</dd>
+  <dt>Worker online</dt><dd>{{if .WorkerOnline}}online{{else}}offline{{end}}</dd>
+  <dt>Heartbeat</dt><dd>{{if .Heartbeat}}{{.Heartbeat.UTC.Format "2006-01-02 15:04:05 UTC"}}{{else}}No heartbeat yet{{end}}</dd>
+  <dt>Queue</dt><dd>{{.Pending}} pending · {{.Failed}} failed · {{.Completed}} completed</dd>
+  <dt>Concurrency</dt><dd>{{.Concurrency}}</dd>
+  <dt>Retry limit</dt><dd>{{.RetryLimit}}</dd>
+</dl>
+<p class="muted">The transcription worker is part of the normal Compose stack. It remains idle while processing is disabled and reloads configuration from PostgreSQL without rebuilding.</p>
+</section>
+
+<section class="card"><h2>Talkgroups <span class="muted">({{.EnabledTalkgroupCount}} enabled)</span></h2>
+<form method="get" class="toolbar"><label>Search <input name="tgq" value="{{.TalkgroupSearch}}" placeholder="system, ID or alias"></label><button class="btn">Search</button><a class="btn ghost" href="/admin/transcription">Reset</a></form>
+<form method="post" action="/admin/transcription/talkgroups/enable" class="toolbar">
+  <label>Language override <input name="language" maxlength="20" placeholder="en"></label>
+  <button class="btn">Enable selected</button>
+</form>
+<form method="post" action="/admin/transcription/talkgroups/disable" class="toolbar">
+  <button class="btn danger">Disable selected</button>
+</form>
+<div class="table-wrap"><table class="data">
+  <thead><tr><th><span class="sr-only">Select</span></th><th>System</th><th>ID</th><th>Alias</th><th>Transcription</th><th>Language</th><th>Calls</th></tr></thead>
+  <tbody>{{range .Talkgroups}}<tr>
+    <td><input type="checkbox" name="talkgroup" value="{{.System}}:{{.ID}}" form="tg-actions" aria-label="Select {{.System}} {{.ID}}"></td>
+    <td><span class="mono">{{.System}}</span></td>
+    <td><span class="id-chip">{{.ID}}</span></td>
+    <td>{{if .Alias}}{{.Alias}}{{else}}<span class="muted">—</span>{{end}}</td>
+    <td>{{if .Enabled}}<span class="badge ok">enabled</span>{{else}}<span class="badge">disabled</span>{{end}}</td>
+    <td>{{if .Language}}{{.Language}}{{else}}<span class="muted">default</span>{{end}}</td>
+    <td><a href="/?system={{.System}}&talkgroup={{.ID}}">{{.Calls}}</a></td>
+  </tr>{{else}}<tr><td colspan="7" class="muted">No talkgroups found.</td></tr>{{end}}</tbody>
+</table></div>
+<form id="tg-actions" method="post" action="/admin/transcription/talkgroups/enable" class="toolbar"></form>
+</section>
+
+<section class="card"><h2>Jobs and history</h2><form method="get" class="toolbar"><label>Status <input name="status" value="{{.StatusFilter}}"></label><label>Provider <input name="provider" value="{{.ProviderFilter}}"></label><label>Call ID <input name="call" value="{{.CallFilter}}"></label><label>Date <input name="date" type="date" value="{{.Date}}"></label><label class="check"><input type="checkbox" name="failed" value="1" {{if .FailedOnly}}checked{{end}}> Failed only</label><button class="btn">Filter</button><a class="btn ghost" href="/admin/transcription">Reset</a></form><p class="list-meta">{{.Total}} job{{if ne .Total 1}}s{{end}}</p><div class="table-wrap"><table class="data"><thead><tr><th>ID</th><th>Call</th><th>Status</th><th>Provider</th><th>Attempts</th><th>Created</th><th>Error</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>{{range .Jobs}}<tr><td>{{.ID}}</td><td><a href="/call/{{.Call}}">{{.Call}}</a></td><td><span class="badge">{{.Status}}</span></td><td>{{.Provider}}</td><td>{{.Attempts}}</td><td>{{.Created}}</td><td>{{.Error}}</td><td>{{if eq .Status "failed"}}<form method="post" action="/admin/transcription/retry"><input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="return" value="{{$.ReturnURL}}"><button class="btn small">Retry</button></form>{{end}}</td></tr>{{else}}<tr><td colspan="8" class="muted">No jobs.</td></tr>{{end}}</tbody></table></div>{{if gt .Pages 1}}<nav class="pager" aria-label="Transcription job pages">{{if gt .Page 1}}<a class="btn small" href="?status={{.StatusFilter}}&provider={{.ProviderFilter}}&call={{.CallFilter}}&date={{.Date}}&failed={{if .FailedOnly}}1{{end}}&tgq={{.TalkgroupSearch}}&page={{dec .Page}}">← Newer</a>{{end}}<span>Page {{.Page}} of {{.Pages}}</span>{{if lt .Page .Pages}}<a class="btn small" href="?status={{.StatusFilter}}&provider={{.ProviderFilter}}&call={{.CallFilter}}&date={{.Date}}&failed={{if .FailedOnly}}1{{end}}&tgq={{.TalkgroupSearch}}&page={{inc .Page}}">Older →</a>{{end}}</nav>{{end}}</section>
 {{template "bottom" .}}{{end}}

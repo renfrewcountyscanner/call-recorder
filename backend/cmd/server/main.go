@@ -217,6 +217,9 @@ func main() {
 		mux.HandleFunc("POST /admin/transcription/secret", s.adminSaveTranscriptionSecret)
 		mux.HandleFunc("POST /admin/transcription/secret/remove", s.adminRemoveTranscriptionSecret)
 		mux.HandleFunc("POST /admin/transcription/edit", s.adminEditTranscript)
+		mux.HandleFunc("POST /admin/transcription/test", s.adminTestTranscription)
+		mux.HandleFunc("POST /admin/transcription/talkgroups/enable", s.adminEnableTalkgroupTranscription)
+		mux.HandleFunc("POST /admin/transcription/talkgroups/disable", s.adminDisableTalkgroupTranscription)
 		mux.HandleFunc("POST /admin/talkgroups", s.adminSaveTalkgroup)
 		mux.HandleFunc("GET /admin/radios", s.adminRadios)
 		mux.HandleFunc("POST /admin/radios", s.adminSaveRadio)
@@ -605,7 +608,9 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.enqueueNotifications(r.Context(), callID)
-	_, _ = s.db.Exec(r.Context(), `INSERT INTO transcription_jobs(call_id,provider) SELECT $1,c.provider FROM transcription_config c JOIN talkgroup_aliases a ON a.system_id=(SELECT system_id FROM calls WHERE id=$1) AND a.talkgroup_id=(SELECT talkgroup_id FROM calls WHERE id=$1) WHERE c.id=true AND c.enabled AND a.transcription_enabled ON CONFLICT(call_id,provider) DO NOTHING`, callID)
+	if _, e := s.db.Exec(r.Context(), `INSERT INTO transcription_jobs(call_id,provider) SELECT $1,c.provider FROM transcription_config c JOIN talkgroup_aliases a ON a.system_id=(SELECT system_id FROM calls WHERE id=$1) AND a.talkgroup_id=(SELECT talkgroup_id FROM calls WHERE id=$1) WHERE c.id=true AND c.enabled AND c.processing_enabled AND a.transcription_enabled AND EXISTS (SELECT 1 FROM application_secrets s WHERE s.purpose='transcription_api_key') AND (SELECT audio_format FROM calls WHERE id=$1) IN ('mp3','wav') AND (SELECT duration_ms FROM calls WHERE id=$1) BETWEEN c.min_duration_ms AND CASE WHEN c.max_audio_duration_ms>0 THEN c.max_audio_duration_ms ELSE 2147483647 END AND (SELECT audio_size FROM calls WHERE id=$1) BETWEEN 1 AND c.max_file_size AND NOT EXISTS (SELECT 1 FROM transcription_jobs j2 WHERE j2.call_id=$1 AND j2.status IN ('pending','running')) ON CONFLICT(call_id,provider) DO NOTHING`, callID); e != nil {
+		s.logger.Error("transcription auto-enqueue failed", "call_id", callID, "error", e)
+	}
 	writeJSON(w, 201, map[string]string{"call_id": callID, "audio_path": rel})
 }
 
@@ -1247,23 +1252,23 @@ func (s *server) adminTalkgroups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query().Get("q")
-	rows, err := s.db.Query(r.Context(), `SELECT a.system_id,a.talkgroup_id,coalesce(a.alias,''),coalesce(a.description,''),coalesce(a.category,''),a.priority,a.enabled,a.source,count(c.id),max(c.start_time) FROM talkgroup_aliases a LEFT JOIN calls c ON c.system_id=a.system_id AND c.talkgroup_id=a.talkgroup_id WHERE $1='' OR a.system_id ILIKE '%'||$1||'%' OR a.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(a.alias,'') ILIKE '%'||$1||'%' GROUP BY a.system_id,a.talkgroup_id,a.alias,a.description,a.category,a.priority,a.enabled,a.source ORDER BY a.system_id,a.talkgroup_id LIMIT 500`, q)
+	rows, err := s.db.Query(r.Context(), `SELECT a.system_id,a.talkgroup_id,coalesce(a.alias,''),coalesce(a.description,''),coalesce(a.category,''),a.priority,a.enabled,a.source,a.transcription_enabled,coalesce(a.transcription_language,''),a.notification_eligible,count(c.id),max(c.start_time) FROM talkgroup_aliases a LEFT JOIN calls c ON c.system_id=a.system_id AND c.talkgroup_id=a.talkgroup_id WHERE $1='' OR a.system_id ILIKE '%'||$1||'%' OR a.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(a.alias,'') ILIKE '%'||$1||'%' GROUP BY a.system_id,a.talkgroup_id,a.alias,a.description,a.category,a.priority,a.enabled,a.source,a.transcription_enabled,a.transcription_language,a.notification_eligible ORDER BY a.system_id,a.talkgroup_id LIMIT 500`, q)
 	if err != nil {
 		s.internal(w, err)
 		return
 	}
 	defer rows.Close()
 	type row struct {
-		System, ID, Alias, Description, Category, Source string
-		Priority                                         int
-		Enabled                                          bool
-		Calls                                            int
-		Latest                                           *time.Time
+		System, ID, Alias, Description, Category, Source, TranscriptionLanguage string
+		Priority                                                             int
+		Enabled, TranscriptionEnabled, NotificationEligible                    bool
+		Calls                                                                int
+		Latest                                                               *time.Time
 	}
 	list := []row{}
 	for rows.Next() {
 		var x row
-		if err := rows.Scan(&x.System, &x.ID, &x.Alias, &x.Description, &x.Category, &x.Priority, &x.Enabled, &x.Source, &x.Calls, &x.Latest); err != nil {
+		if err := rows.Scan(&x.System, &x.ID, &x.Alias, &x.Description, &x.Category, &x.Priority, &x.Enabled, &x.Source, &x.TranscriptionEnabled, &x.TranscriptionLanguage, &x.NotificationEligible, &x.Calls, &x.Latest); err != nil {
 			s.internal(w, err)
 			return
 		}
@@ -1284,7 +1289,8 @@ func (s *server) adminRadios(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	type row struct {
 		System, ID, Alias, Description, Category, Source string
-		Enabled                                          bool
+		TranscriptionLanguage                            string
+		Enabled, TranscriptionEnabled, NotificationEligible bool
 		Calls                                            int
 		Latest                                           *time.Time
 		Priority                                         int

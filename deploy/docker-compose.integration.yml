@@ -19,6 +19,13 @@ services:
     volumes:
       - ../.test-runtime/audio:/var/lib/call-recorder/audio:ro
       - ../.test-runtime/secrets:/var/lib/call-recorder/secrets:ro
+  fake-transcriber:
+    image: python:3.13-alpine
+    command: ["python", "/tests/fake-transcriber.py", "8080"]
+    volumes:
+      - ../tests:/tests:ro
+    expose:
+      - "8080"
 
 networks:
   default:

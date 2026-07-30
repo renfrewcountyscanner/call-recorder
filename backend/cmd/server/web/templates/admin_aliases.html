@@ -25,7 +25,7 @@
       <label>Description <input name="description" maxlength="2000" autocomplete="off"></label>
       <label>Category <input name="category" maxlength="120" autocomplete="off"></label>
       {{if eq .Kind "talkgroups"}}<label>Priority <input name="priority" type="number" value="0"></label>{{end}}
-      {{if eq .Kind "talkgroups"}}<label class="form-check"><input type="checkbox" name="transcription_enabled"> Transcription enabled</label><label>Transcription language <input name="transcription_language" maxlength="20"></label><label class="form-check"><input type="checkbox" name="notification_eligible" checked> Notification eligible</label>{{end}}
+      {{if eq .Kind "talkgroups"}}<label class="form-check"><input type="checkbox" name="transcription_enabled" id="transcription_enabled"> Transcription enabled</label><label>Transcription language <input name="transcription_language" id="transcription_language" maxlength="20"></label><label class="form-check"><input type="checkbox" name="notification_eligible" id="notification_eligible" checked> Notification eligible</label>{{end}}
       <label>Source
         <select name="source"><option value="manual">manual</option><option value="imported">imported</option></select>
       </label>
@@ -54,7 +54,7 @@
       <td data-label="Calls" class="mono">{{.Calls}}</td>
       <td data-label="Latest" class="mono small">{{tdate .Latest}}</td>
       <td data-label="Actions">
-        <button type="button" class="btn small" data-edit="alias-form" data-system="{{.System}}" data-id="{{.ID}}" data-alias="{{.Alias}}" data-description="{{.Description}}" data-category="{{.Category}}" data-priority="{{.Priority}}" data-source="{{.Source}}" data-enabled="{{.Enabled}}">Edit</button>
+        <button type="button" class="btn small" data-edit="alias-form" data-system="{{.System}}" data-id="{{.ID}}" data-alias="{{.Alias}}" data-description="{{.Description}}" data-category="{{.Category}}" data-priority="{{.Priority}}" data-source="{{.Source}}" data-enabled="{{.Enabled}}" data-transcription_enabled="{{.TranscriptionEnabled}}" data-transcription_language="{{.TranscriptionLanguage}}" data-notification_eligible="{{.NotificationEligible}}">Edit</button>
         <a class="btn small ghost" href="/?system={{.System}}&{{if eq $.Kind "talkgroups"}}talkgroup{{else}}radio{{end}}={{.ID}}">Calls</a>
       </td>
     </tr>
