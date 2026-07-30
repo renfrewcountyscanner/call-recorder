@@ -53,6 +53,20 @@ func TestFilterSupportsRepeatedAndCommaSeparatedValues(t *testing.T) {
 	}
 }
 
+func TestFilterSupportsCallClass(t *testing.T) {
+	f, err := filterFromQuery(url.Values{"group": {"private"}})
+	if err != nil || f.Group != "private" {
+		t.Fatalf("call class was not parsed: %#v err=%v", f, err)
+	}
+	if !strings.Contains(callsURL(f, "", 1), "group=private") {
+		t.Fatalf("call class was not shareable: %s", callsURL(f, "", 1))
+	}
+	unsafe, _ := filterFromQuery(url.Values{"group": {"sql"}})
+	if unsafe.Group != "" {
+		t.Fatalf("unsafe call class accepted: %#v", unsafe)
+	}
+}
+
 func TestSmartSortIsShareable(t *testing.T) {
 	f, err := filterFromQuery(url.Values{"smart_sort": {"1"}})
 	if err != nil || !f.SmartSort {
