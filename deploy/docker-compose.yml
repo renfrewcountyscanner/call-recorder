@@ -16,9 +16,10 @@ services:
       retries: 10
   audio-init:
     image: alpine:3.21
-    command: ["sh", "-c", "install -d -m 0750 /var/lib/call-recorder/audio && chown 10001:10001 /var/lib/call-recorder/audio && chmod 0750 /var/lib/call-recorder/audio"]
+    command: ["sh", "-c", "install -d -m 0750 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets && chown 10001:10001 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets && chmod 0750 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets"]
     volumes:
       - ../runtime/audio:/var/lib/call-recorder/audio
+      - ../runtime/secrets:/var/lib/call-recorder/secrets
   backend:
     build: ../backend
     restart: unless-stopped
@@ -32,6 +33,7 @@ services:
       CALL_RECORDER_LISTEN_PORT: 8080
       CALL_RECORDER_DATABASE_URL: postgresql://${POSTGRES_USER:-call_recorder}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-call_recorder}?sslmode=disable
       CALL_RECORDER_AUDIO_ROOT: /var/lib/call-recorder/audio
+      CALL_RECORDER_SECRETS_ROOT: /var/lib/call-recorder/secrets
       CALL_RECORDER_BOOTSTRAP_SENDER_ID: ${CALL_RECORDER_BOOTSTRAP_SENDER_ID:-example-sender}
       CALL_RECORDER_BOOTSTRAP_SENDER_KEY: ${CALL_RECORDER_BOOTSTRAP_SENDER_KEY:?set a non-example sender key in private .env}
       CALL_RECORDER_LEGACY_INGESTION_ENABLED: ${CALL_RECORDER_LEGACY_INGESTION_ENABLED:-false}
@@ -49,6 +51,7 @@ services:
       - "${CALL_RECORDER_PORT:-8080}:8080"
     volumes:
       - ../runtime/audio:/var/lib/call-recorder/audio
+      - ../runtime/secrets:/var/lib/call-recorder/secrets
   notification-worker:
     profiles: ["notifications"]
     build: ../backend
@@ -62,14 +65,18 @@ services:
       CALL_RECORDER_DATABASE_URL: postgresql://${POSTGRES_USER:-call_recorder}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-call_recorder}?sslmode=disable
     user: "10001:10001"
   transcription-worker:
-    profiles: ["transcription"]
     build: ../backend
     restart: unless-stopped
-    entrypoint: ["/usr/local/bin/call-recorder-admin"]
-    command: ["transcription", "run"]
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["while true; do /usr/local/bin/call-recorder-admin transcription run || true; sleep 15; done"]
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       CALL_RECORDER_DATABASE_URL: postgresql://${POSTGRES_USER:-call_recorder}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-call_recorder}?sslmode=disable
+      CALL_RECORDER_AUDIO_ROOT: /var/lib/call-recorder/audio
+      CALL_RECORDER_SECRETS_ROOT: /var/lib/call-recorder/secrets
+    volumes:
+      - ../runtime/audio:/var/lib/call-recorder/audio:ro
+      - ../runtime/secrets:/var/lib/call-recorder/secrets:ro
     user: "10001:10001"

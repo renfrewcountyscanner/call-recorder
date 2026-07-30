@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -72,14 +73,16 @@ func transcription(pool *pgxpool.Pool, args []string) {
 
 func runTranscription(pool *pgxpool.Pool) {
 	ctx := context.Background()
-	var enabled bool
-	var provider, endpoint, model, secretRef string
+	var enabled, processingEnabled bool
+	var provider, endpoint, model, secretRef, allowedCIDRs string
+	var encryptedKey, keyNonce []byte
 	var maxSize, maxDur int64
 	var language *string
-	if err := pool.QueryRow(ctx, `SELECT enabled,provider,coalesce(endpoint_url,''),coalesce(model,''),coalesce(secret_ref,''),default_language,max_audio_duration_ms,max_file_size FROM transcription_config WHERE id=true`).Scan(&enabled, &provider, &endpoint, &model, &secretRef, &language, &maxDur, &maxSize); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT enabled,processing_enabled,provider,coalesce(endpoint_url,''),coalesce(model,''),coalesce(secret_ref,''),default_language,max_audio_duration_ms,max_file_size,allowed_endpoint_cidrs FROM transcription_config WHERE id=true`).Scan(&enabled, &processingEnabled, &provider, &endpoint, &model, &secretRef, &language, &maxDur, &maxSize, &allowedCIDRs); err != nil {
 		fatal(err)
 	}
-	if !enabled {
+	_, _ = pool.Exec(ctx, `INSERT INTO transcription_worker_heartbeat(id,worker_id,heartbeat_at,updated_at) VALUES(true,'transcription-worker',now(),now()) ON CONFLICT(id) DO UPDATE SET heartbeat_at=now(),updated_at=now()`)
+	if !enabled || !processingEnabled {
 		fmt.Println("transcription disabled")
 		return
 	}
@@ -89,7 +92,21 @@ func runTranscription(pool *pgxpool.Pool) {
 	if u, e := url.Parse(endpoint); e != nil || u.Scheme != "https" && u.Scheme != "http" {
 		fatal(errors.New("transcription endpoint must use HTTP(S)"))
 	}
-	apiKey := os.Getenv(secretRef)
+	apiKey := ""
+	_ = pool.QueryRow(ctx, `SELECT ciphertext,nonce FROM application_secrets WHERE purpose='transcription_api_key'`).Scan(&encryptedKey, &keyNonce)
+	if len(encryptedKey) > 0 {
+		key, e := adminMasterKey()
+		if e != nil {
+			fatal(errors.New("encrypted transcription key is unavailable"))
+		}
+		plain, e := adminDecryptSecret(key, encryptedKey, keyNonce)
+		if e != nil {
+			fatal(errors.New("encrypted transcription key cannot be decrypted"))
+		}
+		apiKey = string(plain)
+	} else if secretRef != "" {
+		apiKey = os.Getenv(secretRef)
+	}
 	if secretRef != "" && apiKey == "" {
 		fatal(errors.New("configured transcription secret is unavailable"))
 	}
@@ -124,7 +141,7 @@ func runTranscription(pool *pgxpool.Pool) {
 		if claimed.RowsAffected() != 1 {
 			continue
 		}
-		text, err := transcribeFile(endpoint, model, apiKey, language, filepath.Join(os.Getenv("CALL_RECORDER_AUDIO_ROOT"), j.path), maxSize, maxDur)
+		text, err := transcribeFile(endpoint, model, apiKey, language, filepath.Join(os.Getenv("CALL_RECORDER_AUDIO_ROOT"), j.path), maxSize, maxDur, allowedCIDRs)
 		if err != nil {
 			safe := sanitizeError(err)
 			_, _ = conn.Exec(ctx, `UPDATE transcription_jobs SET status=CASE WHEN attempt_count>=3 THEN 'failed' ELSE 'pending' END,error=$2,next_attempt_at=now()+least((2^least(attempt_count,8))::int,3600)*interval '1 second',updated_at=now() WHERE id=$1`, j.id, safe)
@@ -141,7 +158,7 @@ func runTranscription(pool *pgxpool.Pool) {
 	fmt.Printf("provider=%s processed=%d\n", provider, len(jobs))
 }
 
-func transcribeFile(endpoint, model, key string, language *string, path string, maxSize, maxDur int64) (string, error) {
+func transcribeFile(endpoint, model, key string, language *string, path string, maxSize, maxDur int64, allowedCIDRs string) (string, error) {
 	st, err := os.Stat(path)
 	if err != nil {
 		return "", err
@@ -179,7 +196,10 @@ func transcribeFile(endpoint, model, key string, language *string, path string, 
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
-	client := safeHTTPClient()
+	client, err := transcriptionHTTPClient(endpoint, allowedCIDRs)
+	if err != nil {
+		return "", err
+	}
 	client.Timeout = 60 * time.Second
 	resp, err := client.Do(req)
 	if err != nil {
@@ -200,6 +220,71 @@ func transcribeFile(endpoint, model, key string, language *string, path string, 
 		return "", errors.New("provider response missing text")
 	}
 	return strings.TrimSpace(out.Text), nil
+}
+
+func transcriptionHTTPClient(endpoint, allowedCSV string) (*http.Client, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Scheme != "http" && u.Scheme != "https" || u.User != nil {
+		return nil, errors.New("invalid transcription endpoint")
+	}
+	allowed := []*net.IPNet{}
+	for _, raw := range strings.Split(allowedCSV, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		_, n, e := net.ParseCIDR(raw)
+		if e != nil {
+			return nil, errors.New("invalid transcription endpoint allowlist")
+		}
+		allowed = append(allowed, n)
+	}
+	if ip := net.ParseIP(u.Hostname()); ip != nil {
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.Equal(net.ParseIP("169.254.169.254")) {
+			return nil, errors.New("transcription endpoint resolves to a blocked address")
+		}
+		if ip.IsPrivate() {
+			ok := false
+			for _, n := range allowed {
+				if n.Contains(ip) {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				return nil, errors.New("private transcription endpoint is not allowlisted")
+			}
+		}
+	}
+	return &http.Client{Timeout: 60 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return errors.New("redirects are disabled") }, Transport: &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, e := net.SplitHostPort(address)
+		if e != nil {
+			return nil, e
+		}
+		ips, e := net.LookupIP(host)
+		if e != nil {
+			return nil, e
+		}
+		for _, ip := range ips {
+			if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.Equal(net.ParseIP("169.254.169.254")) {
+				continue
+			}
+			if ip.IsPrivate() {
+				ok := false
+				for _, n := range allowed {
+					if n.Contains(ip) {
+						ok = true
+						break
+					}
+				}
+				if !ok {
+					continue
+				}
+			}
+			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		}
+		return nil, errors.New("transcription endpoint resolves to a blocked address")
+	}}}, nil
 }
 
 var _ = filepath.Clean

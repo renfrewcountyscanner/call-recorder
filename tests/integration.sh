@@ -9,7 +9,7 @@ trap cleanup EXIT
 # touches the production runtime, which is deliberately a different path.
 $compose down -v --remove-orphans >/dev/null 2>&1 || true
 rm -rf "$root/.test-runtime"
-mkdir -p "$root/.test-runtime/postgres" "$root/.test-runtime/audio"
+mkdir -p "$root/.test-runtime/postgres" "$root/.test-runtime/audio" "$root/.test-runtime/secrets"
 $compose up -d --build
 ready=0
 for n in $(seq 1 60); do
@@ -17,6 +17,9 @@ for n in $(seq 1 60); do
   sleep 1
 done
 test "$ready" = 1
+test -s "$root/.test-runtime/secrets/master.key"
+test "$(stat -c '%a' "$root/.test-runtime/secrets/master.key")" = 600
+$compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/006_transcription_webui_secrets.sql >/dev/null
 test "$(curl -s -o "$work/malformed.json" -w '%{http_code}' -H 'Content-Type: application/json' -H 'X-Call-Recorder-Key: synthetic-integration-key' --data '{' http://127.0.0.1:18080/api/v1/uploads)" = 400
 grep -q 'invalid JSON metadata' "$work/malformed.json"
 test "$(curl -s -o "$work/no-key.json" -w '%{http_code}' -H 'Content-Type: application/json' --data '{"sender_id":"integration-sender","audio_format":"wav","call":{}}' http://127.0.0.1:18080/api/v1/uploads)" = 400

@@ -6,6 +6,7 @@ services:
   audio-init:
     volumes:
       - ../.test-runtime/audio:/var/lib/call-recorder/audio
+      - ../.test-runtime/secrets:/var/lib/call-recorder/secrets
   backend:
     environment:
       CALL_RECORDER_TEST_FAIL_FINALIZE: ${CALL_RECORDER_TEST_FAIL_FINALIZE:-false}
@@ -13,6 +14,11 @@ services:
       - "18080:8080"
     volumes:
       - ../.test-runtime/audio:/var/lib/call-recorder/audio
+      - ../.test-runtime/secrets:/var/lib/call-recorder/secrets
+  transcription-worker:
+    volumes:
+      - ../.test-runtime/audio:/var/lib/call-recorder/audio:ro
+      - ../.test-runtime/secrets:/var/lib/call-recorder/secrets:ro
 
 networks:
   default:
