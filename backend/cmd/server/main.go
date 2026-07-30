@@ -663,6 +663,12 @@ func callsURL(f callFilter, drop string, page int) string {
 	set("from", f.From)
 	set("to", f.To)
 	set("favourite", f.Favourite)
+	if f.Sort != "newest" && drop != "sort" {
+		v.Set("sort", f.Sort)
+	}
+	if f.SmartSort && drop != "smart_sort" {
+		v.Set("smart_sort", "1")
+	}
 	if f.PageSize != 50 {
 		v.Set("page_size", strconv.Itoa(f.PageSize))
 	}
@@ -1480,12 +1486,19 @@ func (s *server) adminRunRetention(w http.ResponseWriter, r *http.Request) {
 
 type callFilter struct {
 	Q, Sender, System, Site, Receiver, Talkgroup, Radio, CallType, Frequency, MinDuration, MaxDuration, Date, From, To, Favourite string
+	Sort                                                                                                                          string
+	SmartSort                                                                                                                     bool
 	Patched                                                                                                                       bool
 	Page, PageSize                                                                                                                int
 }
 
 func filterFromQuery(q url.Values) (callFilter, error) {
-	f := callFilter{Q: strings.TrimSpace(q.Get("q")), Sender: strings.TrimSpace(q.Get("sender")), System: strings.TrimSpace(q.Get("system")), Site: strings.TrimSpace(q.Get("site")), Receiver: strings.TrimSpace(q.Get("receiver")), Talkgroup: strings.TrimSpace(q.Get("talkgroup")), Radio: strings.TrimSpace(q.Get("radio")), CallType: strings.TrimSpace(q.Get("call_type")), Frequency: strings.TrimSpace(q.Get("frequency")), MinDuration: strings.TrimSpace(q.Get("min_duration")), MaxDuration: strings.TrimSpace(q.Get("max_duration")), Date: q.Get("date"), From: q.Get("from"), To: q.Get("to"), Favourite: strings.TrimSpace(q.Get("favourite")), Page: 1, PageSize: 50, Patched: q.Get("patched") == "1" || strings.EqualFold(q.Get("patched"), "true")}
+	f := callFilter{Q: strings.TrimSpace(q.Get("q")), Sender: strings.TrimSpace(q.Get("sender")), System: strings.TrimSpace(q.Get("system")), Site: strings.TrimSpace(q.Get("site")), Receiver: strings.TrimSpace(q.Get("receiver")), Talkgroup: strings.TrimSpace(q.Get("talkgroup")), Radio: strings.TrimSpace(q.Get("radio")), CallType: strings.TrimSpace(q.Get("call_type")), Frequency: strings.TrimSpace(q.Get("frequency")), MinDuration: strings.TrimSpace(q.Get("min_duration")), MaxDuration: strings.TrimSpace(q.Get("max_duration")), Date: q.Get("date"), From: q.Get("from"), To: q.Get("to"), Favourite: strings.TrimSpace(q.Get("favourite")), Sort: strings.TrimSpace(q.Get("sort")), SmartSort: q.Get("smart_sort") == "1", Page: 1, PageSize: 50, Patched: q.Get("patched") == "1" || strings.EqualFold(q.Get("patched"), "true")}
+	switch f.Sort {
+	case "oldest", "talkgroup", "radio", "duration", "frequency":
+	default:
+		f.Sort = "newest"
+	}
 	for _, d := range []string{f.Date, f.From, f.To} {
 		if d != "" {
 			if _, err := time.Parse("2006-01-02", d); err != nil {
@@ -1521,7 +1534,23 @@ func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall,
 	if err := s.db.QueryRow(ctx, `SELECT count(*)`+callsFrom+callsWhere, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),coalesce(c.lcn,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.protected,c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id)` + callsFrom + callsWhere + ` ORDER BY c.start_time DESC LIMIT $17 OFFSET $18`
+	orderBy := "c.start_time DESC"
+	if f.SmartSort {
+		orderBy = "CASE WHEN lower(coalesce(c.call_type,'')) IN ('emergency','priority') THEN 0 ELSE 1 END,c.start_time DESC"
+	}
+	switch f.Sort {
+	case "oldest":
+		orderBy = "c.start_time ASC"
+	case "talkgroup":
+		orderBy = "c.talkgroup_id,c.start_time DESC"
+	case "radio":
+		orderBy = "c.radio_id,c.start_time DESC"
+	case "duration":
+		orderBy = "c.duration_ms DESC,c.start_time DESC"
+	case "frequency":
+		orderBy = "c.frequency,c.start_time DESC"
+	}
+	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),coalesce(c.lcn,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.protected,c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id)` + callsFrom + callsWhere + ` ORDER BY ` + orderBy + ` LIMIT $17 OFFSET $18`
 	result, err := s.db.Query(ctx, query, append(args, f.PageSize, (f.Page-1)*f.PageSize)...)
 	if err != nil {
 		return nil, 0, err

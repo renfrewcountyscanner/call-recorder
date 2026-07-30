@@ -31,6 +31,17 @@
           <option value="250" {{if eq .Filter.PageSize 250}}selected{{end}}>250</option>
         </select>
       </label>
+      <label>Sort
+        <select name="sort">
+          <option value="newest" {{if eq .Filter.Sort "newest"}}selected{{end}}>Newest first</option>
+          <option value="oldest" {{if eq .Filter.Sort "oldest"}}selected{{end}}>Oldest first</option>
+          <option value="talkgroup" {{if eq .Filter.Sort "talkgroup"}}selected{{end}}>Talkgroup</option>
+          <option value="radio" {{if eq .Filter.Sort "radio"}}selected{{end}}>Radio ID</option>
+          <option value="duration" {{if eq .Filter.Sort "duration"}}selected{{end}}>Longest calls</option>
+          <option value="frequency" {{if eq .Filter.Sort "frequency"}}selected{{end}}>Frequency</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" name="smart_sort" value="1" {{if .Filter.SmartSort}}checked{{end}}> SmartSort priority calls</label>
     </div>
     <div class="filter-actions">
       <button class="btn primary" type="submit">Apply filters</button>

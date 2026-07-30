@@ -25,6 +25,30 @@ func TestFilterFromQueryIncludesPhase7Fields(t *testing.T) {
 	}
 }
 
+func TestFilterSortIsValidatedAndShareable(t *testing.T) {
+	f, err := filterFromQuery(url.Values{"sort": {"duration"}, "page_size": {"250"}})
+	if err != nil || f.Sort != "duration" || f.PageSize != 250 {
+		t.Fatalf("unexpected sort filter: %#v err=%v", f, err)
+	}
+	if !strings.Contains(callsURL(f, "", 1), "sort=duration") {
+		t.Fatalf("sort missing from URL: %s", callsURL(f, "", 1))
+	}
+	unknown, err := filterFromQuery(url.Values{"sort": {"unsafe-column"}})
+	if err != nil || unknown.Sort != "newest" {
+		t.Fatalf("unsafe sort was not normalized: %#v err=%v", unknown, err)
+	}
+}
+
+func TestSmartSortIsShareable(t *testing.T) {
+	f, err := filterFromQuery(url.Values{"smart_sort": {"1"}})
+	if err != nil || !f.SmartSort {
+		t.Fatalf("smart sort not parsed: %#v err=%v", f, err)
+	}
+	if !strings.Contains(callsURL(f, "", 1), "smart_sort=1") {
+		t.Fatalf("smart sort missing from URL: %s", callsURL(f, "", 1))
+	}
+}
+
 func TestFilterRejectsInvalidDuration(t *testing.T) {
 	if _, err := filterFromQuery(url.Values{"min_duration": {"-1"}}); err == nil {
 		t.Fatal("expected invalid duration")
