@@ -3,7 +3,8 @@
 {{template "top" .}}
 <p class="small"><a href="/?system={{.Call.SystemID}}&talkgroup={{.Call.TalkgroupID}}">← Calls for this talkgroup</a></p>
 <p class="small"><a href="/export/call/{{.Call.ID}}">Export JSON</a> · <a href="/download/{{.Call.ID}}">Download audio</a></p>
-{{if .Nav.Authorized}}<form method="post" action="/admin/protect/{{.Call.ID}}" class="card"><label><input type="checkbox" name="protected" {{if .Call.Protected}}checked{{end}}> Protect from retention</label><label>Reason <input name="reason" maxlength="500"></label><button class="btn" type="submit">Save protection</button></form>{{end}}
+{{if .Nav.Authorized}}<form method="post" action="/admin/protect/{{.Call.ID}}" class="card"><h2>Retention protection</h2><label><input type="checkbox" name="protected" {{if .Call.Protected}}checked{{end}}> Protect from retention</label><label>Reason <input name="reason" maxlength="500" value="{{.Call.ProtectionReason}}"></label><label>Expires at <input name="expires_at" type="datetime-local"></label><button class="btn" type="submit">Save protection</button>{{if .Call.Protected}}<p class="muted">Protected by {{.Call.ProtectedBy}} at {{.Call.ProtectedAt}}</p>{{end}}</form>{{end}}
+{{if .ProtectionEvents}}<details class="card"><summary>Protection audit history</summary><ul>{{range .ProtectionEvents}}<li>{{if .Protected}}Protected{{else}}Unprotected{{end}} by {{.Identity}} at {{.At}} {{if .Reason}}— {{.Reason}}{{end}}</li>{{end}}</ul></details>{{end}}
 <div class="detail-hero">
   <button type="button" class="play-btn" data-play="{{.Call.ID}}" data-title="{{if .Call.TalkgroupName}}{{.Call.TalkgroupName}}{{else}}Talkgroup {{.Call.TalkgroupID}}{{end}}" data-meta="{{.Call.SystemID}} · {{.Call.StartTime.Local.Format "2006-01-02 15:04:05"}}" aria-label="Play this call"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg></button>
   <div>
@@ -66,6 +67,8 @@
 {{end}}
 <section class="card" aria-labelledby="d-notes"><h2 id="d-notes">Call text and notes</h2>
   {{if .Call.Transcript}}<p><strong>Received text:</strong> {{.Call.Transcript}}</p>{{end}}
+  {{if .GeneratedTranscript}}<p><strong>Generated transcript:</strong> {{.GeneratedTranscript}}</p>{{end}}
+  {{if .Nav.Authorized}}<form method="post" action="/admin/transcription/queue/{{.Call.ID}}"><button class="btn small">Queue transcription</button></form>{{end}}
   {{if .Nav.Authorized}}<form method="post" action="/admin/call/{{.Call.ID}}"><label for="notes">Notes</label><textarea id="notes" name="notes" maxlength="10000" rows="5">{{.Call.Notes}}</textarea><button class="btn primary" type="submit">Save notes</button></form>{{else if .Call.Notes}}<p>{{.Call.Notes}}</p>{{else}}<p class="muted">No notes.</p>{{end}}
 </section>
 <details class="metadata">

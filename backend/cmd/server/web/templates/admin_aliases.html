@@ -25,6 +25,7 @@
       <label>Description <input name="description" maxlength="2000" autocomplete="off"></label>
       <label>Category <input name="category" maxlength="120" autocomplete="off"></label>
       {{if eq .Kind "talkgroups"}}<label>Priority <input name="priority" type="number" value="0"></label>{{end}}
+      {{if eq .Kind "talkgroups"}}<label class="form-check"><input type="checkbox" name="transcription_enabled"> Transcription enabled</label><label>Transcription language <input name="transcription_language" maxlength="20"></label><label class="form-check"><input type="checkbox" name="notification_eligible" checked> Notification eligible</label>{{end}}
       <label>Source
         <select name="source"><option value="manual">manual</option><option value="imported">imported</option></select>
       </label>

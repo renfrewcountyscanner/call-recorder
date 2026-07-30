@@ -118,6 +118,8 @@ type errorResponse struct {
 type completedCall struct {
 	ID, SenderID, ReceiverID, SystemID, SystemName, SiteID, SiteName, TalkgroupID, TalkgroupName, RadioID, RadioName, Frequency, LCN, AudioPath, AudioFormat, Transcript, Notes, CallType string
 	Protected                                                                                                                                                                             bool
+	ProtectionReason, ProtectedBy                                                                                                                                                         string
+	ProtectedAt, ProtectionExpiresAt                                                                                                                                                      *time.Time
 	GroupCall                                                                                                                                                                             *bool
 	StartTime                                                                                                                                                                             time.Time
 	DurationMS                                                                                                                                                                            int64
@@ -189,11 +191,20 @@ func main() {
 		mux.HandleFunc("GET /admin/favourites", s.adminFavourites)
 		mux.HandleFunc("POST /admin/favourites", s.adminSaveFavourite)
 		mux.HandleFunc("POST /admin/favourites/member", s.adminSaveFavouriteMember)
+		mux.HandleFunc("POST /admin/favourites/delete", s.adminDeleteFavourite)
+		mux.HandleFunc("POST /admin/favourites/member/delete", s.adminDeleteFavouriteMember)
 		mux.HandleFunc("GET /admin/notifications", s.adminNotifications)
 		mux.HandleFunc("POST /admin/notifications/destination", s.adminSaveDestination)
+		mux.HandleFunc("POST /admin/notifications/destination/action", s.adminDestinationAction)
 		mux.HandleFunc("POST /admin/notifications/rule", s.adminSaveNotificationRule)
+		mux.HandleFunc("POST /admin/notifications/rule/action", s.adminRuleAction)
+		mux.HandleFunc("POST /admin/notifications/delivery/retry", s.adminRetryDelivery)
+		mux.HandleFunc("GET /admin/notifications/history", s.adminNotificationHistory)
 		mux.HandleFunc("GET /admin/transcription", s.adminTranscription)
 		mux.HandleFunc("POST /admin/transcription/queue/", s.adminQueueTranscription)
+		mux.HandleFunc("POST /admin/transcription/retry", s.adminRetryTranscription)
+		mux.HandleFunc("POST /admin/transcription/config", s.adminSaveTranscriptionConfig)
+		mux.HandleFunc("POST /admin/transcription/edit", s.adminEditTranscript)
 		mux.HandleFunc("POST /admin/talkgroups", s.adminSaveTalkgroup)
 		mux.HandleFunc("GET /admin/radios", s.adminRadios)
 		mux.HandleFunc("POST /admin/radios", s.adminSaveRadio)
@@ -705,7 +716,7 @@ func (s *server) callDetail(w http.ResponseWriter, r *http.Request) {
 	var c completedCall
 	var raw []byte
 	var patches []string
-	err := s.db.QueryRow(r.Context(), `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),coalesce(c.lcn,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(p.metadata,'{}'::jsonb),coalesce(c.call_type,''),c.protected,c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id) FROM calls c LEFT JOIN pending_uploads p ON p.completed_call_id=c.id LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE c.id=$1`, id).Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.RadioID, &c.RadioName, &c.Frequency, &c.LCN, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &raw, &c.CallType, &c.Protected, &c.GroupCall, &c.Patches)
+	err := s.db.QueryRow(r.Context(), `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.frequency,''),coalesce(c.lcn,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(p.metadata,'{}'::jsonb),coalesce(c.call_type,''),c.protected,coalesce(c.protection_reason,''),coalesce(c.protected_by,''),c.protected_at,c.protection_expires_at,c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id) FROM calls c LEFT JOIN pending_uploads p ON p.completed_call_id=c.id LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE c.id=$1`, id).Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.RadioID, &c.RadioName, &c.Frequency, &c.LCN, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &raw, &c.CallType, &c.Protected, &c.ProtectionReason, &c.ProtectedBy, &c.ProtectedAt, &c.ProtectionExpiresAt, &c.GroupCall, &c.Patches)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -724,7 +735,21 @@ func (s *server) callDetail(w http.ResponseWriter, r *http.Request) {
 	if json.Indent(&pretty, raw, "", "  ") == nil {
 		meta = pretty.String()
 	}
-	s.page(w, r, "detail.html", "Call detail", "calls", map[string]any{"Call": c, "Patches": patches, "Metadata": meta})
+	var generated string
+	_ = s.db.QueryRow(r.Context(), `SELECT coalesce(edited_text,text,'') FROM transcripts WHERE call_id=$1 ORDER BY updated_at DESC LIMIT 1`, id).Scan(&generated)
+	events := []map[string]any{}
+	if er, e := s.db.Query(r.Context(), `SELECT protected,coalesce(reason,''),coalesce(identity,''),created_at FROM protection_events WHERE call_id=$1 ORDER BY created_at DESC LIMIT 20`, id); e == nil {
+		defer er.Close()
+		for er.Next() {
+			var protected bool
+			var reason, identity string
+			var at time.Time
+			if er.Scan(&protected, &reason, &identity, &at) == nil {
+				events = append(events, map[string]any{"Protected": protected, "Reason": reason, "Identity": identity, "At": at})
+			}
+		}
+	}
+	s.page(w, r, "detail.html", "Call detail", "calls", map[string]any{"Call": c, "Patches": patches, "Metadata": meta, "GeneratedTranscript": generated, "ProtectionEvents": events})
 }
 
 func (s *server) adminUpdateCallNotes(w http.ResponseWriter, r *http.Request) {
@@ -1147,7 +1172,7 @@ func (s *server) adminSaveTalkgroup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	_, err = s.db.Exec(r.Context(), `INSERT INTO talkgroup_aliases(system_id,talkgroup_id,alias,description,category,priority,enabled,source) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(system_id,talkgroup_id) DO UPDATE SET alias=EXCLUDED.alias,description=EXCLUDED.description,category=EXCLUDED.category,priority=EXCLUDED.priority,enabled=EXCLUDED.enabled,source=EXCLUDED.source,updated_at=now()`, system, id, alias, desc, category, priority, enabled, source)
+	_, err = s.db.Exec(r.Context(), `INSERT INTO talkgroup_aliases(system_id,talkgroup_id,alias,description,category,priority,enabled,source,transcription_enabled,transcription_language,notification_eligible) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,''),$11) ON CONFLICT(system_id,talkgroup_id) DO UPDATE SET alias=EXCLUDED.alias,description=EXCLUDED.description,category=EXCLUDED.category,priority=EXCLUDED.priority,enabled=EXCLUDED.enabled,source=EXCLUDED.source,transcription_enabled=EXCLUDED.transcription_enabled,transcription_language=EXCLUDED.transcription_language,notification_eligible=EXCLUDED.notification_eligible,updated_at=now()`, system, id, alias, desc, category, priority, enabled, source, v.Get("transcription_enabled") == "on", strings.TrimSpace(v.Get("transcription_language")), v.Get("notification_eligible") != "off")
 	if err != nil {
 		s.internal(w, err)
 		return
