@@ -109,7 +109,20 @@ func (s *server) adminFavourites(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	s.page(w, r, "admin_favourites.html", "Favourite groups", "favourites", map[string]any{"Groups": groups, "Selected": selected, "Members": members, "Search": query})
+	suggestions := []map[string]string{}
+	if selected > 0 {
+		rows, e := s.db.Query(r.Context(), `SELECT DISTINCT c.system_id,c.talkgroup_id,coalesce(a.alias,c.talkgroup_name,'') FROM calls c LEFT JOIN talkgroup_aliases a ON a.system_id=c.system_id AND a.talkgroup_id=c.talkgroup_id AND a.enabled WHERE c.system_id<>'' AND c.talkgroup_id<>'' ORDER BY c.system_id,c.talkgroup_id LIMIT 250`)
+		if e == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var system, tg, alias string
+				if rows.Scan(&system, &tg, &alias) == nil {
+					suggestions = append(suggestions, map[string]string{"System": system, "Talkgroup": tg, "Alias": alias})
+				}
+			}
+		}
+	}
+	s.page(w, r, "admin_favourites.html", "Favourite groups", "favourites", map[string]any{"Groups": groups, "Selected": selected, "Members": members, "Search": query, "Suggestions": suggestions})
 }
 
 func (s *server) adminDeleteFavourite(w http.ResponseWriter, r *http.Request) {
@@ -339,14 +352,49 @@ func (s *server) adminRetryDelivery(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
-	http.Redirect(w, r, "/admin/notifications/history", 303)
+	http.Redirect(w, r, safeAdminReturn(r.FormValue("return"), "/admin/notifications/history"), 303)
+}
+
+func safeAdminReturn(value, fallback string) string {
+	if strings.HasPrefix(value, "/admin/") && !strings.Contains(value, "//") {
+		return value
+	}
+	return fallback
 }
 
 func (s *server) adminNotificationHistory(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
 		return
 	}
-	rows, err := s.db.Query(r.Context(), `SELECT id,rule_id,destination_id,call_id,status,attempt_count,coalesce(last_attempt_at::text,''),coalesce(next_attempt_at::text,''),coalesce(successful_at::text,''),coalesce(error,'') FROM notification_deliveries ORDER BY id DESC LIMIT 500`)
+	q := r.URL.Query()
+	status := strings.TrimSpace(q.Get("status"))
+	failedOnly := q.Get("failed") == "1"
+	date := strings.TrimSpace(q.Get("date"))
+	page, _ := strconv.Atoi(q.Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	const perPage = 100
+	where, args := []string{"true"}, []any{}
+	if status != "" {
+		args = append(args, status)
+		where = append(where, fmt.Sprintf("status=$%d", len(args)))
+	}
+	if failedOnly {
+		where = append(where, "status='failed'")
+	}
+	if date != "" {
+		args = append(args, date)
+		where = append(where, fmt.Sprintf("created_at::date=$%d::date", len(args)))
+	}
+	clause := strings.Join(where, " AND ")
+	var total int
+	if err := s.db.QueryRow(r.Context(), `SELECT count(*) FROM notification_deliveries WHERE `+clause, args...).Scan(&total); err != nil {
+		s.internal(w, err)
+		return
+	}
+	args = append(args, perPage, (page-1)*perPage)
+	rows, err := s.db.Query(r.Context(), `SELECT id,rule_id,destination_id,call_id,status,attempt_count,coalesce(last_attempt_at::text,''),coalesce(next_attempt_at::text,''),coalesce(successful_at::text,''),coalesce(error,'') FROM notification_deliveries WHERE `+clause+fmt.Sprintf(` ORDER BY id DESC LIMIT $%d OFFSET $%d`, len(args)-1, len(args)), args...)
 	if err != nil {
 		s.internal(w, err)
 		return
@@ -360,7 +408,8 @@ func (s *server) adminNotificationHistory(w http.ResponseWriter, r *http.Request
 			items = append(items, map[string]any{"ID": id, "Rule": rule, "Destination": dest, "Call": call, "Status": status, "Attempts": attempt, "Last": last, "Next": next, "Success": success, "Error": e})
 		}
 	}
-	s.page(w, r, "admin_notification_history.html", "Notification history", "notifications", map[string]any{"Deliveries": items})
+	pages := (total + perPage - 1) / perPage
+	s.page(w, r, "admin_notification_history.html", "Notification history", "notifications", map[string]any{"Deliveries": items, "Total": total, "Page": page, "Pages": pages, "Status": status, "Date": date, "Failed": failedOnly, "ReturnURL": r.URL.RequestURI()})
 }
 func (s *server) adminSaveDestination(w http.ResponseWriter, r *http.Request) {
 	if !s.adminAuthorized(w, r) {
@@ -424,7 +473,36 @@ func (s *server) adminTranscription(w http.ResponseWriter, r *http.Request) {
 	var pending, failed, done int64
 	_ = s.db.QueryRow(r.Context(), `SELECT enabled,provider,coalesce(endpoint_url,''),coalesce(model,''),coalesce(secret_ref,'') FROM transcription_config WHERE id=true`).Scan(&enabled, &provider, &endpoint, &model, &secret)
 	_ = s.db.QueryRow(r.Context(), `SELECT count(*) FILTER(WHERE status='pending'),count(*) FILTER(WHERE status='failed'),count(*) FILTER(WHERE status='completed') FROM transcription_jobs`).Scan(&pending, &failed, &done)
-	rows, _ := s.db.Query(r.Context(), `SELECT j.id,j.call_id,j.status,j.provider,j.attempt_count,coalesce(j.error,''),coalesce(j.created_at::text,''),coalesce(j.completed_at::text,'') FROM transcription_jobs j ORDER BY j.id DESC LIMIT 200`)
+	q := r.URL.Query()
+	status := strings.TrimSpace(q.Get("status"))
+	providerFilter := strings.TrimSpace(q.Get("provider"))
+	callFilter := strings.TrimSpace(q.Get("call"))
+	date := strings.TrimSpace(q.Get("date"))
+	failedOnly := q.Get("failed") == "1"
+	page, _ := strconv.Atoi(q.Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	const perPage = 100
+	where, args := []string{"true"}, []any{}
+	for _, item := range []struct{ value, column string }{{status, "j.status"}, {providerFilter, "j.provider"}, {callFilter, "j.call_id"}} {
+		if item.value != "" {
+			args = append(args, item.value)
+			where = append(where, fmt.Sprintf("%s=$%d", item.column, len(args)))
+		}
+	}
+	if failedOnly {
+		where = append(where, "j.status='failed'")
+	}
+	if date != "" {
+		args = append(args, date)
+		where = append(where, fmt.Sprintf("j.created_at::date=$%d::date", len(args)))
+	}
+	clause := strings.Join(where, " AND ")
+	var total int
+	_ = s.db.QueryRow(r.Context(), `SELECT count(*) FROM transcription_jobs j WHERE `+clause, args...).Scan(&total)
+	args = append(args, perPage, (page-1)*perPage)
+	rows, _ := s.db.Query(r.Context(), `SELECT j.id,j.call_id,j.status,j.provider,j.attempt_count,coalesce(j.error,''),coalesce(j.created_at::text,''),coalesce(j.completed_at::text,'') FROM transcription_jobs j WHERE `+clause+fmt.Sprintf(` ORDER BY j.id DESC LIMIT $%d OFFSET $%d`, len(args)-1, len(args)), args...)
 	type job struct {
 		ID                                                int64
 		Call, Status, Provider, Error, Created, Completed string
@@ -440,7 +518,8 @@ func (s *server) adminTranscription(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	s.page(w, r, "admin_transcription.html", "Transcription", "transcription", map[string]any{"Enabled": enabled, "Provider": provider, "Endpoint": endpoint, "Model": model, "Secret": secret, "Pending": pending, "Failed": failed, "Completed": done, "Jobs": jobs})
+	pages := (total + perPage - 1) / perPage
+	s.page(w, r, "admin_transcription.html", "Transcription", "transcription", map[string]any{"Enabled": enabled, "Provider": provider, "Endpoint": endpoint, "Model": model, "Secret": secret, "Pending": pending, "Failed": failed, "Completed": done, "Jobs": jobs, "Total": total, "Page": page, "Pages": pages, "StatusFilter": status, "ProviderFilter": providerFilter, "CallFilter": callFilter, "Date": date, "FailedOnly": failedOnly, "ReturnURL": r.URL.RequestURI()})
 }
 
 func (s *server) adminRetryTranscription(w http.ResponseWriter, r *http.Request) {
@@ -456,7 +535,7 @@ func (s *server) adminRetryTranscription(w http.ResponseWriter, r *http.Request)
 		s.internal(w, err)
 		return
 	}
-	http.Redirect(w, r, "/admin/transcription", 303)
+	http.Redirect(w, r, safeAdminReturn(r.FormValue("return"), "/admin/transcription"), 303)
 }
 
 func (s *server) adminSaveTranscriptionConfig(w http.ResponseWriter, r *http.Request) {

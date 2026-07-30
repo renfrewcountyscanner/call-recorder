@@ -2,21 +2,21 @@
 {{template "head" .}}
 {{template "top" .}}
 <h1>Calls</h1>
-<div id="live-status" class="live-status" role="status" aria-live="polite">Live updates: connecting…</div>
+<div class="live-controls"><div id="live-status" class="live-status" role="status" aria-live="polite">Live updates: connecting…</div><button id="live-toggle" class="btn small ghost" type="button" aria-pressed="false">Pause updates</button></div>
 {{if .Error}}<div class="alert danger" role="alert">{{.Error}}</div>{{end}}
 <details class="filters" open>
   <summary>Filters</summary>
   <form id="filter-form" hx-get="/calls" hx-target="#calls" hx-swap="innerHTML" hx-trigger="submit, keyup changed delay:350ms from:input, change changed from:select, change changed from:input[type=date]">
     <div class="filter-grid">
       <label>Search <input name="q" value="{{.Filter.Q}}" autocomplete="off" placeholder="Alias, ID, or transcript"></label>
-      <label>Sender <input name="sender" value="{{.Filter.Sender}}" autocomplete="off"></label>
-      <label>System <input name="system" value="{{.Filter.System}}" autocomplete="off"></label>
-      <label>Site <input name="site" value="{{.Filter.Site}}" autocomplete="off"></label>
-      <label>Receiver <input name="receiver" value="{{.Filter.Receiver}}" autocomplete="off"></label>
-      <label>Talkgroup <input name="talkgroup" value="{{.Filter.Talkgroup}}" autocomplete="off"></label>
+      <label>Sender <input name="sender" list="sender-values" value="{{.Filter.Sender}}" autocomplete="off"></label>
+      <label>System <input name="system" list="system-values" value="{{.Filter.System}}" autocomplete="off"></label>
+      <label>Site <input name="site" list="site-values" value="{{.Filter.Site}}" autocomplete="off"></label>
+      <label>Receiver <input name="receiver" list="receiver-values" value="{{.Filter.Receiver}}" autocomplete="off"></label>
+      <label>Talkgroup <input name="talkgroup" list="talkgroup-values" value="{{.Filter.Talkgroup}}" autocomplete="off"></label>
       <label>Favourite group <select name="favourite"><option value="">All groups</option>{{range .FavouriteGroups}}<option value="{{.ID}}" {{if eq $.Filter.Favourite (printf "%d" .ID)}}selected{{end}}>{{.Name}}</option>{{end}}</select></label>
-      <label>Radio ID <input name="radio" value="{{.Filter.Radio}}" autocomplete="off"></label>
-      <label>Call type <input name="call_type" value="{{.Filter.CallType}}" autocomplete="off"></label>
+      <label>Radio ID <input name="radio" list="radio-values" value="{{.Filter.Radio}}" autocomplete="off"></label>
+      <label>Call type <input name="call_type" list="call-type-values" value="{{.Filter.CallType}}" autocomplete="off"></label>
       <label>Frequency <input name="frequency" value="{{.Filter.Frequency}}" autocomplete="off"></label>
       <label>Min duration (sec) <input name="min_duration" value="{{.Filter.MinDuration}}" inputmode="decimal"></label>
       <label>Max duration (sec) <input name="max_duration" value="{{.Filter.MaxDuration}}" inputmode="decimal"></label>
@@ -28,7 +28,7 @@
           <option value="25" {{if eq .Filter.PageSize 25}}selected{{end}}>25</option>
           <option value="50" {{if eq .Filter.PageSize 50}}selected{{end}}>50</option>
           <option value="100" {{if eq .Filter.PageSize 100}}selected{{end}}>100</option>
-          <option value="200" {{if eq .Filter.PageSize 200}}selected{{end}}>200</option>
+          <option value="250" {{if eq .Filter.PageSize 250}}selected{{end}}>250</option>
         </select>
       </label>
     </div>
@@ -38,6 +38,7 @@
       <a class="btn ghost" href="/export/calls.csv?{{.RawQuery}}">Export CSV</a>
     </div>
   </form>
+  <datalist id="sender-values">{{range .Senders}}<option value="{{.}}">{{end}}</datalist><datalist id="system-values">{{range .Systems}}<option value="{{.}}">{{end}}</datalist><datalist id="site-values">{{range .Sites}}<option value="{{.}}">{{end}}</datalist><datalist id="receiver-values">{{range .Receivers}}<option value="{{.}}">{{end}}</datalist><datalist id="talkgroup-values">{{range .Talkgroups}}<option value="{{.}}">{{end}}</datalist><datalist id="radio-values">{{range .Radios}}<option value="{{.}}">{{end}}</datalist><datalist id="call-type-values">{{range .CallTypes}}<option value="{{.}}">{{end}}</datalist>
 </details>
 <section id="calls" hx-get="/calls?{{.RawQuery}}" hx-trigger="load" hx-swap="innerHTML" aria-label="Call list">
   <div class="loading">Loading calls…</div>
