@@ -46,6 +46,9 @@
           <option value="site" {{if eq .Filter.Sort "site"}}selected{{end}}>Site</option>
           <option value="calltype" {{if eq .Filter.Sort "calltype"}}selected{{end}}>Call type</option>
           <option value="lcn" {{if eq .Filter.Sort "lcn"}}selected{{end}}>LCN</option>
+          <option value="receiver" {{if eq .Filter.Sort "receiver"}}selected{{end}}>Receiver</option>
+          <option value="talkgroup_label" {{if eq .Filter.Sort "talkgroup_label"}}selected{{end}}>Talkgroup label</option>
+          <option value="radio_label" {{if eq .Filter.Sort "radio_label"}}selected{{end}}>Radio label</option>
         </select>
       </label>
       <label class="check"><input type="checkbox" name="smart_sort" value="1" {{if .Filter.SmartSort}}checked{{end}}> SmartSort priority calls</label>

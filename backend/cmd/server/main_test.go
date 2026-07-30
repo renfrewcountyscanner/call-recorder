@@ -40,7 +40,7 @@ func TestFilterSortIsValidatedAndShareable(t *testing.T) {
 }
 
 func TestAdditionalSortsAreValidated(t *testing.T) {
-	for _, sort := range []string{"system", "site", "calltype", "lcn"} {
+	for _, sort := range []string{"system", "site", "calltype", "lcn", "receiver", "talkgroup_label", "radio_label"} {
 		f, err := filterFromQuery(url.Values{"sort": {sort}})
 		if err != nil || f.Sort != sort {
 			t.Fatalf("sort %q was not accepted: %#v err=%v", sort, f, err)
