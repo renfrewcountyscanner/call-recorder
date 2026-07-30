@@ -233,7 +233,12 @@ try:
     wait_for(a, "h1")
     assert "Retention history" in a.find_element(By.TAG_NAME, "h1").text
 
-    # nav reflects authorization
+    # Grouped administration navigation must be opened before its links are
+    # interacted with; this also exercises the mobile/keyboard-friendly details
+    # control introduced by the UX polish.
+    admin_summary = a.find_element(By.CSS_SELECTOR, ".admin-nav summary")
+    if not admin_summary.get_attribute("aria-expanded") == "true":
+        a.execute_script("arguments[0].click()", admin_summary)
     assert a.find_element(By.LINK_TEXT, "Talkgroups"), "admin nav links missing when authorized"
     check_console(a, "admin")
 finally:
