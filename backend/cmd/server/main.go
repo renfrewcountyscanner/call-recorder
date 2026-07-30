@@ -126,6 +126,8 @@ type completedCall struct {
 	DurationMS                                                                                                                                                                                                                  int64
 	AudioSize                                                                                                                                                                                                                   int64
 	Patches                                                                                                                                                                                                                     int
+	GeneratedTranscript                                                                                                                                                                                                         bool
+	TranscriptionStatus                                                                                                                                                                                                         string
 }
 
 func main() {
@@ -1571,7 +1573,7 @@ func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall,
 	case "frequency":
 		orderBy = "c.frequency,c.start_time DESC"
 	}
-	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.talkgroup_tag,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.radio_tag,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.voice_service,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.protected,c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id)` + callsFrom + callsWhere + ` ORDER BY ` + orderBy + ` LIMIT $18 OFFSET $19`
+	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.talkgroup_tag,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.radio_tag,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.voice_service,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.protected,c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id),EXISTS(SELECT 1 FROM transcripts t WHERE t.call_id=c.id),coalesce((SELECT tj.status FROM transcription_jobs tj WHERE tj.call_id=c.id ORDER BY tj.updated_at DESC LIMIT 1),'')` + callsFrom + callsWhere + ` ORDER BY ` + orderBy + ` LIMIT $18 OFFSET $19`
 	result, err := s.db.Query(ctx, query, append(args, f.PageSize, (f.Page-1)*f.PageSize)...)
 	if err != nil {
 		return nil, 0, err
@@ -1580,7 +1582,7 @@ func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall,
 	calls := []completedCall{}
 	for result.Next() {
 		var c completedCall
-		if err := result.Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.TalkgroupTag, &c.RadioID, &c.RadioName, &c.RadioTag, &c.Frequency, &c.LCN, &c.VoiceService, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &c.CallType, &c.Protected, &c.GroupCall, &c.Patches); err != nil {
+		if err := result.Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.TalkgroupTag, &c.RadioID, &c.RadioName, &c.RadioTag, &c.Frequency, &c.LCN, &c.VoiceService, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &c.CallType, &c.Protected, &c.GroupCall, &c.Patches, &c.GeneratedTranscript, &c.TranscriptionStatus); err != nil {
 			return nil, 0, err
 		}
 		calls = append(calls, c)
