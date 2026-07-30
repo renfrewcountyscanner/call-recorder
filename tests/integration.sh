@@ -5,6 +5,10 @@ compose="docker-compose --project-name callrecorder_it --env-file $root/deploy/i
 cleanup() { if [ "${KEEP_TEST_ENV:-0}" = 1 ]; then return; fi; $compose down >/dev/null 2>&1 || true; rm -rf "$root/.test-runtime" "$work"; }
 work=$(mktemp -d)
 trap cleanup EXIT
+# Always start from a clean isolated database/audio tree. This is important
+# after an interrupted run whose EXIT trap could not remove its containers.
+$compose down -v --remove-orphans >/dev/null 2>&1 || true
+rm -rf "$root/.test-runtime"
 mkdir -p "$root/.test-runtime/postgres" "$root/.test-runtime/audio"
 $compose up -d --build
 ready=0
