@@ -23,7 +23,7 @@ Status values: Missing, Partial, Complete, Better in Logger, User rejected, Bloc
 | Sorting | Sortable meaningful columns | Partial | Server-side newest/oldest/talkgroup/radio/duration/frequency sorting added; remaining displayed columns still required |
 | Column visibility/order | User-configurable grid | Partial | Browser-local column chooser now hides/restores compact columns; drag ordering and the legacy full column set remain |
 | Export/print | CSV/Excel/PDF/print/audio | Partial | CSV/JSON/audio/print present; assess useful export gaps |
-| Call detail | Full metadata and actions | Partial | Detail now exposes tags and voice service; remaining legacy actions/fields require authenticated comparison |
+| Call detail | Full metadata and actions | Partial | Detail exposes tags, voice service, protection, notes, transcripts, export and download; remaining Windows-only fields/actions require behavior-level evidence |
 
 ## Administration
 
