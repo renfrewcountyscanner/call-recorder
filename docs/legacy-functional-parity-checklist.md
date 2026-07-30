@@ -29,18 +29,18 @@ Status values: Missing, Partial, Complete, Better in Logger, User rejected, Bloc
 
 | Area | Legacy workflow | Logger status | Evidence / required work |
 |---|---|---|---|
-| General | Application/general settings | Blocked | Authenticated legacy access required |
+| General | Application/general settings | Cannot verify | Legacy administration is a Windows desktop workflow, not a web admin site; inspect only documented observable behavior and provide Linux-native equivalents |
 | Recording | Recording configuration | Better in Logger | Trunk Recorder remains the recorder; document equivalent metadata |
 | Call Import | Import workflows | Better in Logger | Linux ingestion APIs/uploader exist |
 | Purging | Purge rules and storage status | Partial | Retention exists; compare storage/orphan diagnostics |
 | Webserver | Webserver settings | Better in Logger | Docker/reverse-proxy deployment documented |
 | Favourites | Group/membership management | Partial | CRUD exists; improve assisted membership selection |
 | Call Uploading | Destinations, retries and status | Partial | Sender and durable queues exist; compare visible controls |
-| Streaming | Stream definitions and queue controls | Blocked | Must inspect authenticated usage before exclusion |
+| Streaming | Stream definitions and queue controls | Cannot verify | No legacy web administration exists; current evidence does not establish whether streaming is actively used |
 | Metadata | Metadata options | Partial | Metadata preserved; compare configurable behavior |
 | Email | SMTP and recipient settings | Partial | Notification destinations exist; authenticated parity required |
-| Transcribe | Providers, phrases and queue | Partial | Provider abstraction exists; authenticated legacy fields blocked |
-| Advanced | Diagnostics and advanced settings | Blocked | Authenticated legacy access required |
+| Transcribe | Providers, phrases and queue | Partial | Linux provider, queue, status and editing UI exist; Windows desktop-only settings require behavior-level comparison |
+| Advanced | Diagnostics and advanced settings | Cannot verify | Windows desktop-only settings are not reachable from the legacy public website |
 
 ## Completion rule
 

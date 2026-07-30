@@ -818,7 +818,7 @@ func (s *server) exportCallsCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="call-export.csv"`)
 	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{"Call ID", "Timestamp", "Sender", "Receiver", "System", "Site", "Talkgroup ID", "Talkgroup Alias", "Radio ID", "Radio Alias", "Frequency", "LCN", "Duration Seconds", "Call Type", "Patched Targets", "Transcript", "Notes", "Audio Format"})
+	_ = cw.Write([]string{"Call ID", "Timestamp", "Sender", "Receiver", "System", "Site", "Talkgroup ID", "Talkgroup Alias", "Talkgroup Tag", "Radio ID", "Radio Alias", "Radio Tag", "Frequency", "LCN", "Voice Service", "Duration Seconds", "Call Type", "Patched Targets", "Transcript", "Notes", "Audio Format"})
 	for {
 		page, total, e := s.queryCalls(r.Context(), f)
 		if e != nil {
@@ -826,7 +826,7 @@ func (s *server) exportCallsCSV(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, c := range page {
-			_ = cw.Write([]string{c.ID, c.StartTime.UTC().Format(time.RFC3339Nano), c.SenderID, c.ReceiverID, c.SystemID, c.SiteID, c.TalkgroupID, c.TalkgroupName, c.RadioID, c.RadioName, c.Frequency, c.LCN, fmt.Sprintf("%.3f", float64(c.DurationMS)/1000), c.CallType, strconv.Itoa(c.Patches), c.Transcript, c.Notes, c.AudioFormat})
+			_ = cw.Write([]string{c.ID, c.StartTime.UTC().Format(time.RFC3339Nano), c.SenderID, c.ReceiverID, c.SystemID, c.SiteID, c.TalkgroupID, c.TalkgroupName, c.TalkgroupTag, c.RadioID, c.RadioName, c.RadioTag, c.Frequency, c.LCN, c.VoiceService, fmt.Sprintf("%.3f", float64(c.DurationMS)/1000), c.CallType, strconv.Itoa(c.Patches), c.Transcript, c.Notes, c.AudioFormat})
 		}
 		cw.Flush()
 		if cw.Error() != nil {
