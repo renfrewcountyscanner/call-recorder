@@ -1518,7 +1518,7 @@ func filterFromQuery(q url.Values) (callFilter, error) {
 		f.Group = ""
 	}
 	switch f.Sort {
-	case "oldest", "talkgroup", "radio", "duration", "frequency":
+	case "oldest", "talkgroup", "radio", "duration", "frequency", "system", "site", "calltype", "lcn":
 	default:
 		f.Sort = "newest"
 	}
@@ -1572,6 +1572,14 @@ func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall,
 		orderBy = "c.duration_ms DESC,c.start_time DESC"
 	case "frequency":
 		orderBy = "c.frequency,c.start_time DESC"
+	case "system":
+		orderBy = "c.system_id,c.start_time DESC"
+	case "site":
+		orderBy = "c.site_id,c.start_time DESC"
+	case "calltype":
+		orderBy = "c.call_type,c.start_time DESC"
+	case "lcn":
+		orderBy = "c.lcn,c.start_time DESC"
 	}
 	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.talkgroup_tag,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.radio_tag,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.voice_service,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.protected,c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id),EXISTS(SELECT 1 FROM transcripts t WHERE t.call_id=c.id),coalesce((SELECT tj.status FROM transcription_jobs tj WHERE tj.call_id=c.id ORDER BY tj.updated_at DESC LIMIT 1),'')` + callsFrom + callsWhere + ` ORDER BY ` + orderBy + ` LIMIT $18 OFFSET $19`
 	result, err := s.db.Query(ctx, query, append(args, f.PageSize, (f.Page-1)*f.PageSize)...)

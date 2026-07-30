@@ -39,6 +39,15 @@ func TestFilterSortIsValidatedAndShareable(t *testing.T) {
 	}
 }
 
+func TestAdditionalSortsAreValidated(t *testing.T) {
+	for _, sort := range []string{"system", "site", "calltype", "lcn"} {
+		f, err := filterFromQuery(url.Values{"sort": {sort}})
+		if err != nil || f.Sort != sort {
+			t.Fatalf("sort %q was not accepted: %#v err=%v", sort, f, err)
+		}
+	}
+}
+
 func TestFilterSupportsRepeatedAndCommaSeparatedValues(t *testing.T) {
 	f, err := filterFromQuery(url.Values{"system": {"alpha", "beta,gamma"}, "talkgroup": {"100,200"}})
 	if err != nil {

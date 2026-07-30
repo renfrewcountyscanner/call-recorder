@@ -42,6 +42,10 @@
           <option value="radio" {{if eq .Filter.Sort "radio"}}selected{{end}}>Radio ID</option>
           <option value="duration" {{if eq .Filter.Sort "duration"}}selected{{end}}>Longest calls</option>
           <option value="frequency" {{if eq .Filter.Sort "frequency"}}selected{{end}}>Frequency</option>
+          <option value="system" {{if eq .Filter.Sort "system"}}selected{{end}}>System</option>
+          <option value="site" {{if eq .Filter.Sort "site"}}selected{{end}}>Site</option>
+          <option value="calltype" {{if eq .Filter.Sort "calltype"}}selected{{end}}>Call type</option>
+          <option value="lcn" {{if eq .Filter.Sort "lcn"}}selected{{end}}>LCN</option>
         </select>
       </label>
       <label class="check"><input type="checkbox" name="smart_sort" value="1" {{if .Filter.SmartSort}}checked{{end}}> SmartSort priority calls</label>
