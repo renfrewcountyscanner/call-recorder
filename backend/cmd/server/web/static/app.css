@@ -196,7 +196,7 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 0.75rem 0; }
 .admin-nav details[open] summary { background: var(--panel-2); border-color: var(--border-strong); }
 .admin-nav summary::-webkit-details-marker { display: none; }
 .admin-nav-menu {
-  position: fixed; z-index: 70; top: calc(var(--header-height) + 0.35rem); right: 1rem;
+  position: fixed; z-index: 70;
   min-width: 13rem; padding: 0.35rem; border: 1px solid var(--border-strong);
   border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow);
   display: none; flex-direction: column; gap: 0.15rem;

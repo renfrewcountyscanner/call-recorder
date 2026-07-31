@@ -460,4 +460,31 @@
   }
   initFilterDropdowns();
   document.body.addEventListener('htmx:afterSwap', initFilterDropdowns);
+
+  /* ---------- Administration dropdown positioning ---------- */
+  var adminDetails = document.querySelector('.admin-nav details');
+  if (adminDetails) {
+    var adminSummary = adminDetails.querySelector('summary');
+    var adminMenu = adminDetails.querySelector('.admin-nav-menu');
+    function positionAdminMenu() {
+      if (!adminSummary || !adminMenu) return;
+      var rect = adminSummary.getBoundingClientRect();
+      var menuWidth = adminMenu.offsetWidth || 220;
+      var left = rect.left;
+      if (left + menuWidth > window.innerWidth - 8) left = window.innerWidth - menuWidth - 8;
+      if (left < 8) left = 8;
+      adminMenu.style.top = (rect.bottom + 4) + 'px';
+      adminMenu.style.left = left + 'px';
+    }
+    adminDetails.addEventListener('toggle', function () {
+      if (adminDetails.open) positionAdminMenu();
+    });
+    document.addEventListener('click', function (e) {
+      if (adminDetails.open && !adminDetails.contains(e.target)) adminDetails.open = false;
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && adminDetails.open) adminDetails.open = false;
+    });
+    window.addEventListener('resize', function () { if (adminDetails.open) positionAdminMenu(); });
+  }
 })();

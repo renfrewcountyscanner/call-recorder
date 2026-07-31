@@ -47,6 +47,7 @@ services:
       CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED: ${CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED:-false}
       CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL: ${CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL:-}
       CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS: ${CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS:-}
+      TZ: ${TZ:-America/Toronto}
     ports:
       - "${CALL_RECORDER_PORT:-8080}:8080"
     volumes:
@@ -63,6 +64,7 @@ services:
         condition: service_healthy
     environment:
       CALL_RECORDER_DATABASE_URL: postgresql://${POSTGRES_USER:-call_recorder}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-call_recorder}?sslmode=disable
+      TZ: ${TZ:-America/Toronto}
     user: "10001:10001"
   transcription-worker:
     build: ../backend
@@ -78,6 +80,7 @@ services:
       CALL_RECORDER_DATABASE_URL: postgresql://${POSTGRES_USER:-call_recorder}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-call_recorder}?sslmode=disable
       CALL_RECORDER_AUDIO_ROOT: /var/lib/call-recorder/audio
       CALL_RECORDER_SECRETS_ROOT: /var/lib/call-recorder/secrets
+      TZ: ${TZ:-America/Toronto}
     volumes:
       - ../runtime/audio:/var/lib/call-recorder/audio:ro
       - ../runtime/secrets:/var/lib/call-recorder/secrets:ro
