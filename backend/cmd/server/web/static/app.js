@@ -193,182 +193,183 @@
     live.onerror = function () { if (!updatesPaused) { liveStatus.textContent = 'Live updates: reconnecting'; liveStatus.className = 'live-status reconnecting'; } };
     window.setInterval(function () { if (!updatesPaused && live.readyState !== 1 && !($('player-audio') && !$('player-audio').paused)) refreshCalls(); }, 30000);
   }
-  if (!audio) return;
-  var bar = $('player-bar');
-  var btnPlay = $('pp-play'), btnPrev = $('pp-prev'), btnNext = $('pp-next'), btnStop = $('pp-stop');
-  var titleEl = $('pp-title'), metaEl = $('pp-meta');
-  var curEl = $('pp-cur'), durEl = $('pp-dur'), seek = $('pp-seek');
-  var seqBox = $('pp-seq'), speedSel = $('pp-speed'), volRange = $('pp-vol');
-  var announce = $('pp-announce');
+  if (audio) {
+    var bar = $('player-bar');
+    var btnPlay = $('pp-play'), btnPrev = $('pp-prev'), btnNext = $('pp-next'), btnStop = $('pp-stop');
+    var titleEl = $('pp-title'), metaEl = $('pp-meta');
+    var curEl = $('pp-cur'), durEl = $('pp-dur'), seek = $('pp-seek');
+    var seqBox = $('pp-seq'), speedSel = $('pp-speed'), volRange = $('pp-vol');
+    var announce = $('pp-announce');
 
-  var queue = [];
-  var index = -1;
-  var playingId = null;
+    var queue = [];
+    var index = -1;
+    var playingId = null;
 
-  function store(key, value) { try { sessionStorage.setItem(key, value); } catch (e) {} }
-  function read(key) { try { return sessionStorage.getItem(key); } catch (e) { return null; } }
-  function say(text) { if (announce) announce.textContent = text; }
-  function fmt(sec) {
-    if (!isFinite(sec) || sec < 0) return '0:00';
-    var m = Math.floor(sec / 60), s = Math.floor(sec % 60);
-    return m + ':' + (s < 10 ? '0' : '') + s;
-  }
-
-  if (read('cr-seq') === 'off' && seqBox) seqBox.checked = false;
-  if (read('cr-speed') && speedSel) speedSel.value = read('cr-speed');
-  if (read('cr-vol') && volRange) volRange.value = read('cr-vol');
-  audio.volume = volRange ? parseFloat(volRange.value) : 1;
-
-  function applyRate() { audio.playbackRate = parseFloat(speedSel ? speedSel.value : '1') || 1; }
-  applyRate();
-
-  function reindex() {
-    var prior = null;
-    if (playingId) {
-      for (var p = 0; p < queue.length; p++) if (queue[p].id === playingId) { prior = queue[p]; break; }
+    function store(key, value) { try { sessionStorage.setItem(key, value); } catch (e) {} }
+    function read(key) { try { return sessionStorage.getItem(key); } catch (e) { return null; } }
+    function say(text) { if (announce) announce.textContent = text; }
+    function fmt(sec) {
+      if (!isFinite(sec) || sec < 0) return '0:00';
+      var m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+      return m + ':' + (s < 10 ? '0' : '') + s;
     }
-    queue = Array.prototype.map.call(document.querySelectorAll('[data-play]'), function (btn) {
-      var off = btn.getAttribute('data-offset');
-      return { id: btn.getAttribute('data-play'), title: btn.getAttribute('data-title') || 'call', meta: btn.getAttribute('data-meta') || '', offset: off ? parseInt(off, 10) : 0, btn: btn };
-    });
-    if (playingId) {
-      var still = -1;
-      queue.forEach(function (item, i) { if (item.id === playingId) still = i; });
-      // Keep the currently playing item in the in-memory queue if a refresh or
-      // filter removes its row. This prevents SSE updates from interrupting it.
-      if (still === -1 && prior) { queue.splice(Math.max(0, index), 0, prior); still = Math.max(0, index); }
-      if (still !== -1) index = still;
-    }
-    paintButtons();
-  }
 
-  function icon(name) { return '<svg class="ic" aria-hidden="true"><use href="#i-' + name + '"/></svg>'; }
+    if (read('cr-seq') === 'off' && seqBox) seqBox.checked = false;
+    if (read('cr-speed') && speedSel) speedSel.value = read('cr-speed');
+    if (read('cr-vol') && volRange) volRange.value = read('cr-vol');
+    audio.volume = volRange ? parseFloat(volRange.value) : 1;
 
-  function paintButtons() {
-    queue.forEach(function (item) {
-      var active = item.id === playingId && !audio.paused;
-      var row = item.btn.closest('tr');
-      item.btn.innerHTML = icon(active ? 'pause' : 'play');
-      item.btn.setAttribute('aria-label', (active ? 'Pause ' : 'Play ') + item.title);
-      if (row) row.classList.toggle('is-playing', item.id === playingId);
-      else item.btn.classList.toggle('is-playing', item.id === playingId);
-    });
-    if (btnPlay) btnPlay.innerHTML = icon(playingId && !audio.paused ? 'pause' : 'play');
-    if (btnPrev) btnPrev.disabled = index <= 0;
-    if (btnNext) btnNext.disabled = index === -1 || index >= queue.length - 1;
-  }
-
-  function showBar() { bar.hidden = false; }
-
-  function playAt(i, autoplay) {
-    if (i < 0 || i >= queue.length) return;
-    index = i;
-    var item = queue[i];
-    playingId = item.id;
-    if (audio.getAttribute('src') !== '/media/' + item.id) {
-      audio.setAttribute('src', '/media/' + item.id);
-    }
-    if (item.offset && isFinite(item.offset) && item.offset > 0) {
-      try { audio.currentTime = item.offset / 1000; } catch (e) {}
-    }
+    function applyRate() { audio.playbackRate = parseFloat(speedSel ? speedSel.value : '1') || 1; }
     applyRate();
-    titleEl.textContent = item.title;
-    if (metaEl) metaEl.textContent = item.meta;
-    showBar();
-    var promise = audio.play();
-    if (promise && promise.catch) promise.catch(function () { say('Playback could not start'); });
-    say('Playing ' + item.title);
-    paintButtons();
-  }
 
-  function toggleCurrent() {
-    if (playingId === null) { playAt(index === -1 ? 0 : index); return; }
-    if (audio.paused) { var p = audio.play(); if (p && p.catch) p.catch(function () {}); say('Playing ' + titleEl.textContent); }
-    else { audio.pause(); say('Paused'); }
-    paintButtons();
-  }
-
-  function stopPlayback() {
-    audio.pause();
-    playingId = null;
-    index = -1;
-    paintButtons();
-  }
-
-  function findById(id) {
-    for (var i = 0; i < queue.length; i++) if (queue[i].id === id) return i;
-    return -1;
-  }
-
-  document.addEventListener('click', function (e) {
-    var btn = e.target.closest ? e.target.closest('[data-play]') : null;
-    if (!btn) return;
-    var id = btn.getAttribute('data-play');
-    if (id === playingId && !audio.paused) { audio.pause(); say('Paused'); paintButtons(); return; }
-    var i = findById(id);
-    if (i !== -1) playAt(i, true);
-  });
-
-  on(btnPlay, 'click', toggleCurrent);
-  on(btnPrev, 'click', function () { if (index > 0) playAt(index - 1, true); });
-  on(btnNext, 'click', function () { if (index < queue.length - 1) playAt(index + 1, true); });
-  on(btnStop, 'click', function () { stopPlayback(); bar.hidden = true; say('Stopped'); });
-
-  on(seqBox, 'change', function () { store('cr-seq', seqBox.checked ? 'on' : 'off'); });
-  on(speedSel, 'change', function () { applyRate(); store('cr-speed', speedSel.value); });
-  on(volRange, 'input', function () { audio.volume = parseFloat(volRange.value); store('cr-vol', volRange.value); });
-
-  audio.addEventListener('ended', function () {
-    if (seqBox && seqBox.checked && index < queue.length - 1) { playAt(index + 1, true); return; }
-    say('End of call list');
-    paintButtons();
-  });
-  audio.addEventListener('play', paintButtons);
-  audio.addEventListener('pause', paintButtons);
-  audio.addEventListener('loadedmetadata', function () { if (durEl) durEl.textContent = fmt(audio.duration); });
-  audio.addEventListener('timeupdate', function () {
-    if (curEl) curEl.textContent = fmt(audio.currentTime);
-    if (seek && isFinite(audio.duration) && audio.duration > 0 && document.activeElement !== seek) {
-      seek.value = Math.round((audio.currentTime / audio.duration) * 1000);
-    }
-  });
-  on(seek, 'input', function () {
-    if (isFinite(audio.duration) && audio.duration > 0) {
-      audio.currentTime = (seek.value / 1000) * audio.duration;
-    }
-  });
-
-  /* Rebuild the queue after HTMX swaps in a new call list, and mirror the
-     fragment URL onto the full page URL so filters stay shareable. */
-  document.body.addEventListener('htmx:afterSwap', function (e) {
-    if (!(e.detail && e.detail.target && e.detail.target.id === 'calls')) return;
-    reindex();
-    try {
-      var info = e.detail.pathInfo || {};
-      var path = info.responsePath || info.finalRequestPath || info.requestPath || '';
-      var url = new URL(path, window.location.origin);
-      if (url.pathname === '/calls') {
-        url.pathname = '/';
-        window.history.replaceState(null, '', url.toString());
+    function reindex() {
+      var prior = null;
+      if (playingId) {
+        for (var p = 0; p < queue.length; p++) if (queue[p].id === playingId) { prior = queue[p]; break; }
       }
-    } catch (err) {}
-  });
-  document.body.addEventListener('htmx:sendError', function () { say('The call list could not be loaded'); });
-  document.body.addEventListener('htmx:timeout', function () { say('The call list request timed out'); });
+      queue = Array.prototype.map.call(document.querySelectorAll('[data-play]'), function (btn) {
+        var off = btn.getAttribute('data-offset');
+        return { id: btn.getAttribute('data-play'), title: btn.getAttribute('data-title') || 'call', meta: btn.getAttribute('data-meta') || '', offset: off ? parseInt(off, 10) : 0, btn: btn };
+      });
+      if (playingId) {
+        var still = -1;
+        queue.forEach(function (item, i) { if (item.id === playingId) still = i; });
+        // Keep the currently playing item in the in-memory queue if a refresh or
+        // filter removes its row. This prevents SSE updates from interrupting it.
+        if (still === -1 && prior) { queue.splice(Math.max(0, index), 0, prior); still = Math.max(0, index); }
+        if (still !== -1) index = still;
+      }
+      paintButtons();
+    }
 
-  /* Keyboard controls: ignored while typing in form fields. */
-  document.addEventListener('keydown', function (e) {
-    var t = e.target;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.key === ' ') { e.preventDefault(); toggleCurrent(); }
-    else if (e.key === 'n') { if (index < queue.length - 1) playAt(index + 1, true); }
-    else if (e.key === 'p') { if (index > 0) playAt(index - 1, true); }
-    else if (e.key === 's') { stopPlayback(); bar.hidden = true; }
-    else if (e.key === 'm') { audio.muted = !audio.muted; say(audio.muted ? 'Muted' : 'Unmuted'); }
-  });
+    function icon(name) { return '<svg class="ic" aria-hidden="true"><use href="#i-' + name + '"/></svg>'; }
 
-  reindex();
+    function paintButtons() {
+      queue.forEach(function (item) {
+        var active = item.id === playingId && !audio.paused;
+        var row = item.btn.closest('tr');
+        item.btn.innerHTML = icon(active ? 'pause' : 'play');
+        item.btn.setAttribute('aria-label', (active ? 'Pause ' : 'Play ') + item.title);
+        if (row) row.classList.toggle('is-playing', item.id === playingId);
+        else item.btn.classList.toggle('is-playing', item.id === playingId);
+      });
+      if (btnPlay) btnPlay.innerHTML = icon(playingId && !audio.paused ? 'pause' : 'play');
+      if (btnPrev) btnPrev.disabled = index <= 0;
+      if (btnNext) btnNext.disabled = index === -1 || index >= queue.length - 1;
+    }
+
+    function showBar() { bar.hidden = false; }
+
+    function playAt(i, autoplay) {
+      if (i < 0 || i >= queue.length) return;
+      index = i;
+      var item = queue[i];
+      playingId = item.id;
+      if (audio.getAttribute('src') !== '/media/' + item.id) {
+        audio.setAttribute('src', '/media/' + item.id);
+      }
+      if (item.offset && isFinite(item.offset) && item.offset > 0) {
+        try { audio.currentTime = item.offset / 1000; } catch (e) {}
+      }
+      applyRate();
+      titleEl.textContent = item.title;
+      if (metaEl) metaEl.textContent = item.meta;
+      showBar();
+      var promise = audio.play();
+      if (promise && promise.catch) promise.catch(function () { say('Playback could not start'); });
+      say('Playing ' + item.title);
+      paintButtons();
+    }
+
+    function toggleCurrent() {
+      if (playingId === null) { playAt(index === -1 ? 0 : index); return; }
+      if (audio.paused) { var p = audio.play(); if (p && p.catch) p.catch(function () {}); say('Playing ' + titleEl.textContent); }
+      else { audio.pause(); say('Paused'); }
+      paintButtons();
+    }
+
+    function stopPlayback() {
+      audio.pause();
+      playingId = null;
+      index = -1;
+      paintButtons();
+    }
+
+    function findById(id) {
+      for (var i = 0; i < queue.length; i++) if (queue[i].id === id) return i;
+      return -1;
+    }
+
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest ? e.target.closest('[data-play]') : null;
+      if (!btn) return;
+      var id = btn.getAttribute('data-play');
+      if (id === playingId && !audio.paused) { audio.pause(); say('Paused'); paintButtons(); return; }
+      var i = findById(id);
+      if (i !== -1) playAt(i, true);
+    });
+
+    on(btnPlay, 'click', toggleCurrent);
+    on(btnPrev, 'click', function () { if (index > 0) playAt(index - 1, true); });
+    on(btnNext, 'click', function () { if (index < queue.length - 1) playAt(index + 1, true); });
+    on(btnStop, 'click', function () { stopPlayback(); bar.hidden = true; say('Stopped'); });
+
+    on(seqBox, 'change', function () { store('cr-seq', seqBox.checked ? 'on' : 'off'); });
+    on(speedSel, 'change', function () { applyRate(); store('cr-speed', speedSel.value); });
+    on(volRange, 'input', function () { audio.volume = parseFloat(volRange.value); store('cr-vol', volRange.value); });
+
+    audio.addEventListener('ended', function () {
+      if (seqBox && seqBox.checked && index < queue.length - 1) { playAt(index + 1, true); return; }
+      say('End of call list');
+      paintButtons();
+    });
+    audio.addEventListener('play', paintButtons);
+    audio.addEventListener('pause', paintButtons);
+    audio.addEventListener('loadedmetadata', function () { if (durEl) durEl.textContent = fmt(audio.duration); });
+    audio.addEventListener('timeupdate', function () {
+      if (curEl) curEl.textContent = fmt(audio.currentTime);
+      if (seek && isFinite(audio.duration) && audio.duration > 0 && document.activeElement !== seek) {
+        seek.value = Math.round((audio.currentTime / audio.duration) * 1000);
+      }
+    });
+    on(seek, 'input', function () {
+      if (isFinite(audio.duration) && audio.duration > 0) {
+        audio.currentTime = (seek.value / 1000) * audio.duration;
+      }
+    });
+
+    /* Rebuild the queue after HTMX swaps in a new call list, and mirror the
+       fragment URL onto the full page URL so filters stay shareable. */
+    document.body.addEventListener('htmx:afterSwap', function (e) {
+      if (!(e.detail && e.detail.target && e.detail.target.id === 'calls')) return;
+      reindex();
+      try {
+        var info = e.detail.pathInfo || {};
+        var path = info.responsePath || info.finalRequestPath || info.requestPath || '';
+        var url = new URL(path, window.location.origin);
+        if (url.pathname === '/calls') {
+          url.pathname = '/';
+          window.history.replaceState(null, '', url.toString());
+        }
+      } catch (err) {}
+    });
+    document.body.addEventListener('htmx:sendError', function () { say('The call list could not be loaded'); });
+    document.body.addEventListener('htmx:timeout', function () { say('The call list request timed out'); });
+
+    /* Keyboard controls: ignored while typing in form fields. */
+    document.addEventListener('keydown', function (e) {
+      var t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === ' ') { e.preventDefault(); toggleCurrent(); }
+      else if (e.key === 'n') { if (index < queue.length - 1) playAt(index + 1, true); }
+      else if (e.key === 'p') { if (index > 0) playAt(index - 1, true); }
+      else if (e.key === 's') { stopPlayback(); bar.hidden = true; }
+      else if (e.key === 'm') { audio.muted = !audio.muted; say(audio.muted ? 'Muted' : 'Unmuted'); }
+    });
+
+    reindex();
+  }
 
   /* ---------- DataTables-style filter dropdowns ---------- */
   function initFilterDropdowns() {
@@ -462,29 +463,43 @@
   document.body.addEventListener('htmx:afterSwap', initFilterDropdowns);
 
   /* ---------- Administration dropdown positioning ---------- */
-  var adminDetails = document.querySelector('.admin-nav details');
-  if (adminDetails) {
-    var adminSummary = adminDetails.querySelector('summary');
-    var adminMenu = adminDetails.querySelector('.admin-nav-menu');
-    function positionAdminMenu() {
-      if (!adminSummary || !adminMenu) return;
-      var rect = adminSummary.getBoundingClientRect();
-      var menuWidth = adminMenu.offsetWidth || 220;
-      var left = rect.left;
-      if (left + menuWidth > window.innerWidth - 8) left = window.innerWidth - menuWidth - 8;
-      if (left < 8) left = 8;
-      adminMenu.style.top = (rect.bottom + 4) + 'px';
-      adminMenu.style.left = left + 'px';
-    }
-    adminDetails.addEventListener('toggle', function () {
-      if (adminDetails.open) positionAdminMenu();
-    });
-    document.addEventListener('click', function (e) {
-      if (adminDetails.open && !adminDetails.contains(e.target)) adminDetails.open = false;
-    });
-    document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape' && adminDetails.open) adminDetails.open = false;
-    });
-    window.addEventListener('resize', function () { if (adminDetails.open) positionAdminMenu(); });
+  function positionAdminMenu(summary, menu) {
+    var rect = summary.getBoundingClientRect();
+    var menuWidth = menu.offsetWidth || 220;
+    // Align the menu's right edge with the button's right edge, like a normal
+    // dropdown, and only shift left if it would overflow the viewport.
+    var left = rect.right - menuWidth;
+    if (left < 8) left = 8;
+    if (left + menuWidth > window.innerWidth - 8) left = window.innerWidth - menuWidth - 8;
+    menu.style.top = (rect.bottom + 4) + 'px';
+    menu.style.left = left + 'px';
+    menu.style.right = 'auto';
   }
+  document.addEventListener('click', function (e) {
+    var summary = e.target.closest && e.target.closest('.admin-nav summary');
+    if (summary) {
+      var details = summary.closest('details');
+      var menu = details && details.querySelector('.admin-nav-menu');
+      if (details && menu) {
+        window.requestAnimationFrame(function () {
+          if (details.open) positionAdminMenu(summary, menu);
+        });
+      }
+      return;
+    }
+    var details = document.querySelector('.admin-nav details');
+    if (details && details.open && !details.contains(e.target)) details.open = false;
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      var details = document.querySelector('.admin-nav details');
+      if (details) details.open = false;
+    }
+  });
+  window.addEventListener('resize', function () {
+    var details = document.querySelector('.admin-nav details');
+    var summary = details && details.querySelector('summary');
+    var menu = details && details.querySelector('.admin-nav-menu');
+    if (details && details.open && summary && menu) positionAdminMenu(summary, menu);
+  });
 })();
