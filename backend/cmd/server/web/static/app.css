@@ -677,6 +677,57 @@ dialog.confirm::backdrop { background: rgba(0, 0, 0, 0.55); }
 dialog.confirm p { margin-top: 0; }
 dialog.confirm .dialog-actions { display: flex; gap: 0.45rem; justify-content: flex-end; }
 
+/* ---------- Filter dropdown pickers ---------- */
+
+.dt-filter { display: block; }
+.dt-filter label { display: block; }
+.dt-filter-control {
+  position: relative; display: flex; align-items: stretch; gap: 0;
+  min-height: 2.35rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--panel); overflow: visible;
+}
+.dt-filter-control input[data-dt-input] {
+  flex: 1 1 auto; border: 0; background: transparent; padding: 0.4rem 0.55rem;
+  min-width: 0; font-size: 0.85rem; color: var(--text);
+}
+.dt-filter-control input[data-dt-input]:focus { outline: none; }
+.dt-filter-control input[data-dt-input]::placeholder { color: var(--muted); }
+.dt-filter-toggle {
+  flex: 0 0 2rem; border: 0; border-left: 1px solid var(--border);
+  background: var(--panel-2); color: var(--text); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.dt-filter-toggle:hover, .dt-filter-toggle[aria-expanded="true"] { background: var(--accent); color: var(--accent-contrast); }
+.dt-filter-menu {
+  position: absolute; z-index: 50; top: calc(100% + 0.25rem); left: 0; right: 0;
+  background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow); padding: 0.45rem;
+  max-height: 18rem; display: flex; flex-direction: column;
+}
+.dt-filter-menu[hidden] { display: none !important; }
+.dt-filter-search {
+  width: 100%; margin-bottom: 0.35rem; padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg-soft); color: var(--text); font-size: 0.85rem;
+}
+.dt-filter-list {
+  flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: column; gap: 0.1rem;
+  min-height: 5rem;
+}
+.dt-filter-item {
+  display: flex; align-items: center; gap: 0.35rem; padding: 0.25rem 0.35rem;
+  border-radius: var(--radius-sm); cursor: pointer; font-size: 0.85rem;
+}
+.dt-filter-item:hover { background: var(--bg-soft); }
+.dt-filter-item input { margin: 0; accent-color: var(--accent); }
+.dt-filter-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dt-filter-item.hidden { display: none; }
+.dt-filter-actions {
+  display: flex; justify-content: space-between; gap: 0.35rem; padding-top: 0.4rem; margin-top: 0.35rem;
+  border-top: 1px solid var(--border);
+}
+
 /* ---------- Responsive ---------- */
 
 @media (max-width: 860px) {

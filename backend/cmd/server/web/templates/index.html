@@ -18,12 +18,12 @@
   <form id="filter-form" hx-get="/calls" hx-target="#calls" hx-swap="innerHTML" hx-trigger="submit, keyup changed delay:350ms from:input, change changed from:select, change changed from:input[type=date], change changed from:input[type=checkbox]">
     <div class="filter-grid compact">
       <label>Search <input name="q" value="{{.Filter.Q}}" autocomplete="off" placeholder="Alias, ID, or text"></label>
-      <label>Sender <input name="sender" list="sender-values" value="{{.Filter.Sender}}" autocomplete="off"></label>
-      <label>System <input name="system" list="system-values" value="{{.Filter.System}}" autocomplete="off"></label>
-      <label>Site <input name="site" list="site-values" value="{{.Filter.Site}}" autocomplete="off"></label>
-      <label>Receiver <input name="receiver" list="receiver-values" value="{{.Filter.Receiver}}" autocomplete="off"></label>
-      <label>Talkgroup <input name="talkgroup" list="talkgroup-values" value="{{.Filter.Talkgroup}}" autocomplete="off"></label>
-      <label>Radio user <input name="radio" list="radio-values" value="{{.Filter.Radio}}" autocomplete="off"></label>
+      {{template "filterDropdown" (dict "Field" "sender" "Label" "Sender" "Value" .Filter.Sender "Options" (index .FilterOptions "sender"))}}
+      {{template "filterDropdown" (dict "Field" "system" "Label" "System" "Value" .Filter.System "Options" (index .FilterOptions "system"))}}
+      {{template "filterDropdown" (dict "Field" "site" "Label" "Site" "Value" .Filter.Site "Options" (index .FilterOptions "site"))}}
+      {{template "filterDropdown" (dict "Field" "receiver" "Label" "Receiver" "Value" .Filter.Receiver "Options" (index .FilterOptions "receiver"))}}
+      {{template "filterDropdown" (dict "Field" "talkgroup" "Label" "Talkgroup" "Value" .Filter.Talkgroup "Options" (index .FilterOptions "talkgroup"))}}
+      {{template "filterDropdown" (dict "Field" "radio" "Label" "Radio user" "Value" .Filter.Radio "Options" (index .FilterOptions "radio"))}}
       <label>Favourite group <select name="favourite"><option value="">All groups</option>{{range .FavouriteGroups}}<option value="{{.ID}}" {{if eq $.Filter.Favourite (printf "%d" .ID)}}selected{{end}}>{{.Name}}</option>{{end}}</select></label>
       <label>Frequency <input name="frequency" value="{{.Filter.Frequency}}" autocomplete="off"></label>
       <label>Call type
@@ -120,4 +120,30 @@
 </section>
 {{template "playerbar" .}}
 {{template "bottom" .}}
+{{end}}
+
+{{define "filterDropdown"}}
+{{$field := .Field}}
+{{$label := .Label}}
+{{$value := .Value}}
+<div class="dt-filter" data-field="{{$field}}">
+  <label>{{$label}}
+    <div class="dt-filter-control">
+      <input type="text" name="{{$field}}" value="{{$value}}" placeholder="All" autocomplete="off" data-dt-input>
+      <button type="button" class="dt-filter-toggle" aria-label="Select {{$label}}" aria-expanded="false">▾</button>
+      <div class="dt-filter-menu" hidden>
+        <input type="search" class="dt-filter-search" placeholder="Search…" aria-label="Search {{$label}}" autocomplete="off">
+        <div class="dt-filter-list">
+          {{range .Options}}
+          <label class="dt-filter-item"><input type="checkbox" value="{{.Value}}" data-label="{{.Label}}"{{if .Selected}} checked{{end}}> <span>{{.Label}}</span></label>
+          {{end}}
+        </div>
+        <div class="dt-filter-actions">
+          <button type="button" class="btn small ghost dt-filter-clear">Clear</button>
+          <button type="button" class="btn small primary dt-filter-done">Done</button>
+        </div>
+      </div>
+    </div>
+  </label>
+</div>
 {{end}}

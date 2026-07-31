@@ -160,7 +160,20 @@ func main() {
 		slog.Error("load application secrets key", "error", err)
 		os.Exit(2)
 	}
-	s := &server{cfg: cfg, db: pool, logger: slog.Default(), masterKey: masterKey, templates: template.Must(template.New("cr").Funcs(template.FuncMap{"dur": formatDuration, "tdate": formatTimePtr, "srcBadge": sourceBadge, "base": filepath.Base, "inc": func(n int) int { return n + 1 }, "dec": func(n int) int { return n - 1 }, "slice": func(v ...string) []string { return v }}).ParseFS(templatesFS, "web/templates/*.html"))}
+	s := &server{cfg: cfg, db: pool, logger: slog.Default(), masterKey: masterKey, templates: template.Must(template.New("cr").Funcs(template.FuncMap{"dur": formatDuration, "tdate": formatTimePtr, "srcBadge": sourceBadge, "base": filepath.Base, "inc": func(n int) int { return n + 1 }, "dec": func(n int) int { return n - 1 }, "slice": func(v ...string) []string { return v }, "dict": func(values ...any) (map[string]any, error) {
+		if len(values)%2 != 0 {
+			return nil, errors.New("invalid dict call")
+		}
+		m := make(map[string]any, len(values)/2)
+		for i := 0; i < len(values); i += 2 {
+			key, ok := values[i].(string)
+			if !ok {
+				return nil, errors.New("dict keys must be strings")
+			}
+			m[key] = values[i+1]
+		}
+		return m, nil
+	}}).ParseFS(templatesFS, "web/templates/*.html"))}
 	if err := s.bootstrapSender(context.Background()); err != nil {
 		slog.Error("bootstrap sender", "error", err)
 		os.Exit(2)
@@ -635,23 +648,56 @@ func (s *server) callsPage(w http.ResponseWriter, r *http.Request) {
 		rows.Close()
 		data["FavouriteGroups"] = groups
 	}
-	// Suggestions are deliberately bounded and remain optional: typed query-string
-	// filters continue to work for values not included here.
-	for key, column := range map[string]string{"Senders": "sender_id", "Systems": "system_id", "Sites": "site_id", "Receivers": "receiver_id", "Talkgroups": "talkgroup_id", "Radios": "radio_id", "CallTypes": "call_type"} {
-		rows, err := s.db.Query(r.Context(), `SELECT DISTINCT `+column+` FROM calls WHERE coalesce(`+column+`,'')<>'' ORDER BY `+column+` LIMIT 250`)
+	// Filter suggestions are deliberately bounded and remain optional: typed
+	// query-string filters continue to work for values not included here.
+	filterOpts := map[string][]filterOption{}
+	selected := func(key string) map[string]struct{} {
+		switch key {
+		case "sender":
+			return splitFilterValues(f.Sender)
+		case "system":
+			return splitFilterValues(f.System)
+		case "site":
+			return splitFilterValues(f.Site)
+		case "receiver":
+			return splitFilterValues(f.Receiver)
+		case "talkgroup":
+			return splitFilterValues(f.Talkgroup)
+		case "radio":
+			return splitFilterValues(f.Radio)
+		}
+		return map[string]struct{}{}
+	}
+	queries := map[string]string{
+		"sender":     `SELECT DISTINCT sender_id AS value, sender_id AS label FROM calls WHERE coalesce(sender_id,'')<>'' ORDER BY label LIMIT 250`,
+		"system":     `SELECT DISTINCT c.system_id AS value, coalesce(NULLIF(c.system_name,''), c.system_id) AS label FROM calls c WHERE coalesce(c.system_id,'')<>'' ORDER BY label LIMIT 250`,
+		"site":       `SELECT DISTINCT c.site_id AS value, coalesce(NULLIF(c.site_name,''), c.site_id) AS label FROM calls c WHERE coalesce(c.site_id,'')<>'' ORDER BY label LIMIT 250`,
+		"receiver":   `SELECT DISTINCT receiver_id AS value, receiver_id AS label FROM calls WHERE coalesce(receiver_id,'')<>'' ORDER BY label LIMIT 250`,
+		"talkgroup":  `SELECT DISTINCT c.talkgroup_id AS value, coalesce(NULLIF(ta.alias,''), NULLIF(c.talkgroup_name,''), c.talkgroup_id) AS label FROM calls c LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled WHERE coalesce(c.talkgroup_id,'')<>'' ORDER BY label LIMIT 250`,
+		"radio":      `SELECT DISTINCT c.radio_id AS value, coalesce(NULLIF(ra.alias,''), NULLIF(c.radio_name,''), c.radio_id) AS label FROM calls c LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE coalesce(c.radio_id,'')<>'' ORDER BY label LIMIT 250`,
+		"call_type":  `SELECT DISTINCT call_type AS value, call_type AS label FROM calls WHERE coalesce(call_type,'')<>'' ORDER BY label LIMIT 250`,
+	}
+	for key, q := range queries {
+		rows, err := s.db.Query(r.Context(), q)
 		if err != nil {
 			continue
 		}
-		values := []string{}
+		sel := selected(key)
+		opts := []filterOption{}
 		for rows.Next() {
-			var value string
-			if rows.Scan(&value) == nil {
-				values = append(values, value)
+			var opt filterOption
+			if rows.Scan(&opt.Value, &opt.Label) == nil {
+				_, opt.Selected = sel[opt.Value]
+				if opt.Label == "" {
+					opt.Label = opt.Value
+				}
+				opts = append(opts, opt)
 			}
 		}
 		rows.Close()
-		data[key] = values
+		filterOpts[key] = opts
 	}
+	data["FilterOptions"] = filterOpts
 	if ferr != nil {
 		data["Error"] = "Invalid filter values: dates must use YYYY-MM-DD."
 	}
@@ -659,6 +705,22 @@ func (s *server) callsPage(w http.ResponseWriter, r *http.Request) {
 }
 
 type filterChip struct{ Label, ClearURL string }
+
+type filterOption struct {
+	Value, Label string
+	Selected     bool
+}
+
+func splitFilterValues(s string) map[string]struct{} {
+	m := map[string]struct{}{}
+	for _, v := range strings.Split(s, ",") {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			m[v] = struct{}{}
+		}
+	}
+	return m
+}
 
 func callsURL(f callFilter, drop string, page int) string {
 	v := url.Values{}
