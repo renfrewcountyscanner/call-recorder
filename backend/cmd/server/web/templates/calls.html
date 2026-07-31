@@ -16,26 +16,26 @@
   <thead>
     <tr>
       <th scope="col" class="col-play"><span class="sr-only">Play</span></th>
-      <th scope="col" data-column="time">Time</th>
-      <th scope="col" data-column="date">Date</th>
-      <th scope="col" data-column="target">Target</th>
-      <th scope="col" data-column="target_label">Target Label</th>
+      <th scope="col" data-column="time">{{sortableHeader .Filter "time" "Time"}}</th>
+      <th scope="col" data-column="date">{{sortableHeader .Filter "date" "Date"}}</th>
+      <th scope="col" data-column="target">{{sortableHeader .Filter "target" "Target"}}</th>
+      <th scope="col" data-column="target_label">{{sortableHeader .Filter "target_label" "Target Label"}}</th>
       <th scope="col" data-column="target_tag">Target Tag</th>
-      <th scope="col" data-column="source">Source</th>
-      <th scope="col" data-column="source_label">Source Label</th>
+      <th scope="col" data-column="source">{{sortableHeader .Filter "source" "Source"}}</th>
+      <th scope="col" data-column="source_label">{{sortableHeader .Filter "source_label" "Source Label"}}</th>
       <th scope="col" data-column="source_tag">Source Tag</th>
-      <th scope="col" data-column="duration">Length</th>
+      <th scope="col" data-column="duration">{{sortableHeader .Filter "duration" "Length"}}</th>
       <th scope="col" data-column="voice_type">Voice Type</th>
-      <th scope="col" data-column="call_type">Call Type</th>
-      <th scope="col" data-column="site">Site</th>
-      <th scope="col" data-column="site_label">Site Label</th>
-      <th scope="col" data-column="system_id">System ID</th>
-      <th scope="col" data-column="system_label">System Label</th>
+      <th scope="col" data-column="call_type">{{sortableHeader .Filter "call_type" "Call Type"}}</th>
+      <th scope="col" data-column="site">{{sortableHeader .Filter "site" "Site"}}</th>
+      <th scope="col" data-column="site_label">{{sortableHeader .Filter "site_label" "Site Label"}}</th>
+      <th scope="col" data-column="system_id">{{sortableHeader .Filter "system_id" "System ID"}}</th>
+      <th scope="col" data-column="system_label">{{sortableHeader .Filter "system_label" "System Label"}}</th>
       <th scope="col" data-column="system_type">System Type</th>
       <th scope="col" data-column="audio_start">Audio Start</th>
-      <th scope="col" data-column="lcn">LCN</th>
-      <th scope="col" data-column="frequency">Frequency</th>
-      <th scope="col" data-column="receiver">Receiver</th>
+      <th scope="col" data-column="lcn">{{sortableHeader .Filter "lcn" "LCN"}}</th>
+      <th scope="col" data-column="frequency">{{sortableHeader .Filter "frequency" "Frequency"}}</th>
+      <th scope="col" data-column="receiver">{{sortableHeader .Filter "receiver" "Receiver"}}</th>
       <th scope="col" data-column="notes_text">Notes & Text</th>
       <th scope="col" data-column="filename">Filename</th>
       <th scope="col" data-column="flags">Flags</th>

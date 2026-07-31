@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"html/template"
 	"io"
 	"io/fs"
@@ -160,7 +161,7 @@ func main() {
 		slog.Error("load application secrets key", "error", err)
 		os.Exit(2)
 	}
-	s := &server{cfg: cfg, db: pool, logger: slog.Default(), masterKey: masterKey, templates: template.Must(template.New("cr").Funcs(template.FuncMap{"dur": formatDuration, "tdate": formatTimePtr, "srcBadge": sourceBadge, "base": filepath.Base, "inc": func(n int) int { return n + 1 }, "dec": func(n int) int { return n - 1 }, "slice": func(v ...string) []string { return v }, "dict": func(values ...any) (map[string]any, error) {
+	s := &server{cfg: cfg, db: pool, logger: slog.Default(), masterKey: masterKey, templates: template.Must(template.New("cr").Funcs(template.FuncMap{"dur": formatDuration, "tdate": formatTimePtr, "srcBadge": sourceBadge, "base": filepath.Base, "inc": func(n int) int { return n + 1 }, "dec": func(n int) int { return n - 1 }, "slice": func(v ...string) []string { return v 		}, "dict": func(values ...any) (map[string]any, error) {
 		if len(values)%2 != 0 {
 			return nil, errors.New("invalid dict call")
 		}
@@ -173,6 +174,8 @@ func main() {
 			m[key] = values[i+1]
 		}
 		return m, nil
+	}, "sortableHeader": func(f callFilter, column, label string) template.HTML {
+		return sortableHeader(f, column, label)
 	}}).ParseFS(templatesFS, "web/templates/*.html"))}
 	if err := s.bootstrapSender(context.Background()); err != nil {
 		slog.Error("bootstrap sender", "error", err)
@@ -764,6 +767,65 @@ func callsURL(f callFilter, drop string, page int) string {
 		return "/calls?" + encoded
 	}
 	return "/calls"
+}
+
+func sortNameForColumn(column string) string {
+	switch column {
+	case "time", "date":
+		return "oldest"
+	case "target":
+		return "talkgroup"
+	case "target_label":
+		return "talkgroup_label"
+	case "source":
+		return "radio"
+	case "source_label":
+		return "radio_label"
+	case "duration":
+		return "duration"
+	case "call_type":
+		return "calltype"
+	case "site", "site_label":
+		return "site"
+	case "system_id", "system_label", "system_type":
+		return "system"
+	case "lcn":
+		return "lcn"
+	case "frequency":
+		return "frequency"
+	case "receiver":
+		return "receiver"
+	}
+	return ""
+}
+
+func sortableHeader(f callFilter, column, label string) template.HTML {
+	sort := sortNameForColumn(column)
+	if sort == "" {
+		return template.HTML(html.EscapeString(label))
+	}
+	// Toggle back to the default when clicking the already-sorted column.
+	if f.Sort == sort {
+		sort = "newest"
+	}
+	u := callsURL(f, "sort", 1)
+	sep := "&"
+	if !strings.Contains(u, "?") {
+		sep = "?"
+	}
+	cls := "sort-link"
+	isCurrent := false
+	if f.Sort == sortNameForColumn(column) {
+		isCurrent = true
+	}
+	if (column == "time" || column == "date") && (f.Sort == "newest" || f.Sort == "oldest") {
+		isCurrent = true
+	}
+	if isCurrent {
+		cls += " current"
+	}
+	url := u + sep + "sort=" + url.QueryEscape(sort)
+	return template.HTML(fmt.Sprintf(`<a href="%s" hx-get="%s" hx-target="#calls" class="%s">%s</a>`, url, url, cls, html.EscapeString(label)))
 }
 
 func chipsFor(f callFilter) []filterChip {
