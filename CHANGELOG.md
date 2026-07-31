@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.4.2 (unreleased)
+
+- Injected git commit and build timestamp into `/healthz` response and Docker images.
+- Added backend Docker healthcheck; fixed transcription-worker healthcheck to actually run `diagnose`.
+- Added favourite group indicators (★) on call list and call detail pages.
+- Added `/admin/logout` endpoint to clear the admin session cookie.
+- Fixed alias `notification_eligible` checkbox: unchecked now correctly saves as `false`.
+- Fixed alias edit-fill: source field no longer silently converts "received" to "manual".
+- Fixed protected-call badge: expired protections no longer show "Protected".
+- Added `install.sh` for local deployment with interactive prompts for audio path, PostgreSQL mode, and admin settings.
+- Added `docker-compose.external-postgres.yml` for deployments using an external PostgreSQL server.
+- Added searchable DataTables-style filter dropdowns for sender/system/site/receiver/talkgroup/radio.
+- Made call list columns sortable via header links.
+- Aligned Administration dropdown under the button (fixed clipping and positioning).
+- Set default container timezone to `America/Toronto`.
+
 ## v0.4.1 (2026-07-30)
 
 - Added explicit pause/resume live updates with queued new-call indication.
