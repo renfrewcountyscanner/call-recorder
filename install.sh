@@ -299,6 +299,9 @@ echo "=== Validating Docker Compose configuration ==="
 $COMPOSE $COMPOSE_FILES --env-file "$ENV_FILE" config -q
 
 echo "=== Building and starting services ==="
+GIT_COMMIT="$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+export GIT_COMMIT BUILD_TIME
 $COMPOSE $COMPOSE_FILES --env-file "$ENV_FILE" up -d --build --remove-orphans
 
 echo "=== Waiting for backend to become healthy ==="

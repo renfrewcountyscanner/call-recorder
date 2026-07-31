@@ -6,7 +6,11 @@ services:
       - ${CALL_RECORDER_AUDIO_HOST_PATH:-../runtime/audio}:/var/lib/call-recorder/audio
       - ${CALL_RECORDER_SECRETS_HOST_PATH:-../runtime/secrets}:/var/lib/call-recorder/secrets
   backend:
-    build: ../backend
+    build:
+      context: ../backend
+      args:
+        COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     restart: unless-stopped
     depends_on:
       audio-init:
@@ -44,7 +48,11 @@ services:
       start_period: 15s
   notification-worker:
     profiles: ["notifications"]
-    build: ../backend
+    build:
+      context: ../backend
+      args:
+        COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     restart: unless-stopped
     entrypoint: ["/usr/local/bin/call-recorder-admin"]
     command: ["notifications", "run"]
@@ -53,7 +61,11 @@ services:
       TZ: ${TZ:-America/Toronto}
     user: "10001:10001"
   transcription-worker:
-    build: ../backend
+    build:
+      context: ../backend
+      args:
+        COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     command: ["while true; do /usr/local/bin/call-recorder-admin transcription run || true; sleep 15; done"]
