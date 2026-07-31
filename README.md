@@ -16,6 +16,16 @@ This project does not include radio decoding, SDR control, trunking-system contr
 
 This is Linux-native: Docker runs PostgreSQL; the Go backend and Go uploader run without Windows, Wine, MSSQL, PowerShell, or .NET. Trunk Recorder remains responsible for recording and decoding. Call Recorder receives completed calls only.
 
+### Quick install
+
+Run the installer from the repository root. It prompts for the directory where call recordings should be stored, generates secure secrets, and starts the Docker Compose stack:
+
+```bash
+./install.sh
+```
+
+### Manual startup
+
 ```bash
 cd deploy
 cp example.env .env
