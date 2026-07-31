@@ -75,4 +75,48 @@ $compose exec -T transcription-worker /usr/local/bin/call-recorder-admin transcr
 # Worker diagnose reports healthy.
 $compose exec -T transcription-worker /usr/local/bin/call-recorder-admin transcription diagnose | grep -q 'Database connectivity'
 
+# === Talkgroup toggle tests ===
+# Create a second talkgroup for testing.
+curl -fsS -b "$work/cookie" -d 'system=system-a&id=200&alias=Operations&description=test&category=test&priority=1&source=manual&enabled=on' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/talkgroups | grep -q 303
+
+# Verify talkgroup 200 has transcription disabled by default.
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT transcription_enabled FROM talkgroup_aliases WHERE system_id='system-a' AND talkgroup_id='200'")" = "f"
+
+# Bulk enable: enable talkgroup 200 for transcription with language override.
+curl -fsS -b "$work/cookie" -d 'action=enable&talkgroup=system-a:200&language=fr' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/transcription/talkgroups/update | grep -q 303
+# Verify enabled and language set.
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT CASE WHEN transcription_enabled THEN 't' ELSE 'f' END||','||coalesce(transcription_language,'') FROM talkgroup_aliases WHERE system_id='system-a' AND talkgroup_id='200'")" = "t,fr"
+
+# Bulk disable: disable talkgroup 200.
+curl -fsS -b "$work/cookie" -d 'action=disable&talkgroup=system-a:200' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/transcription/talkgroups/update | grep -q 303
+# Verify disabled, but language preserved.
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT CASE WHEN transcription_enabled THEN 't' ELSE 'f' END||','||coalesce(transcription_language,'') FROM talkgroup_aliases WHERE system_id='system-a' AND talkgroup_id='200'")" = "f,fr"
+
+# Bulk enable without language: preserves existing language.
+curl -fsS -b "$work/cookie" -d 'action=enable&talkgroup=system-a:200' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/transcription/talkgroups/update | grep -q 303
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT CASE WHEN transcription_enabled THEN 't' ELSE 'f' END||','||coalesce(transcription_language,'') FROM talkgroup_aliases WHERE system_id='system-a' AND talkgroup_id='200'")" = "t,fr"
+
+# Per-row toggle: disable talkgroup 200 via single toggle.
+curl -fsS -b "$work/cookie" -d 'action=disable&talkgroup=system-a:200' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/transcription/talkgroups/toggle | grep -q 303
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT transcription_enabled FROM talkgroup_aliases WHERE system_id='system-a' AND talkgroup_id='200'")" = "f"
+
+# Per-row toggle: re-enable talkgroup 200 via single toggle.
+curl -fsS -b "$work/cookie" -d 'action=enable&talkgroup=system-a:200' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/transcription/talkgroups/toggle | grep -q 303
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT transcription_enabled FROM talkgroup_aliases WHERE system_id='system-a' AND talkgroup_id='200'")" = "t"
+
+# No selection returns 400.
+if curl -fsS -b "$work/cookie" -d 'action=enable' http://127.0.0.1:18080/admin/transcription/talkgroups/update 2>/dev/null; then echo 'expected 400'; exit 1; fi
+
+# Invalid action returns 400.
+if curl -fsS -b "$work/cookie" -d 'action=invalid&talkgroup=system-a:200' http://127.0.0.1:18080/admin/transcription/talkgroups/update 2>/dev/null; then echo 'expected 400'; exit 1; fi
+
+# Invalid talkgroup value (no colon) is silently skipped, resulting in 400.
+if curl -fsS -b "$work/cookie" -d 'action=enable&talkgroup=invalid' http://127.0.0.1:18080/admin/transcription/talkgroups/update 2>/dev/null; then echo 'expected 400'; exit 1; fi
+
+# Guest cannot perform toggle (no cookie).
+if curl -fsS -d 'action=enable&talkgroup=system-a:200' http://127.0.0.1:18080/admin/transcription/talkgroups/update 2>/dev/null; then echo 'expected auth failure'; exit 1; fi
+
+# Verify talkgroup 100 (from earlier) is still enabled and unchanged.
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT transcription_enabled FROM talkgroup_aliases WHERE system_id='system-a' AND talkgroup_id='100'")" = "t"
+
 echo 'transcription integration tests passed'

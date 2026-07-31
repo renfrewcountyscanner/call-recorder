@@ -8,13 +8,22 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/renfrewcountyscanner/call-recorder/backend/internal/transcription"
 )
+
+func pluralSuffix(n int64) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
 
 func (s *server) enqueueNotifications(ctx context.Context, callID string) {
 	_, _ = s.db.Exec(ctx, `INSERT INTO notification_deliveries(rule_id,destination_id,call_id)
@@ -596,6 +605,7 @@ func (s *server) adminTranscription(w http.ResponseWriter, r *http.Request) {
 	saved := q.Get("saved") == "1"
 	removed := q.Get("removed") == "1"
 	tested := q.Get("tested") == "1"
+	msg := strings.TrimSpace(q.Get("msg"))
 	s.page(w, r, "admin_transcription.html", "Transcription", "transcription", map[string]any{
 		"Enabled": st.Enabled, "Processing": st.Processing, "Provider": st.Provider, "ProviderType": st.ProviderType,
 		"Endpoint": st.Endpoint, "Model": st.Model, "Language": st.Language,
@@ -609,7 +619,7 @@ func (s *server) adminTranscription(w http.ResponseWriter, r *http.Request) {
 		"LastTestAt": st.LastTestAt, "LastTestOK": st.LastTestOK, "LastTestError": st.LastTestError,
 		"Jobs": jobs, "Total": total, "Page": page, "Pages": pages,
 		"StatusFilter": status, "ProviderFilter": providerFilter, "CallFilter": callFilter, "Date": date, "FailedOnly": failedOnly,
-		"ReturnURL": r.URL.RequestURI(), "Saved": saved, "Removed": removed, "Tested": tested,
+		"ReturnURL": r.URL.RequestURI(), "Saved": saved, "Removed": removed, "Tested": tested, "Msg": msg,
 		"Talkgroups": talkgroups, "TalkgroupSearch": strings.TrimSpace(q.Get("tgq")), "EnabledTalkgroupCount": enabledCount,
 	})
 }
@@ -994,48 +1004,122 @@ func (s *server) adminTestTranscription(w http.ResponseWriter, r *http.Request) 
 	s.phase8JSON(w, map[string]any{"ok": ok, "result": result, "vad_sent": cfg.ProviderType == "faster-whisper" && cfg.VADEnabled})
 }
 
-func (s *server) adminToggleTalkgroupTranscription(w http.ResponseWriter, r *http.Request, enabled bool) {
-	if !s.adminAuthorized(w, r) {
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", 400)
-		return
-	}
-	var systems, talkgroups []string
-	for _, v := range r.Form["talkgroup"] {
+// parseTalkgroupValues extracts system/talkgroup pairs from a form value list.
+// Each entry must be "SYSTEM:TALKGROUP_ID". Invalid entries are silently skipped.
+func parseTalkgroupValues(values []string) (systems, talkgroups []string) {
+	for _, v := range values {
 		parts := strings.SplitN(v, ":", 2)
-		if len(parts) != 2 {
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 			continue
 		}
 		systems = append(systems, parts[0])
 		talkgroups = append(talkgroups, parts[1])
 	}
+	return
+}
+
+// applyTranscriptionToggle updates transcription_enabled and optionally the
+// language override for the given talkgroups inside a single transaction.
+// When enable is true and language is non-empty, both fields are set.
+// When enable is true and language is empty, the existing language is preserved.
+// When enable is false, only transcription_enabled is cleared; the language is
+// always preserved.
+// Returns the number of talkgroups whose transcription_enabled changed.
+func (s *server) applyTranscriptionToggle(ctx context.Context, systems, talkgroups []string, enable bool, language string) (int64, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	var changed int64
+	for i := range systems {
+		var tag pgconn.CommandTag
+		var err error
+		if enable && language != "" {
+			tag, err = tx.Exec(ctx, `UPDATE talkgroup_aliases SET transcription_enabled=$1,transcription_language=NULLIF($2,''),updated_at=now() WHERE system_id=$3 AND talkgroup_id=$4 AND transcription_enabled IS DISTINCT FROM $1`, enable, language, systems[i], talkgroups[i])
+		} else if enable {
+			tag, err = tx.Exec(ctx, `UPDATE talkgroup_aliases SET transcription_enabled=$1,updated_at=now() WHERE system_id=$2 AND talkgroup_id=$3 AND transcription_enabled IS DISTINCT FROM $1`, enable, systems[i], talkgroups[i])
+		} else {
+			tag, err = tx.Exec(ctx, `UPDATE talkgroup_aliases SET transcription_enabled=$1,updated_at=now() WHERE system_id=$2 AND talkgroup_id=$3 AND transcription_enabled IS DISTINCT FROM $1`, enable, systems[i], talkgroups[i])
+		}
+		if err != nil {
+			return 0, err
+		}
+		changed += tag.RowsAffected()
+	}
+	return changed, tx.Commit(ctx)
+}
+
+// adminUpdateTalkgroupTranscription handles bulk enable/disable from the unified
+// talkgroup form on the transcription administration page.
+func (s *server) adminUpdateTalkgroupTranscription(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	action := strings.TrimSpace(r.FormValue("action"))
+	if action != "enable" && action != "disable" {
+		http.Error(w, "invalid action", http.StatusBadRequest)
+		return
+	}
+	systems, talkgroups := parseTalkgroupValues(r.Form["talkgroup"])
 	if len(systems) == 0 {
 		http.Error(w, "no talkgroups selected", http.StatusBadRequest)
 		return
 	}
-	identity := strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email"))
-	if identity == "" {
-		identity = "admin-token"
-	}
 	language := strings.TrimSpace(r.FormValue("language"))
-	for i := range systems {
-		if language != "" {
-			_, _ = s.db.Exec(r.Context(), `UPDATE talkgroup_aliases SET transcription_enabled=$1,transcription_language=NULLIF($2,''),updated_at=now() WHERE system_id=$3 AND talkgroup_id=$4`, enabled, language, systems[i], talkgroups[i])
-		} else {
-			_, _ = s.db.Exec(r.Context(), `UPDATE talkgroup_aliases SET transcription_enabled=$1,updated_at=now() WHERE system_id=$2 AND talkgroup_id=$3`, enabled, systems[i], talkgroups[i])
-		}
+	enable := action == "enable"
+	changed, err := s.applyTranscriptionToggle(r.Context(), systems, talkgroups, enable, language)
+	if err != nil {
+		s.internal(w, err)
+		return
 	}
-	http.Redirect(w, r, "/admin/transcription?saved=1", 303)
+	msg := fmt.Sprintf("%d talkgroup%s %s for transcription.", changed, pluralSuffix(changed), action+"d")
+	tgq := strings.TrimSpace(r.FormValue("tgq"))
+	redirect := "/admin/transcription?saved=1&msg=" + url.QueryEscape(msg)
+	if tgq != "" {
+		redirect += "&tgq=" + url.QueryEscape(tgq)
+	}
+	http.Redirect(w, r, redirect, http.StatusSeeOther)
 }
 
-func (s *server) adminEnableTalkgroupTranscription(w http.ResponseWriter, r *http.Request) {
-	s.adminToggleTalkgroupTranscription(w, r, true)
-}
-
-func (s *server) adminDisableTalkgroupTranscription(w http.ResponseWriter, r *http.Request) {
-	s.adminToggleTalkgroupTranscription(w, r, false)
+// adminToggleSingleTalkgroupTranscription handles per-row enable/disable
+// actions from the inline button on each talkgroup row.
+func (s *server) adminToggleSingleTalkgroupTranscription(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	action := strings.TrimSpace(r.FormValue("action"))
+	if action != "enable" && action != "disable" {
+		http.Error(w, "invalid action", http.StatusBadRequest)
+		return
+	}
+	v := strings.TrimSpace(r.FormValue("talkgroup"))
+	systems, talkgroups := parseTalkgroupValues([]string{v})
+	if len(systems) == 0 {
+		http.Error(w, "invalid talkgroup", http.StatusBadRequest)
+		return
+	}
+	enable := action == "enable"
+	changed, err := s.applyTranscriptionToggle(r.Context(), systems, talkgroups, enable, "")
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	msg := fmt.Sprintf("%d talkgroup %s for transcription.", changed, action+"d")
+	tgq := strings.TrimSpace(r.FormValue("tgq"))
+	redirect := "/admin/transcription?saved=1&msg=" + url.QueryEscape(msg)
+	if tgq != "" {
+		redirect += "&tgq=" + url.QueryEscape(tgq)
+	}
+	http.Redirect(w, r, redirect, http.StatusSeeOther)
 }
 
 func (s *server) phase8JSON(w http.ResponseWriter, value any) {
