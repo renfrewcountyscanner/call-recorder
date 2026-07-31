@@ -87,8 +87,8 @@
     {{if or .GeneratedTranscript .TranscriptionStatus}}
     <tr class="call-row-transcript" data-call-id="{{.ID}}">
       <td colspan="19">
-        <div class="transcript-inline" data-call-id="{{.ID}}" data-transcript-status="{{.TranscriptionStatus}}" data-generated="{{if .GeneratedTranscript}}true{{else}}false{{end}}">
-          {{if .GeneratedTranscript}}<div class="transcript-preview">{{.GeneratedTranscript}}</div><button class="transcript-toggle" aria-expanded="false" aria-label="Expand transcript">More</button>{{else if eq .TranscriptionStatus "pending"}}<span class="transcript-status">Waiting for transcription</span>{{else if eq .TranscriptionStatus "running"}}<span class="transcript-status">Transcribing…</span>{{else if eq .TranscriptionStatus "failed"}}<span class="transcript-status failed">Transcription failed</span>{{if and $.Nav $.Nav.Authorized}}<button class="transcript-retry" data-call-id="{{.ID}}" aria-label="Retry transcription">Retry</button>{{end}}{{else if eq .TranscriptionStatus "queued"}}<span class="transcript-status">Waiting for transcription worker</span>{{end}}</div>
+        <div class="transcript-inline" data-call-id="{{.ID}}" data-transcript-status="{{.TranscriptionStatus}}" data-generated="{{if .GeneratedText}}true{{else}}false{{end}}">
+          {{if .GeneratedText}}<div class="transcript-preview">{{.GeneratedText}}</div><button class="transcript-toggle" aria-expanded="false" aria-label="Expand transcript">More</button>{{else if eq .TranscriptionStatus "pending"}}<span class="transcript-status">Waiting for transcription</span>{{else if eq .TranscriptionStatus "running"}}<span class="transcript-status">Transcribing…</span>{{else if eq .TranscriptionStatus "failed"}}<span class="transcript-status failed">Transcription failed</span>{{if and $.Nav $.Nav.Authorized}}<button class="transcript-retry" data-call-id="{{.ID}}" aria-label="Retry transcription">Retry</button>{{end}}{{else if eq .TranscriptionStatus "queued"}}<span class="transcript-status">Waiting for transcription worker</span>{{end}}</div>
       </td>
     </tr>
     {{end}}
