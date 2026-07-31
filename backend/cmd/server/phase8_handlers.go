@@ -1122,6 +1122,50 @@ func (s *server) adminToggleSingleTalkgroupTranscription(w http.ResponseWriter, 
 	http.Redirect(w, r, redirect, http.StatusSeeOther)
 }
 
+// apiTranscripts returns transcript status and text for a set of call IDs.
+// Used by the call list to poll for live transcript updates without refreshing
+// the entire page. Accepts ?id=ID1&id=ID2 (up to 100).
+func (s *server) apiTranscripts(w http.ResponseWriter, r *http.Request) {
+	ids := r.URL.Query()["id"]
+	if len(ids) == 0 {
+		s.phase8JSON(w, map[string]any{})
+		return
+	}
+	if len(ids) > 100 {
+		ids = ids[:100]
+	}
+	type transcriptInfo struct {
+		ID            string `json:"id"`
+		Status        string `json:"status"`
+		GeneratedText string `json:"generated"`
+		Error         string `json:"error,omitempty"`
+		GeneratedFlag bool   `json:"generated_flag"`
+	}
+	result := map[string]transcriptInfo{}
+	// Query transcription job status and generated transcript for each call.
+	rows, err := s.db.Query(r.Context(), `
+		SELECT c.id,
+			coalesce((SELECT tj.status FROM transcription_jobs tj WHERE tj.call_id=c.id ORDER BY tj.updated_at DESC LIMIT 1),''),
+			coalesce((SELECT t.text FROM transcripts t WHERE t.call_id=c.id ORDER BY t.updated_at DESC LIMIT 1),''),
+			coalesce((SELECT tj.error FROM transcription_jobs tj WHERE tj.call_id=c.id AND tj.status='failed' ORDER BY tj.updated_at DESC LIMIT 1),'')
+		FROM calls c WHERE c.id = ANY($1)`,
+		ids)
+	if err != nil {
+		s.phase8JSON(w, map[string]any{})
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var info transcriptInfo
+		if err := rows.Scan(&info.ID, &info.Status, &info.GeneratedText, &info.Error); err != nil {
+			continue
+		}
+		info.GeneratedFlag = info.GeneratedText != ""
+		result[info.ID] = info
+	}
+	s.phase8JSON(w, result)
+}
+
 func (s *server) phase8JSON(w http.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(value)

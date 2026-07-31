@@ -202,6 +202,7 @@ func main() {
 	mux.HandleFunc("GET /export/call/", s.exportCallJSON)
 	mux.HandleFunc("GET /download/", s.downloadCall)
 	mux.HandleFunc("GET /events/calls", s.eventsCalls)
+	mux.HandleFunc("GET /api/transcripts", s.apiTranscripts)
 	mux.HandleFunc("GET /status", s.statusPage)
 	staticSub, err := fs.Sub(staticFS, "web/static")
 	if err != nil {

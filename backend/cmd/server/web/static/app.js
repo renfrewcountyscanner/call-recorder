@@ -502,4 +502,91 @@
     var menu = details && details.querySelector('.admin-nav-menu');
     if (details && details.open && summary && menu) positionAdminMenu(summary, menu);
   });
+
+  /* ---------- Inline transcript expand/collapse ---------- */
+  document.addEventListener('click', function (e) {
+    var toggle = e.target.closest ? e.target.closest('.transcript-toggle') : null;
+    if (!toggle) return;
+    var container = toggle.closest('.transcript-inline');
+    if (!container) return;
+    var expanded = container.classList.toggle('expanded');
+    toggle.textContent = expanded ? 'Less' : 'More';
+    toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  });
+
+  /* ---------- Transcript retry ---------- */
+  document.addEventListener('click', function (e) {
+    var retry = e.target.closest ? e.target.closest('.transcript-retry') : null;
+    if (!retry) return;
+    var callId = retry.getAttribute('data-call-id');
+    if (!callId) return;
+    fetch('/admin/transcription/queue/' + callId, { method: 'POST' })
+      .then(function (r) {
+        if (r.ok || r.redirected) {
+          var container = retry.closest('.transcript-inline');
+          if (container) {
+            container.setAttribute('data-transcript-status', 'pending');
+            container.innerHTML = '<span class="transcript-status">Waiting for transcription</span>';
+          }
+        }
+      })
+      .catch(function () {});
+  });
+
+  /* ---------- Transcript live polling ---------- */
+  var transcriptPollTimer = null;
+  var lastTranscriptPoll = 0;
+  function pollTranscripts() {
+    var containers = document.querySelectorAll('.transcript-inline[data-transcript-status]');
+    if (containers.length === 0) return;
+    var now = Date.now();
+    if (now - lastTranscriptPoll < 5000) return;
+    lastTranscriptPoll = now;
+    var ids = [];
+    containers.forEach(function (c) { var id = c.getAttribute('data-call-id'); if (id) ids.push(id); });
+    if (ids.length === 0) return;
+    var url = '/api/transcripts?' + ids.map(function (id) { return 'id=' + encodeURIComponent(id); }).join('&');
+    fetch(url).then(function (r) { return r.json(); }).then(function (data) {
+      containers.forEach(function (container) {
+        var id = container.getAttribute('data-call-id');
+        var info = data[id];
+        if (!info) return;
+        var oldStatus = container.getAttribute('data-transcript-status');
+        var newStatus = info.status || '';
+        // Preserve expanded state.
+        var wasExpanded = container.classList.contains('expanded');
+        if (info.generated_flag) {
+          var html = '<div class="transcript-preview">' + escapeHtml(info.generated) + '</div>' +
+            '<button class="transcript-toggle" aria-expanded="' + (wasExpanded ? 'true' : 'false') + '" aria-label="Expand transcript">' + (wasExpanded ? 'Less' : 'More') + '</button>';
+          container.innerHTML = html;
+          container.setAttribute('data-transcript-status', 'completed');
+          container.setAttribute('data-generated', 'true');
+          if (wasExpanded) container.classList.add('expanded');
+        } else if (newStatus !== oldStatus) {
+          var statusHtml = '';
+          if (newStatus === 'pending') statusHtml = '<span class="transcript-status">Waiting for transcription</span>';
+          else if (newStatus === 'running') statusHtml = '<span class="transcript-status">Transcribing…</span>';
+          else if (newStatus === 'failed') statusHtml = '<span class="transcript-status failed">Transcription failed</span><button class="transcript-retry" data-call-id="' + id + '" aria-label="Retry transcription">Retry</button>';
+          else if (newStatus === 'queued') statusHtml = '<span class="transcript-status">Waiting for transcription worker</span>';
+          if (statusHtml) {
+            container.innerHTML = statusHtml;
+            container.setAttribute('data-transcript-status', newStatus);
+          }
+        }
+      });
+    }).catch(function () {});
+  }
+  function escapeHtml(text) {
+    var div = document.createElement('div');
+    div.appendChild(document.createTextNode(text));
+    return div.innerHTML;
+  }
+  // Poll every 5 seconds when tab is visible.
+  setInterval(function () {
+    if (!document.hidden) pollTranscripts();
+  }, 5000);
+  // Also poll after HTMX swaps.
+  document.body.addEventListener('htmx:afterSwap', function () {
+    setTimeout(pollTranscripts, 500);
+  });
 })();

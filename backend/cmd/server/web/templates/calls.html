@@ -43,7 +43,7 @@
   </thead>
   <tbody>
     {{range .Calls}}
-    <tr class="call-row">
+    <tr class="call-row" data-call-id="{{.ID}}">
       <td class="col-play" data-label="Play"><button type="button" class="play-btn" data-play="{{.ID}}" data-offset="{{.AudioOffsetMS}}" data-title="{{if .TalkgroupName}}{{.TalkgroupName}}{{else}}Talkgroup {{.TalkgroupID}}{{end}}" data-meta="{{.SystemID}} · {{.StartTime.Local.Format "2006-01-02 15:04:05"}}" aria-label="Play {{if .TalkgroupName}}{{.TalkgroupName}}{{else}}talkgroup {{.TalkgroupID}}{{end}} call from {{.StartTime.Local.Format "15:04"}}"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg></button></td>
       <td class="col-time" data-label="Time" data-column="time"><a class="time-link" href="/call/{{.ID}}">{{.StartTime.Local.Format "15:04:05"}}</a></td>
       <td class="col-date" data-label="Date" data-column="date"><span class="date">{{.StartTime.Local.Format "2006-01-02"}}</span></td>
@@ -84,6 +84,14 @@
         </details>
       </td>
     </tr>
+    {{if or .GeneratedTranscript .TranscriptionStatus}}
+    <tr class="call-row-transcript" data-call-id="{{.ID}}">
+      <td colspan="19">
+        <div class="transcript-inline" data-call-id="{{.ID}}" data-transcript-status="{{.TranscriptionStatus}}" data-generated="{{if .GeneratedTranscript}}true{{else}}false{{end}}">
+          {{if .GeneratedTranscript}}<div class="transcript-preview">{{.GeneratedTranscript}}</div><button class="transcript-toggle" aria-expanded="false" aria-label="Expand transcript">More</button>{{else if eq .TranscriptionStatus "pending"}}<span class="transcript-status">Waiting for transcription</span>{{else if eq .TranscriptionStatus "running"}}<span class="transcript-status">Transcribing…</span>{{else if eq .TranscriptionStatus "failed"}}<span class="transcript-status failed">Transcription failed</span>{{if and $.Nav $.Nav.Authorized}}<button class="transcript-retry" data-call-id="{{.ID}}" aria-label="Retry transcription">Retry</button>{{end}}{{else if eq .TranscriptionStatus "queued"}}<span class="transcript-status">Waiting for transcription worker</span>{{end}}</div>
+      </td>
+    </tr>
+    {{end}}
     {{end}}
   </tbody>
 </table>
