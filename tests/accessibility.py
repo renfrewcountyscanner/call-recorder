@@ -49,7 +49,8 @@ try:
     wait_css(".login-card")
     failures += audit("admin login", driver)
 
-    wait_css("input[name=token]").send_keys(TOKEN)
+    wait_css("input[name=username]").send_keys("admin")
+    driver.find_element(By.CSS_SELECTOR, "input[name=password]").send_keys("testpassword")
     driver.find_element(By.CSS_SELECTOR, ".login-card button[type=submit]").click()
     wait_css("#alias-form")
     failures += audit("talkgroup administration", driver)

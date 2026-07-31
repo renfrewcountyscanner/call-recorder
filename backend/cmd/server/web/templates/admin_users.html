@@ -1,0 +1,60 @@
+{{define "admin_users.html"}}{{template "head" .}}{{template "top" .}}
+<div class="page-head"><div><p class="eyebrow">Administration</p><h1>Users</h1><p class="muted">Manage user accounts and roles.</p></div></div>
+
+<section class="card">
+  <h2>Create user</h2>
+  <form method="post" action="/admin/users" class="form-grid">
+    <label>Username <input name="username" required maxlength="100" autocomplete="off"></label>
+    <label>Password <input name="password" type="password" required autocomplete="new-password"></label>
+    <label>Role
+      <select name="role">
+        <option value="viewer">Viewer (read-only)</option>
+        <option value="admin">Admin (read/write)</option>
+      </select>
+    </label>
+    <button class="btn primary">Create user</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Users</h2>
+  {{if .Users}}
+  <div class="table-wrap">
+    <table class="data responsive">
+      <thead>
+        <tr>
+          <th scope="col">Username</th>
+          <th scope="col">Role</th>
+          <th scope="col">Status</th>
+          <th scope="col">Created</th>
+          <th scope="col">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Users}}
+        <tr>
+          <td><strong>{{.Username}}</strong></td>
+          <td>{{if eq .Role "admin"}}<span class="badge info">Admin</span>{{else}}<span class="badge">Viewer</span>{{end}}</td>
+          <td>{{if .Enabled}}<span class="badge ok">Enabled</span>{{else}}<span class="badge warn">Disabled</span>{{end}}</td>
+          <td>{{.CreatedAt}}</td>
+          <td>
+            <form class="inline" method="post" action="/admin/users/action" style="display:inline">
+              <input type="hidden" name="username" value="{{.Username}}">
+              <button class="btn small" name="action" value="{{if .Enabled}}disable{{else}}enable{{end}}">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
+            </form>
+            <form class="inline" method="post" action="/admin/users/password" style="display:inline">
+              <input type="hidden" name="username" value="{{.Username}}">
+              <input type="password" name="password" placeholder="New password" required style="width:120px;display:inline-block">
+              <button class="btn small">Change password</button>
+            </form>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <p class="muted">No users configured. Create the first user above.</p>
+  {{end}}
+</section>
+{{template "bottom" .}}{{end}}

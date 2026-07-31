@@ -19,6 +19,8 @@ done
 test "$ready" = 1
 test -s "$root/.test-runtime/secrets/master.key"
 test "$(stat -c '%a' "$root/.test-runtime/secrets/master.key")" = 600
+# Create admin user for web UI tests
+$compose exec -T backend /usr/local/bin/call-recorder-admin users create --username admin --password testpassword --role admin
 $compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/006_transcription_webui_secrets.sql >/dev/null
 test "$(curl -s -o "$work/malformed.json" -w '%{http_code}' -H 'Content-Type: application/json' -H 'X-Call-Recorder-Key: synthetic-integration-key' --data '{' http://127.0.0.1:18080/api/v1/uploads)" = 400
 grep -q 'invalid JSON metadata' "$work/malformed.json"

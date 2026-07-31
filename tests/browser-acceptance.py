@@ -64,7 +64,8 @@ def post_call(n):
 
 def login(driver):
     driver.get(BASE + "/admin/login")
-    wait_for(driver, "input[name=token]")[0].send_keys(TOKEN)
+    wait_for(driver, "input[name=username]")[0].send_keys("admin")
+    driver.find_element(By.CSS_SELECTOR, "input[name=password]").send_keys("testpassword")
     driver.find_element(By.CSS_SELECTOR, ".login-card button[type=submit]").click()
     wait_for(driver, "#alias-form")
 

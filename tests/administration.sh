@@ -7,9 +7,12 @@ work=$(mktemp -d)
 cleanup() { $compose down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$root/.test-runtime" "$work"; }
 trap cleanup EXIT
 mkdir -p "$root/.test-runtime/postgres" "$root/.test-runtime/audio"
-CALL_RECORDER_ADMIN_ENABLED=true CALL_RECORDER_ADMIN_TOKEN=synthetic-admin-token $compose up -d --build
+CALL_RECORDER_ADMIN_ENABLED=true CALL_RECORDER_SESSION_SECRET=test-secret-key-1234567890 $compose up -d --build
 for n in $(seq 1 40); do curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1 && break || true; sleep 1; done
-curl -fsS -c "$work/cookie" -d 'token=synthetic-admin-token' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/login | grep -q 303
+# Create admin user via CLI
+$compose exec -T backend /usr/local/bin/call-recorder-admin users create --username admin --password testpassword --role admin || true
+# Login with username/password
+curl -fsS -c "$work/cookie" -d 'username=admin&password=testpassword' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/login | grep -q 303
 curl -fsS -b "$work/cookie" -d 'system=system-z&id=900&alias=Manual+Dispatch&description=synthetic&category=test&priority=4&source=manual&enabled=on' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/talkgroups | grep -q 303
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select alias from talkgroup_aliases where system_id='system-z' and talkgroup_id='900'")" = 'Manual Dispatch'
 curl -fsS -b "$work/cookie" -d 'system=system-z&id=901&alias=Manual+Unit&description=synthetic&category=test&source=manual&enabled=on' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/radios | grep -q 303

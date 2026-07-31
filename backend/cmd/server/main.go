@@ -68,6 +68,7 @@ type config struct {
 	CloudflareAdminEmail      string
 	CloudflareTrustedProxyIPs []string
 	SecretsRoot               string
+	SessionSecret             string
 }
 
 type server struct {
@@ -192,6 +193,12 @@ func main() {
 			os.Exit(2)
 		}
 	}
+	// Bootstrap admin user from legacy token if no users exist.
+	if cfg.AdminToken != "" && cfg.SessionSecret != "" {
+		if err := s.bootstrapAdminUser(context.Background()); err != nil {
+			slog.Error("bootstrap admin user", "error", err)
+		}
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.health)
@@ -214,7 +221,7 @@ func main() {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 		http.FileServerFS(staticSub).ServeHTTP(w, r)
 	})))
-	if cfg.AdminEnabled && (cfg.AdminOpen || cfg.AdminToken != "" || (cfg.CloudflareAccessEnabled && cfg.CloudflareAdminEmail != "")) {
+	if cfg.AdminEnabled && (cfg.AdminOpen || cfg.AdminToken != "" || cfg.SessionSecret != "" || (cfg.CloudflareAccessEnabled && cfg.CloudflareAdminEmail != "")) {
 		mux.HandleFunc("GET /admin/login", s.adminLogin)
 		mux.HandleFunc("POST /admin/login", s.adminLogin)
 		mux.HandleFunc("GET /admin/logout", s.adminLogout)
@@ -257,6 +264,10 @@ func main() {
 		mux.HandleFunc("GET /admin/retention/history", s.adminRetentionHistory)
 		mux.HandleFunc("POST /admin/retention/run", s.adminRunRetention)
 		mux.HandleFunc("POST /admin/retention/delete", s.adminDeleteRetention)
+		mux.HandleFunc("GET /admin/users", s.adminUsers)
+		mux.HandleFunc("POST /admin/users", s.adminCreateUser)
+		mux.HandleFunc("POST /admin/users/action", s.adminUserAction)
+		mux.HandleFunc("POST /admin/users/password", s.adminChangePassword)
 	}
 	mux.HandleFunc("GET /media/", s.media)
 	mux.HandleFunc("POST /api/v1/uploads", s.createUpload)
@@ -274,7 +285,7 @@ func main() {
 }
 
 func loadConfig() config {
-	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), SecretsRoot: env("CALL_RECORDER_SECRETS_ROOT", "/var/lib/call-recorder/secrets"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyDebug: env("CALL_RECORDER_LEGACY_DEBUG", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminOpen: env("CALL_RECORDER_ADMIN_OPEN", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS"))}
+	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), SecretsRoot: env("CALL_RECORDER_SECRETS_ROOT", "/var/lib/call-recorder/secrets"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyDebug: env("CALL_RECORDER_LEGACY_DEBUG", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminOpen: env("CALL_RECORDER_ADMIN_OPEN", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS")), SessionSecret: env("CALL_RECORDER_SESSION_SECRET", "")}
 }
 func splitCSV(value string) []string {
 	var out []string
@@ -340,6 +351,29 @@ func (s *server) bootstrapLegacySender(ctx context.Context) error {
 	}
 	_, err = s.db.Exec(ctx, `INSERT INTO remote_senders (sender_id,key_hash,enabled) VALUES ($1,$2,true) ON CONFLICT (sender_id) DO NOTHING`, s.cfg.LegacyAuthID, []byte(hash))
 	return err
+}
+
+func (s *server) bootstrapAdminUser(ctx context.Context) error {
+	// Check if any users exist.
+	var count int
+	err := s.db.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&count)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil // Users already exist, skip migration.
+	}
+	// Create default admin user from legacy token.
+	hash, err := hashAPIKey(s.cfg.AdminToken)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `INSERT INTO users (username, password_hash, role, enabled) VALUES ('admin', $1, 'admin', true) ON CONFLICT (username) DO NOTHING`, hash)
+	if err != nil {
+		return err
+	}
+	slog.Info("created default admin user from legacy token", "username", "admin")
+	return nil
 }
 
 // legacyCreateUpload is intentionally separate from /api/v1. It only accepts
@@ -1304,15 +1338,32 @@ func (s *server) adminOK(r *http.Request) bool {
 	if s.cfg.AdminOpen {
 		return true
 	}
-	if s.cfg.AdminToken == "" {
-		return false
+	// Check for username/password session cookie.
+	if c, err := r.Cookie("call_recorder_session"); err == nil && s.cfg.SessionSecret != "" {
+		parts := strings.SplitN(c.Value, ":", 3)
+		if len(parts) == 3 {
+			username, role, hash := parts[0], parts[1], parts[2]
+			h := sha256.Sum256([]byte(username + ":" + role + ":" + s.cfg.SessionSecret))
+			expected := hex.EncodeToString(h[:])
+			if subtle.ConstantTimeCompare([]byte(hash), []byte(expected)) == 1 {
+				// Valid session. Check if user still exists and is enabled.
+				var enabled bool
+				err := s.db.QueryRow(r.Context(), `SELECT enabled FROM users WHERE username=$1`, username).Scan(&enabled)
+				if err == nil && enabled {
+					r.Header.Set("X-Call-Recorder-User", username)
+					r.Header.Set("X-Call-Recorder-Role", role)
+					return true
+				}
+			}
+		}
 	}
-	if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Call-Recorder-Admin")), []byte(s.cfg.AdminToken)) == 1 {
-		return true
-	}
-	if c, err := r.Cookie("call_recorder_admin"); err == nil {
-		expected := sha256.Sum256([]byte(s.cfg.AdminToken))
-		return subtle.ConstantTimeCompare([]byte(c.Value), []byte(hex.EncodeToString(expected[:]))) == 1
+	// Legacy admin token mode (for API/CLI compatibility).
+	if s.cfg.AdminToken != "" {
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Call-Recorder-Admin")), []byte(s.cfg.AdminToken)) == 1 {
+			r.Header.Set("X-Call-Recorder-User", "admin-token")
+			r.Header.Set("X-Call-Recorder-Role", "admin")
+			return true
+		}
 	}
 	return false
 }
@@ -1336,18 +1387,211 @@ func (s *server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(r.Form.Get("token")), []byte(s.cfg.AdminToken)) != 1 {
-		s.renderStatus(w, r, http.StatusUnauthorized, "admin_login.html", "Administration sign-in", "", map[string]any{"Error": "Incorrect administration token."})
+	username := strings.TrimSpace(r.Form.Get("username"))
+	password := r.Form.Get("password")
+	if username == "" || password == "" {
+		s.renderStatus(w, r, http.StatusUnauthorized, "admin_login.html", "Administration sign-in", "", map[string]any{"Error": "Username and password are required."})
 		return
 	}
-	h := sha256.Sum256([]byte(s.cfg.AdminToken))
-	http.SetCookie(w, &http.Cookie{Name: "call_recorder_admin", Value: hex.EncodeToString(h[:]), Path: "/admin", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, MaxAge: 3600})
+	// Look up user in database.
+	var passwordHash string
+	var role string
+	var enabled bool
+	err := s.db.QueryRow(r.Context(), `SELECT password_hash, role, enabled FROM users WHERE username=$1`, username).Scan(&passwordHash, &role, &enabled)
+	if err != nil || !enabled {
+		s.renderStatus(w, r, http.StatusUnauthorized, "admin_login.html", "Administration sign-in", "", map[string]any{"Error": "Invalid username or password."})
+		return
+	}
+	// Verify password.
+	if !verifyAPIKey(passwordHash, password) {
+		s.renderStatus(w, r, http.StatusUnauthorized, "admin_login.html", "Administration sign-in", "", map[string]any{"Error": "Invalid username or password."})
+		return
+	}
+	// Create session cookie.
+	s.createSession(w, username, role)
 	http.Redirect(w, r, "/admin/talkgroups", http.StatusSeeOther)
 }
 
+func (s *server) createSession(w http.ResponseWriter, username, role string) {
+	if s.cfg.SessionSecret == "" {
+		return
+	}
+	h := sha256.Sum256([]byte(username + ":" + role + ":" + s.cfg.SessionSecret))
+	value := username + ":" + role + ":" + hex.EncodeToString(h[:])
+	http.SetCookie(w, &http.Cookie{
+		Name:     "call_recorder_session",
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   true,
+		MaxAge:   3600,
+	})
+}
+
 func (s *server) adminLogout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{Name: "call_recorder_admin", Path: "/admin", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil})
+	http.SetCookie(w, &http.Cookie{Name: "call_recorder_session", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: true})
+	http.SetCookie(w, &http.Cookie{Name: "call_recorder_admin", Path: "/admin", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: true})
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (s *server) getUserRole(r *http.Request) string {
+	role := r.Header.Get("X-Call-Recorder-Role")
+	if role == "" {
+		return "guest"
+	}
+	return role
+}
+
+func (s *server) isAdmin(r *http.Request) bool {
+	return s.getUserRole(r) == "admin"
+}
+
+func (s *server) isViewer(r *http.Request) bool {
+	role := s.getUserRole(r)
+	return role == "admin" || role == "viewer"
+}
+
+func (s *server) viewerOK(w http.ResponseWriter, r *http.Request) bool {
+	if !s.adminOK(r) {
+		s.renderStatus(w, r, http.StatusUnauthorized, "admin_required.html", "Sign-in required", "", nil)
+		return false
+	}
+	return true
+}
+
+func (s *server) adminOnly(w http.ResponseWriter, r *http.Request) bool {
+	if !s.adminOK(r) {
+		s.renderStatus(w, r, http.StatusUnauthorized, "admin_required.html", "Administration sign-in required", "", nil)
+		return false
+	}
+	if !s.isAdmin(r) {
+		s.renderStatus(w, r, http.StatusForbidden, "admin_required.html", "Access denied", "", map[string]any{"Error": "You do not have permission to perform this action."})
+		return false
+	}
+	return true
+}
+
+func (s *server) adminUsers(w http.ResponseWriter, r *http.Request) {
+	if !s.adminOnly(w, r) {
+		return
+	}
+	rows, err := s.db.Query(r.Context(), `SELECT username, role, enabled, created_at FROM users ORDER BY username`)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	defer rows.Close()
+	type userRow struct {
+		Username  string
+		Role      string
+		Enabled   bool
+		CreatedAt string
+	}
+	users := []userRow{}
+	for rows.Next() {
+		var u userRow
+		if err := rows.Scan(&u.Username, &u.Role, &u.Enabled, &u.CreatedAt); err == nil {
+			users = append(users, u)
+		}
+	}
+	s.page(w, r, "admin_users.html", "Users", "users", map[string]any{"Users": users})
+}
+
+func (s *server) adminCreateUser(w http.ResponseWriter, r *http.Request) {
+	if !s.adminOnly(w, r) {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	username := strings.TrimSpace(r.Form.Get("username"))
+	password := r.Form.Get("password")
+	role := r.Form.Get("role")
+	if username == "" || password == "" {
+		http.Error(w, "username and password are required", http.StatusBadRequest)
+		return
+	}
+	if role != "admin" && role != "viewer" {
+		role = "viewer"
+	}
+	hash, err := hashAPIKey(password)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	_, err = s.db.Exec(r.Context(), `INSERT INTO users (username, password_hash, role, enabled) VALUES ($1, $2, $3, true)`, username, hash, role)
+	if err != nil {
+		if strings.Contains(err.Error(), "unique") {
+			http.Error(w, "username already exists", http.StatusBadRequest)
+			return
+		}
+		s.internal(w, err)
+		return
+	}
+	http.Redirect(w, r, "/admin/users?created=1", http.StatusSeeOther)
+}
+
+func (s *server) adminUserAction(w http.ResponseWriter, r *http.Request) {
+	if !s.adminOnly(w, r) {
+		return
+	}
+	username := r.FormValue("username")
+	action := r.FormValue("action")
+	if username == "" {
+		http.Error(w, "username is required", http.StatusBadRequest)
+		return
+	}
+	switch action {
+	case "enable":
+		_, err := s.db.Exec(r.Context(), `UPDATE users SET enabled=true, updated_at=now() WHERE username=$1`, username)
+		if err != nil {
+			s.internal(w, err)
+			return
+		}
+	case "disable":
+		_, err := s.db.Exec(r.Context(), `UPDATE users SET enabled=false, updated_at=now() WHERE username=$1`, username)
+		if err != nil {
+			s.internal(w, err)
+			return
+		}
+	default:
+		http.Error(w, "invalid action", http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
+}
+
+func (s *server) adminChangePassword(w http.ResponseWriter, r *http.Request) {
+	if !s.adminOnly(w, r) {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	username := r.FormValue("username")
+	password := r.FormValue("password")
+	if username == "" || password == "" {
+		http.Error(w, "username and password are required", http.StatusBadRequest)
+		return
+	}
+	hash, err := hashAPIKey(password)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	tag, err := s.db.Exec(r.Context(), `UPDATE users SET password_hash=$1, updated_at=now() WHERE username=$2`, hash, username)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		http.Error(w, "user not found", http.StatusNotFound)
+		return
+	}
+	http.Redirect(w, r, "/admin/users?updated=1", http.StatusSeeOther)
 }
 
 func (s *server) adminSenders(w http.ResponseWriter, r *http.Request) {
@@ -2100,12 +2344,20 @@ func (s *server) render(w http.ResponseWriter, name string, data any) {
 }
 
 type navContext struct {
-	Title, Active, Version   string
-	AdminEnabled, Authorized bool
+	Title, Active, Version, Username, Role string
+	AdminEnabled, Authorized               bool
+	IsAdmin                                bool
 }
 
 func (s *server) nav(r *http.Request, active, title string) navContext {
-	return navContext{Title: title, Active: active, Version: version, AdminEnabled: s.cfg.AdminEnabled, Authorized: s.cfg.AdminEnabled && s.adminOK(r)}
+	authorized := s.cfg.AdminEnabled && s.adminOK(r)
+	username := ""
+	role := ""
+	if authorized {
+		username = r.Header.Get("X-Call-Recorder-User")
+		role = s.getUserRole(r)
+	}
+	return navContext{Title: title, Active: active, Version: version, AdminEnabled: s.cfg.AdminEnabled, Authorized: authorized, Username: username, Role: role, IsAdmin: role == "admin"}
 }
 func (s *server) renderStatus(w http.ResponseWriter, r *http.Request, status int, name, title, active string, data map[string]any) {
 	if data == nil {
