@@ -7,7 +7,7 @@
   <a href="/?system={{.Call.SystemID}}&talkgroup={{.Call.TalkgroupID}}">Talkgroup {{.Call.TalkgroupID}}</a>
 </div>
 <div class="detail-hero">
-  <button type="button" class="play-btn" data-play="{{.Call.ID}}" data-title="{{if .Call.TalkgroupName}}{{.Call.TalkgroupName}}{{else}}Talkgroup {{.Call.TalkgroupID}}{{end}}" data-meta="{{.Call.SystemID}} · {{.Call.StartTime.Local.Format "2006-01-02 15:04:05"}}" aria-label="Play this call"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg></button>
+  <button type="button" class="play-btn" data-play="{{.Call.ID}}" data-offset="{{.Call.AudioOffsetMS}}" data-title="{{if .Call.TalkgroupName}}{{.Call.TalkgroupName}}{{else}}Talkgroup {{.Call.TalkgroupID}}{{end}}" data-meta="{{.Call.SystemID}} · {{.Call.StartTime.Local.Format "2006-01-02 15:04:05"}}" aria-label="Play this call"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg></button>
   <div>
     <h1 class="alias" title="{{.Call.TalkgroupName}}">{{if .Call.TalkgroupName}}{{.Call.TalkgroupName}}{{else}}Talkgroup {{.Call.TalkgroupID}}{{end}}</h1>
     <div class="muted">{{.Call.SystemID}}{{if .Call.SystemName}} · {{.Call.SystemName}}{{end}} · {{.Call.StartTime.Local.Format "2006-01-02 15:04:05"}}</div>
@@ -67,8 +67,11 @@
   <section class="card" aria-labelledby="d-sys">
     <h2 id="d-sys">System and site</h2>
     <dl class="kv">
-      <dt>System</dt><dd>{{.Call.SystemID}}{{if .Call.SystemName}} · {{.Call.SystemName}}{{end}}</dd>
-      <dt>Site</dt><dd>{{if .Call.SiteID}}{{.Call.SiteID}}{{if .Call.SiteName}} · {{.Call.SiteName}}{{end}}{{else}}<span class="muted">—</span>{{end}}</dd>
+      <dt>System ID</dt><dd class="mono">{{.Call.SystemID}}</dd>
+      <dt>System Label</dt><dd>{{if .Call.SystemName}}<span class="alias">{{.Call.SystemName}}</span>{{else}}<span class="muted">—</span>{{end}}</dd>
+      <dt>System Type</dt><dd>{{if .Call.VoiceService}}<span class="badge">{{.Call.VoiceService}}</span>{{else}}<span class="muted">—</span>{{end}}</dd>
+      <dt>Site ID</dt><dd>{{if .Call.SiteID}}<span class="mono">{{.Call.SiteID}}</span>{{else}}<span class="muted">—</span>{{end}}</dd>
+      <dt>Site Label</dt><dd>{{if .Call.SiteName}}<span class="alias">{{.Call.SiteName}}</span>{{else}}<span class="muted">—</span>{{end}}</dd>
       <dt>Sender</dt><dd class="mono">{{.Call.SenderID}}</dd>
       {{if .Call.ReceiverID}}<dt>Receiver</dt><dd class="mono">{{.Call.ReceiverID}}</dd>{{end}}
     </dl>
@@ -84,6 +87,8 @@
       <dt>Voice service</dt><dd>{{if .Call.VoiceService}}{{.Call.VoiceService}}{{else}}<span class="muted">—</span>{{end}}</dd>
       <dt>Classification</dt><dd>{{if .Call.GroupCall}}Group{{else}}Private or unknown{{end}}</dd>
       <dt>Audio</dt><dd class="mono">{{.Call.AudioFormat}} · {{.Call.AudioSize}} bytes</dd>
+      <dt>Audio start</dt><dd class="mono">{{if .Call.AudioOffsetMS}}{{.Call.AudioOffsetMS}} ms{{else}}0 ms{{end}}</dd>
+      <dt>Filename</dt><dd class="mono small">{{base .Call.AudioPath}}</dd>
     </dl>
   </section>
 </div>

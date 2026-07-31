@@ -1,0 +1,9 @@
+{{define "call_notes_form.html"}}
+<form class="inline-edit" hx-post="/admin/call/{{.ID}}/notes" hx-target="closest td" hx-swap="innerHTML">
+  <textarea name="notes" maxlength="10000" rows="2">{{.Notes}}</textarea>
+  <div class="inline-edit-actions">
+    <button class="btn small primary" type="submit">Save</button>
+    <button class="btn small ghost" type="button" hx-get="/admin/call/{{.ID}}/notes" hx-target="closest td" hx-swap="innerHTML">Cancel</button>
+  </div>
+</form>
+{{end}}

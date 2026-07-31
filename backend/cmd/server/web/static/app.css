@@ -405,6 +405,10 @@ form.inline, .inline form { display: inline; }
 .column-options { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; margin-top: 0.5rem; }
 .column-options .check { min-height: 1.6rem; }
 
+.inline-edit { display: flex; flex-direction: column; gap: 0.35rem; min-width: 12rem; }
+.inline-edit textarea { min-height: 3rem; }
+.inline-edit-actions { display: flex; gap: 0.35rem; }
+
 .list-meta {
   display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
   margin: 0.45rem 0 0.55rem; color: var(--muted); font-size: 0.85rem;
@@ -467,6 +471,13 @@ table.data .actions {
 .call-row { scroll-margin-top: calc(var(--header-height) + 0.5rem); scroll-margin-bottom: var(--player-height); }
 
 .call-row .col-play { width: 2.5rem; padding-right: 0.35rem; }
+.call-row .col-time { white-space: nowrap; }
+.call-row .col-date { white-space: nowrap; }
+.call-row .col-audio_start, .call-row .col-duration, .call-row .col-frequency, .call-row .col-lcn, .call-row .col-system_id, .call-row .col-target, .call-row .col-source { white-space: nowrap; }
+.call-row .col-filename { max-width: 12rem; }
+.call-row .col-filename .small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.call-row .col-notes_text { max-width: 18rem; }
+.call-row .col-notes_text .small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .play-btn {
   width: 1.85rem; height: 1.85rem; border-radius: 50%;
   border: 1px solid var(--border-strong); background: var(--panel-2);

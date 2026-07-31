@@ -1,7 +1,9 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -119,17 +121,18 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 type completedCall struct {
-	ID, SenderID, ReceiverID, SystemID, SystemName, SiteID, SiteName, TalkgroupID, TalkgroupName, TalkgroupTag, RadioID, RadioName, RadioTag, Frequency, LCN, VoiceService, AudioPath, AudioFormat, Transcript, Notes, CallType string
-	Protected                                                                                                                                                                                                                   bool
-	ProtectionReason, ProtectedBy                                                                                                                                                                                               string
-	ProtectedAt, ProtectionExpiresAt                                                                                                                                                                                            *time.Time
-	GroupCall                                                                                                                                                                                                                   *bool
-	StartTime                                                                                                                                                                                                                   time.Time
-	DurationMS                                                                                                                                                                                                                  int64
-	AudioSize                                                                                                                                                                                                                   int64
-	Patches                                                                                                                                                                                                                     int
-	GeneratedTranscript                                                                                                                                                                                                         bool
-	TranscriptionStatus                                                                                                                                                                                                         string
+	ID, SenderID, ReceiverID, SystemID, SystemName, SiteID, SiteName, TalkgroupID, TalkgroupName, TalkgroupTag, RadioID, RadioName, RadioTag, Frequency, LCN, VoiceService, AudioPath, AudioFilename, AudioFormat, Transcript, Notes, CallType string
+	Protected                                                                                                                                                                                                                               bool
+	ProtectionReason, ProtectedBy                                                                                                                                                                                                           string
+	ProtectedAt, ProtectionExpiresAt                                                                                                                                                                                                        *time.Time
+	GroupCall                                                                                                                                                                                                                               *bool
+	StartTime                                                                                                                                                                                                                               time.Time
+	DurationMS                                                                                                                                                                                                                              int64
+	AudioOffsetMS                                                                                                                                                                                                                           int64
+	AudioSize                                                                                                                                                                                                                               int64
+	Patches                                                                                                                                                                                                                                 int
+	GeneratedTranscript                                                                                                                                                                                                                     bool
+	TranscriptionStatus                                                                                                                                                                                                                     string
 }
 
 func main() {
@@ -157,7 +160,7 @@ func main() {
 		slog.Error("load application secrets key", "error", err)
 		os.Exit(2)
 	}
-	s := &server{cfg: cfg, db: pool, logger: slog.Default(), masterKey: masterKey, templates: template.Must(template.New("cr").Funcs(template.FuncMap{"dur": formatDuration, "tdate": formatTimePtr, "srcBadge": sourceBadge, "inc": func(n int) int { return n + 1 }, "dec": func(n int) int { return n - 1 }, "slice": func(v ...string) []string { return v }}).ParseFS(templatesFS, "web/templates/*.html"))}
+	s := &server{cfg: cfg, db: pool, logger: slog.Default(), masterKey: masterKey, templates: template.Must(template.New("cr").Funcs(template.FuncMap{"dur": formatDuration, "tdate": formatTimePtr, "srcBadge": sourceBadge, "base": filepath.Base, "inc": func(n int) int { return n + 1 }, "dec": func(n int) int { return n - 1 }, "slice": func(v ...string) []string { return v }}).ParseFS(templatesFS, "web/templates/*.html"))}
 	if err := s.bootstrapSender(context.Background()); err != nil {
 		slog.Error("bootstrap sender", "error", err)
 		os.Exit(2)
@@ -175,6 +178,7 @@ func main() {
 	mux.HandleFunc("GET /calls", s.callsFragment)
 	mux.HandleFunc("GET /call/", s.callDetail)
 	mux.HandleFunc("GET /export/calls.csv", s.exportCallsCSV)
+	mux.HandleFunc("GET /export/calls.audio", s.exportCallsAudio)
 	mux.HandleFunc("GET /export/call/", s.exportCallJSON)
 	mux.HandleFunc("GET /download/", s.downloadCall)
 	mux.HandleFunc("GET /events/calls", s.eventsCalls)
@@ -196,6 +200,8 @@ func main() {
 		mux.HandleFunc("POST /admin/senders/create", s.adminCreateSender)
 		mux.HandleFunc("POST /admin/senders/replace", s.adminReplaceSender)
 		mux.HandleFunc("POST /admin/senders/disable", s.adminDisableSender)
+		mux.HandleFunc("GET /admin/call/{id}/notes", s.adminCallNotesForm)
+		mux.HandleFunc("POST /admin/call/{id}/notes", s.adminUpdateCallNotesInline)
 		mux.HandleFunc("POST /admin/call/", s.adminUpdateCallNotes)
 		mux.HandleFunc("POST /admin/protect/", s.adminProtectCall)
 		mux.HandleFunc("GET /admin/favourites", s.adminFavourites)
@@ -739,13 +745,16 @@ func (s *server) callsFragment(w http.ResponseWriter, r *http.Request) {
 		s.render(w, "calls.html", map[string]any{"Error": "The call list could not be loaded. Try again shortly."})
 		return
 	}
-	pages := (total + f.PageSize - 1) / f.PageSize
-	data := map[string]any{"Calls": calls, "Total": total, "Pages": pages, "Filter": f, "Chips": chipsFor(f)}
-	if f.Page > 1 {
+	pages := 1
+	if f.PageSize > 0 {
+		pages = (total + f.PageSize - 1) / f.PageSize
+	}
+	data := map[string]any{"Calls": calls, "Total": total, "Pages": pages, "Filter": f, "Chips": chipsFor(f), "Nav": s.nav(r, "calls", "")}
+	if f.PageSize > 0 && f.Page > 1 {
 		data["PrevURL"] = callsURL(f, "", f.Page-1)
 		data["FirstURL"] = callsURL(f, "", 1)
 	}
-	if f.Page < pages {
+	if f.PageSize > 0 && f.Page < pages {
 		data["NextURL"] = callsURL(f, "", f.Page+1)
 		data["LastURL"] = callsURL(f, "", pages)
 	}
@@ -760,7 +769,8 @@ func (s *server) callDetail(w http.ResponseWriter, r *http.Request) {
 	var c completedCall
 	var raw []byte
 	var patches []string
-	err := s.db.QueryRow(r.Context(), `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.talkgroup_tag,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.radio_tag,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.voice_service,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(p.metadata,'{}'::jsonb),coalesce(c.call_type,''),c.protected,coalesce(c.protection_reason,''),coalesce(c.protected_by,''),c.protected_at,c.protection_expires_at,c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id) FROM calls c LEFT JOIN pending_uploads p ON p.completed_call_id=c.id LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE c.id=$1`, id).Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.TalkgroupTag, &c.RadioID, &c.RadioName, &c.RadioTag, &c.Frequency, &c.LCN, &c.VoiceService, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &raw, &c.CallType, &c.Protected, &c.ProtectionReason, &c.ProtectedBy, &c.ProtectedAt, &c.ProtectionExpiresAt, &c.GroupCall, &c.Patches)
+	err := s.db.QueryRow(r.Context(), `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.talkgroup_tag,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.radio_tag,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.voice_service,''),c.start_time,c.duration_ms,coalesce(c.audio_offset_ms,0),c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(p.metadata,'{}'::jsonb),coalesce(c.call_type,''),c.protected,coalesce(c.protection_reason,''),coalesce(c.protected_by,''),c.protected_at,c.protection_expires_at,c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id) FROM calls c LEFT JOIN pending_uploads p ON p.completed_call_id=c.id LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE c.id=$1`, id).Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.TalkgroupTag, &c.RadioID, &c.RadioName, &c.RadioTag, &c.Frequency, &c.LCN, &c.VoiceService, &c.StartTime, &c.DurationMS, &c.AudioOffsetMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &raw, &c.CallType, &c.Protected, &c.ProtectionReason, &c.ProtectedBy, &c.ProtectedAt, &c.ProtectionExpiresAt, &c.GroupCall, &c.Patches)
+	c.AudioFilename = filepath.Base(c.AudioPath)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -825,6 +835,55 @@ func (s *server) adminUpdateCallNotes(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/call/"+url.PathEscape(id), http.StatusSeeOther)
 }
 
+func (s *server) adminCallNotesForm(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" || strings.Contains(id, "/") {
+		http.Error(w, "invalid call ID", 400)
+		return
+	}
+	var notes string
+	_ = s.db.QueryRow(r.Context(), `SELECT coalesce(notes,'') FROM calls WHERE id=$1`, id).Scan(&notes)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = s.templates.ExecuteTemplate(w, "call_notes_form.html", map[string]any{"ID": id, "Notes": notes})
+}
+
+func (s *server) adminUpdateCallNotesInline(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuthorized(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" || strings.Contains(id, "/") {
+		http.Error(w, "invalid call ID", 400)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", 400)
+		return
+	}
+	notes := strings.TrimSpace(r.FormValue("notes"))
+	if len(notes) > 10000 {
+		http.Error(w, "notes exceed 10000 characters", 400)
+		return
+	}
+	identity := strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email"))
+	if identity == "" {
+		identity = "admin-token"
+	}
+	if _, err := s.db.Exec(r.Context(), `UPDATE calls SET notes=$1,notes_updated_at=now(),notes_updated_by=$2 WHERE id=$3`, notes, identity, id); err != nil {
+		s.internal(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if notes == "" {
+		w.Write([]byte(`<span class="muted">—</span>`))
+		return
+	}
+	w.Write([]byte(`<span class="muted small">` + template.HTMLEscapeString(notes) + `</span>`))
+}
+
 func (s *server) exportCallsCSV(w http.ResponseWriter, r *http.Request) {
 	f, err := filterFromQuery(r.URL.Query())
 	if err != nil {
@@ -854,6 +913,69 @@ func (s *server) exportCallsCSV(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		f.Page++
+	}
+}
+
+func (s *server) exportCallsAudio(w http.ResponseWriter, r *http.Request) {
+	f, err := filterFromQuery(r.URL.Query())
+	if err != nil {
+		http.Error(w, "Invalid filter values", http.StatusBadRequest)
+		return
+	}
+	args := []any{f.Q, f.Sender, f.System, f.Site, f.Receiver, f.Talkgroup, f.Radio, f.CallType, f.Group, f.Frequency, f.MinDuration, f.MaxDuration, f.Date, f.From, f.To, f.Patched, f.Favourite}
+	rows, err := s.db.Query(r.Context(), `SELECT c.id,c.audio_path,c.audio_format`+callsFrom+callsWhere+` ORDER BY c.start_time DESC`, args...)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	defer rows.Close()
+
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", `attachment; filename="calls-audio-`+time.Now().UTC().Format("20060102T150405Z")+`.tar.gz"`)
+	gw := gzip.NewWriter(w)
+	defer gw.Close()
+	tw := tar.NewWriter(gw)
+	defer tw.Close()
+
+	count := 0
+	for rows.Next() {
+		var id, relPath, format string
+		if err := rows.Scan(&id, &relPath, &format); err != nil {
+			continue
+		}
+		full := filepath.Join(s.cfg.AudioRoot, relPath)
+		clean := filepath.Clean(full)
+		if !strings.HasPrefix(clean, filepath.Clean(s.cfg.AudioRoot)+string(os.PathSeparator)) {
+			continue
+		}
+		info, err := os.Stat(clean)
+		if err != nil {
+			continue
+		}
+		file, err := os.Open(clean)
+		if err != nil {
+			continue
+		}
+		ext := filepath.Ext(clean)
+		if ext == "" {
+			ext = "." + format
+		}
+		hdr := &tar.Header{Name: id + ext, Size: info.Size(), Mode: 0644, ModTime: info.ModTime()}
+		if err := tw.WriteHeader(hdr); err != nil {
+			file.Close()
+			return
+		}
+		if _, err := io.Copy(tw, file); err != nil {
+			file.Close()
+			return
+		}
+		file.Close()
+		count++
+	}
+	if count == 0 {
+		// Write an empty readme so the archive is still valid when no audio matches.
+		_ = tw.WriteHeader(&tar.Header{Name: "no-audio-matched.txt", Size: 28, Mode: 0644, ModTime: time.Now()})
+		_, _ = tw.Write([]byte("No audio matched the filters."))
 	}
 }
 
@@ -891,13 +1013,13 @@ func (s *server) exportCallJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var out struct {
-		ID, SenderID, ReceiverID, SystemID, SystemName, SiteID, SiteName, TalkgroupID, TalkgroupName, RadioID, RadioName, Frequency, LCN, CallType, AudioFormat, Transcript, Notes string
-		StartTime                                                                                                                                                                  time.Time
-		DurationMS, AudioSize                                                                                                                                                      int64
-		GroupCall                                                                                                                                                                  *bool
-		Raw                                                                                                                                                                        json.RawMessage
+		ID, SenderID, ReceiverID, SystemID, SystemName, SiteID, SiteName, TalkgroupID, TalkgroupName, TalkgroupTag, RadioID, RadioName, RadioTag, Frequency, LCN, VoiceService, CallType, AudioFormat, AudioPath, Transcript, Notes string
+		StartTime                                                                                                                                                                                    time.Time
+		DurationMS, AudioOffsetMS, AudioSize                                                                                                                                                         int64
+		GroupCall                                                                                                                                                                                    *bool
+		Raw                                                                                                                                                                                          json.RawMessage
 	}
-	err := s.db.QueryRow(r.Context(), `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(c.radio_name,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.call_type,''),c.audio_format,coalesce(c.transcript,''),coalesce(c.notes,''),c.start_time,c.duration_ms,c.audio_size,c.group_call,coalesce(p.metadata,'{}'::jsonb) FROM calls c LEFT JOIN pending_uploads p ON p.completed_call_id=c.id WHERE c.id=$1`, id).Scan(&out.ID, &out.SenderID, &out.ReceiverID, &out.SystemID, &out.SystemName, &out.SiteID, &out.SiteName, &out.TalkgroupID, &out.TalkgroupName, &out.RadioID, &out.RadioName, &out.Frequency, &out.LCN, &out.CallType, &out.AudioFormat, &out.Transcript, &out.Notes, &out.StartTime, &out.DurationMS, &out.AudioSize, &out.GroupCall, &out.Raw)
+	err := s.db.QueryRow(r.Context(), `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(c.talkgroup_name,''),coalesce(c.talkgroup_tag,''),coalesce(c.radio_id,''),coalesce(c.radio_name,''),coalesce(c.radio_tag,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.voice_service,''),coalesce(c.call_type,''),c.audio_format,c.audio_path,coalesce(c.audio_offset_ms,0),c.start_time,c.duration_ms,c.audio_size,c.group_call,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(p.metadata,'{}'::jsonb) FROM calls c LEFT JOIN pending_uploads p ON p.completed_call_id=c.id WHERE c.id=$1`, id).Scan(&out.ID, &out.SenderID, &out.ReceiverID, &out.SystemID, &out.SystemName, &out.SiteID, &out.SiteName, &out.TalkgroupID, &out.TalkgroupName, &out.TalkgroupTag, &out.RadioID, &out.RadioName, &out.RadioTag, &out.Frequency, &out.LCN, &out.VoiceService, &out.CallType, &out.AudioFormat, &out.AudioPath, &out.AudioOffsetMS, &out.StartTime, &out.DurationMS, &out.AudioSize, &out.GroupCall, &out.Transcript, &out.Notes, &out.Raw)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -908,12 +1030,12 @@ func (s *server) exportCallJSON(w http.ResponseWriter, r *http.Request) {
 	// must never carry credentials, upload tokens, or server-local paths.
 	clean := sanitizeExportMetadata(out.Raw)
 	_ = json.NewEncoder(w).Encode(struct {
-		ID, SenderID, ReceiverID, SystemID, SystemName, SiteID, SiteName, TalkgroupID, TalkgroupName, RadioID, RadioName, Frequency, LCN, CallType, AudioFormat, Transcript, Notes string
-		StartTime                                                                                                                                                                  time.Time
-		DurationMS, AudioSize                                                                                                                                                      int64
-		GroupCall                                                                                                                                                                  *bool
-		Raw                                                                                                                                                                        any
-	}{out.ID, out.SenderID, out.ReceiverID, out.SystemID, out.SystemName, out.SiteID, out.SiteName, out.TalkgroupID, out.TalkgroupName, out.RadioID, out.RadioName, out.Frequency, out.LCN, out.CallType, out.AudioFormat, out.Transcript, out.Notes, out.StartTime, out.DurationMS, out.AudioSize, out.GroupCall, clean})
+		ID, SenderID, ReceiverID, SystemID, SystemName, SiteID, SiteName, TalkgroupID, TalkgroupName, TalkgroupTag, RadioID, RadioName, RadioTag, Frequency, LCN, VoiceService, CallType, AudioFormat, AudioFilename, Transcript, Notes string
+		StartTime                                                                                                                                                                                    time.Time
+		DurationMS, AudioOffsetMS, AudioSize                                                                                                                                                           int64
+		GroupCall                                                                                                                                                                                    *bool
+		Raw                                                                                                                                                                                          any
+	}{out.ID, out.SenderID, out.ReceiverID, out.SystemID, out.SystemName, out.SiteID, out.SiteName, out.TalkgroupID, out.TalkgroupName, out.TalkgroupTag, out.RadioID, out.RadioName, out.RadioTag, out.Frequency, out.LCN, out.VoiceService, out.CallType, out.AudioFormat, filepath.Base(out.AudioPath), out.Transcript, out.Notes, out.StartTime, out.DurationMS, out.AudioOffsetMS, out.AudioSize, out.GroupCall, clean})
 }
 
 func (s *server) downloadCall(w http.ResponseWriter, r *http.Request) {
@@ -1555,9 +1677,13 @@ func filterFromQuery(q url.Values) (callFilter, error) {
 		f.Page = n
 	}
 	if n, err := strconv.Atoi(q.Get("page_size")); err == nil {
-		switch n {
-		case 25, 50, 100, 250:
-			f.PageSize = n
+		if n == 0 {
+			f.PageSize = 0
+		} else {
+			switch n {
+			case 25, 50, 100, 250:
+				f.PageSize = n
+			}
 		}
 	}
 	return f, nil
@@ -1602,8 +1728,17 @@ func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall,
 	case "radio_label":
 		orderBy = "coalesce(ra.alias,c.radio_name,''),c.start_time DESC"
 	}
-	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.talkgroup_tag,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.radio_tag,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.voice_service,''),c.start_time,c.duration_ms,c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.protected,c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id),EXISTS(SELECT 1 FROM transcripts t WHERE t.call_id=c.id),coalesce((SELECT tj.status FROM transcription_jobs tj WHERE tj.call_id=c.id ORDER BY tj.updated_at DESC LIMIT 1),'')` + callsFrom + callsWhere + ` ORDER BY ` + orderBy + ` LIMIT $18 OFFSET $19`
-	result, err := s.db.Query(ctx, query, append(args, f.PageSize, (f.Page-1)*f.PageSize)...)
+	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.talkgroup_tag,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.radio_tag,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.voice_service,''),c.start_time,c.duration_ms,coalesce(c.audio_offset_ms,0),c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.protected,c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id),EXISTS(SELECT 1 FROM transcripts t WHERE t.call_id=c.id),coalesce((SELECT tj.status FROM transcription_jobs tj WHERE tj.call_id=c.id ORDER BY tj.updated_at DESC LIMIT 1),'')` + callsFrom + callsWhere + ` ORDER BY ` + orderBy + ` LIMIT $18 OFFSET $19`
+	if f.PageSize == 0 {
+		query = `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.talkgroup_tag,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.radio_tag,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.voice_service,''),c.start_time,c.duration_ms,coalesce(c.audio_offset_ms,0),c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.protected,c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id),EXISTS(SELECT 1 FROM transcripts t WHERE t.call_id=c.id),coalesce((SELECT tj.status FROM transcription_jobs tj WHERE tj.call_id=c.id ORDER BY tj.updated_at DESC LIMIT 1),'')` + callsFrom + callsWhere + ` ORDER BY ` + orderBy
+	}
+	var result pgx.Rows
+	var err error
+	if f.PageSize == 0 {
+		result, err = s.db.Query(ctx, query, args...)
+	} else {
+		result, err = s.db.Query(ctx, query, append(args, f.PageSize, (f.Page-1)*f.PageSize)...)
+	}
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1611,9 +1746,10 @@ func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall,
 	calls := []completedCall{}
 	for result.Next() {
 		var c completedCall
-		if err := result.Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.TalkgroupTag, &c.RadioID, &c.RadioName, &c.RadioTag, &c.Frequency, &c.LCN, &c.VoiceService, &c.StartTime, &c.DurationMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &c.CallType, &c.Protected, &c.GroupCall, &c.Patches, &c.GeneratedTranscript, &c.TranscriptionStatus); err != nil {
+		if err := result.Scan(&c.ID, &c.SenderID, &c.ReceiverID, &c.SystemID, &c.SystemName, &c.SiteID, &c.SiteName, &c.TalkgroupID, &c.TalkgroupName, &c.TalkgroupTag, &c.RadioID, &c.RadioName, &c.RadioTag, &c.Frequency, &c.LCN, &c.VoiceService, &c.StartTime, &c.DurationMS, &c.AudioOffsetMS, &c.AudioPath, &c.AudioFormat, &c.AudioSize, &c.Transcript, &c.Notes, &c.CallType, &c.Protected, &c.GroupCall, &c.Patches, &c.GeneratedTranscript, &c.TranscriptionStatus); err != nil {
 			return nil, 0, err
 		}
+		c.AudioFilename = filepath.Base(c.AudioPath)
 		calls = append(calls, c)
 	}
 	return calls, total, result.Err()

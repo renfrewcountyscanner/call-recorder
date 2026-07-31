@@ -35,9 +35,28 @@
     filters.removeAttribute('open');
   }
 
+  /* All-dates toggle clears the date fields and refreshes the list. */
+  var allDates = document.querySelector('input[name="all_dates"]');
+  if (allDates) {
+    allDates.addEventListener('change', function () {
+      if (!allDates.checked) return;
+      var form = document.getElementById('filter-form');
+      ['date', 'from', 'to'].forEach(function (name) {
+        var field = form.elements[name];
+        if (field) field.value = '';
+      });
+      if (window.htmx) window.htmx.trigger(form, 'submit');
+    });
+  }
+
   /* Browser-local call-list column preferences. The table remains usable with
      JavaScript disabled; this only hides optional columns after interaction. */
-  var columnDefaults = {time:true, context:true, talkgroup:true, radio:true, freq:true, duration:true, type:true, flags:true};
+  var columnDefaults = {
+    time:true, date:true, target:true, target_label:true, target_tag:false, source:true, source_label:true, source_tag:false,
+    duration:true, voice_type:false, call_type:false, site:true, site_label:false, system_id:true, system_label:false,
+    system_type:false, audio_start:false, lcn:false, frequency:true, receiver:false, notes_text:false, filename:false,
+    flags:true
+  };
   function columnPrefs() {
     try { return Object.assign({}, columnDefaults, JSON.parse(localStorage.getItem('cr-columns') || '{}')); }
     catch (e) { return Object.assign({}, columnDefaults); }
@@ -140,6 +159,8 @@
   if (liveStatus && window.EventSource) {
     var updatesPaused = readLivePause();
     var queuedUpdates = 0;
+    var autoNewBox = $('auto-new-calls');
+    function autoNewEnabled() { return autoNewBox && autoNewBox.checked; }
     function readLivePause() { try { return sessionStorage.getItem('cr-live-paused') === 'true'; } catch (e) { return false; } }
     function refreshCalls() { if (window.htmx) window.htmx.ajax('GET', '/calls?' + window.location.search.replace(/^\?/, ''), {target: '#calls', swap: 'innerHTML'}); }
     function setPause(paused) {
@@ -159,6 +180,15 @@
       var active = $('player-audio') && !$('player-audio').paused;
       if (active) { liveStatus.textContent = 'Live updates: ' + queuedUpdates + ' new call' + (queuedUpdates === 1 ? '' : 's') + ' available after playback'; liveStatus.className = 'live-status live'; return; }
       liveStatus.textContent = 'Live updates: updating'; liveStatus.className = 'live-status live'; queuedUpdates = 0; refreshCalls();
+      if (autoNewEnabled()) {
+        setTimeout(function () {
+          var first = document.querySelector('[data-play]');
+          if (first && $('player-audio') && $('player-audio').paused) {
+            first.click();
+            say('Auto-playing new call');
+          }
+        }, 400);
+      }
     });
     live.onerror = function () { if (!updatesPaused) { liveStatus.textContent = 'Live updates: reconnecting'; liveStatus.className = 'live-status reconnecting'; } };
     window.setInterval(function () { if (!updatesPaused && live.readyState !== 1 && !($('player-audio') && !$('player-audio').paused)) refreshCalls(); }, 30000);
@@ -198,7 +228,8 @@
       for (var p = 0; p < queue.length; p++) if (queue[p].id === playingId) { prior = queue[p]; break; }
     }
     queue = Array.prototype.map.call(document.querySelectorAll('[data-play]'), function (btn) {
-      return { id: btn.getAttribute('data-play'), title: btn.getAttribute('data-title') || 'call', meta: btn.getAttribute('data-meta') || '', btn: btn };
+      var off = btn.getAttribute('data-offset');
+      return { id: btn.getAttribute('data-play'), title: btn.getAttribute('data-title') || 'call', meta: btn.getAttribute('data-meta') || '', offset: off ? parseInt(off, 10) : 0, btn: btn };
     });
     if (playingId) {
       var still = -1;
@@ -236,6 +267,9 @@
     playingId = item.id;
     if (audio.getAttribute('src') !== '/media/' + item.id) {
       audio.setAttribute('src', '/media/' + item.id);
+    }
+    if (item.offset && isFinite(item.offset) && item.offset > 0) {
+      try { audio.currentTime = item.offset / 1000; } catch (e) {}
     }
     applyRate();
     titleEl.textContent = item.title;

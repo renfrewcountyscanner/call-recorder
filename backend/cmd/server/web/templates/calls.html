@@ -14,19 +14,59 @@
 <div class="table-wrap">
 <table class="data responsive">
   <thead>
-    <tr><th scope="col" class="col-play"><span class="sr-only">Play</span></th><th scope="col" data-column="time">Time</th><th scope="col" data-column="context">System / Site</th><th scope="col" data-column="talkgroup">Talkgroup</th><th scope="col" data-column="radio">Radio</th><th scope="col" data-column="freq">Freq</th><th scope="col" data-column="duration">Dur</th><th scope="col" data-column="type">Type</th><th scope="col" data-column="flags">Flags</th></tr>
+    <tr>
+      <th scope="col" class="col-play"><span class="sr-only">Play</span></th>
+      <th scope="col" data-column="time">Time</th>
+      <th scope="col" data-column="date">Date</th>
+      <th scope="col" data-column="target">Target</th>
+      <th scope="col" data-column="target_label">Target Label</th>
+      <th scope="col" data-column="target_tag">Target Tag</th>
+      <th scope="col" data-column="source">Source</th>
+      <th scope="col" data-column="source_label">Source Label</th>
+      <th scope="col" data-column="source_tag">Source Tag</th>
+      <th scope="col" data-column="duration">Length</th>
+      <th scope="col" data-column="voice_type">Voice Type</th>
+      <th scope="col" data-column="call_type">Call Type</th>
+      <th scope="col" data-column="site">Site</th>
+      <th scope="col" data-column="site_label">Site Label</th>
+      <th scope="col" data-column="system_id">System ID</th>
+      <th scope="col" data-column="system_label">System Label</th>
+      <th scope="col" data-column="system_type">System Type</th>
+      <th scope="col" data-column="audio_start">Audio Start</th>
+      <th scope="col" data-column="lcn">LCN</th>
+      <th scope="col" data-column="frequency">Frequency</th>
+      <th scope="col" data-column="receiver">Receiver</th>
+      <th scope="col" data-column="notes_text">Notes & Text</th>
+      <th scope="col" data-column="filename">Filename</th>
+      <th scope="col" data-column="flags">Flags</th>
+    </tr>
   </thead>
   <tbody>
     {{range .Calls}}
     <tr class="call-row">
-      <td class="col-play"><button type="button" class="play-btn" data-play="{{.ID}}" data-title="{{if .TalkgroupName}}{{.TalkgroupName}}{{else}}Talkgroup {{.TalkgroupID}}{{end}}" data-meta="{{.SystemID}} · {{.StartTime.Local.Format "2006-01-02 15:04:05"}}" aria-label="Play {{if .TalkgroupName}}{{.TalkgroupName}}{{else}}talkgroup {{.TalkgroupID}}{{end}} call from {{.StartTime.Local.Format "15:04"}}"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg></button></td>
-      <td class="col-time" data-label="Time" data-column="time"><a class="time-link" href="/call/{{.ID}}">{{.StartTime.Local.Format "15:04:05"}}</a><span class="date">{{.StartTime.Local.Format "2006-01-02"}}</span></td>
-      <td class="col-system" data-label="System" data-column="context">{{.SystemID}}{{if .SiteID}}<span class="muted small"> / {{.SiteID}}</span>{{end}}</td>
-      <td class="col-tg" data-label="Talkgroup" data-column="talkgroup"><span class="alias" title="{{.TalkgroupName}}">{{if .TalkgroupName}}{{.TalkgroupName}}{{else}}<span class="muted">—</span>{{end}}</span> <span class="id-chip">{{.TalkgroupID}}</span>{{if .TalkgroupTag}} <span class="muted small">{{.TalkgroupTag}}</span>{{end}}</td>
-      <td class="col-radio" data-label="Radio" data-column="radio"><span class="alias" title="{{.RadioName}}">{{if .RadioName}}{{.RadioName}}{{else}}<span class="muted">—</span>{{end}}</span> {{if .RadioID}}<span class="id-chip">{{.RadioID}}</span>{{end}}{{if .RadioTag}} <span class="muted small">{{.RadioTag}}</span>{{end}}</td>
-      <td class="col-freq" data-label="Freq" data-column="freq">{{.Frequency}}{{if .LCN}} <span class="muted small">/ {{.LCN}}</span>{{end}}</td>
-      <td class="col-dur" data-label="Dur" data-column="duration">{{dur .DurationMS}}</td>
-      <td class="col-type" data-label="Type" data-column="type">{{if .CallType}}<span class="badge">{{.CallType}}</span>{{else}}<span class="muted">—</span>{{end}}{{if .VoiceService}} <span class="muted small">{{.VoiceService}}</span>{{end}}</td>
+      <td class="col-play" data-label="Play"><button type="button" class="play-btn" data-play="{{.ID}}" data-offset="{{.AudioOffsetMS}}" data-title="{{if .TalkgroupName}}{{.TalkgroupName}}{{else}}Talkgroup {{.TalkgroupID}}{{end}}" data-meta="{{.SystemID}} · {{.StartTime.Local.Format "2006-01-02 15:04:05"}}" aria-label="Play {{if .TalkgroupName}}{{.TalkgroupName}}{{else}}talkgroup {{.TalkgroupID}}{{end}} call from {{.StartTime.Local.Format "15:04"}}"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg></button></td>
+      <td class="col-time" data-label="Time" data-column="time"><a class="time-link" href="/call/{{.ID}}">{{.StartTime.Local.Format "15:04:05"}}</a></td>
+      <td class="col-date" data-label="Date" data-column="date"><span class="date">{{.StartTime.Local.Format "2006-01-02"}}</span></td>
+      <td class="col-target" data-label="Target" data-column="target"><span class="id-chip">{{.TalkgroupID}}</span></td>
+      <td class="col-target_label" data-label="Target Label" data-column="target_label"><span class="alias" title="{{.TalkgroupName}}">{{if .TalkgroupName}}{{.TalkgroupName}}{{else}}<span class="muted">—</span>{{end}}</span></td>
+      <td class="col-target_tag" data-label="Target Tag" data-column="target_tag">{{if .TalkgroupTag}}<span class="badge">{{.TalkgroupTag}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="col-source" data-label="Source" data-column="source">{{if .RadioID}}<span class="id-chip">{{.RadioID}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="col-source_label" data-label="Source Label" data-column="source_label"><span class="alias" title="{{.RadioName}}">{{if .RadioName}}{{.RadioName}}{{else}}<span class="muted">—</span>{{end}}</span></td>
+      <td class="col-source_tag" data-label="Source Tag" data-column="source_tag">{{if .RadioTag}}<span class="badge">{{.RadioTag}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="col-duration" data-label="Call Length" data-column="duration">{{dur .DurationMS}}</td>
+      <td class="col-voice_type" data-label="Voice Type" data-column="voice_type">{{if .VoiceService}}<span class="badge">{{.VoiceService}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="col-call_type" data-label="Call Type" data-column="call_type">{{if .CallType}}<span class="badge">{{.CallType}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="col-site" data-label="Site" data-column="site">{{if .SiteID}}<span class="id-chip">{{.SiteID}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="col-site_label" data-label="Site Label" data-column="site_label">{{if .SiteName}}<span class="alias">{{.SiteName}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="col-system_id" data-label="System ID" data-column="system_id">{{if .SystemID}}<span class="id-chip">{{.SystemID}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="col-system_label" data-label="System Label" data-column="system_label">{{if .SystemName}}<span class="alias">{{.SystemName}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="col-system_type" data-label="System Type" data-column="system_type">{{if .VoiceService}}<span class="badge">{{.VoiceService}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="col-audio_start" data-label="Audio Start" data-column="audio_start">{{if .AudioOffsetMS}}<span class="mono">{{.AudioOffsetMS}} ms</span>{{else}}<span class="muted">0</span>{{end}}</td>
+      <td class="col-lcn" data-label="LCN" data-column="lcn">{{if .LCN}}<span class="mono">{{.LCN}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="col-frequency" data-label="Frequency" data-column="frequency">{{if .Frequency}}<span class="mono">{{.Frequency}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="col-receiver" data-label="Receiver" data-column="receiver">{{if .ReceiverID}}<span class="mono">{{.ReceiverID}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="col-notes_text" data-label="Notes & Text" data-column="notes_text">{{if .Transcript}}<span class="muted small">{{.Transcript}}</span>{{else if .Notes}}<span class="muted small">{{.Notes}}</span>{{else}}<span class="muted">—</span>{{end}}{{if and $.Nav $.Nav.Authorized}}<button class="btn small ghost" type="button" hx-get="/admin/call/{{.ID}}/notes" hx-target="closest td" hx-swap="innerHTML">Edit</button>{{end}}</td>
+      <td class="col-filename" data-label="Filename" data-column="filename"><span class="mono small">{{base .AudioPath}}</span></td>
       <td class="col-flags" data-label="Flags" data-column="flags">
         <span class="flags">
           {{if .Protected}}<span class="flag warn" title="Protected from retention">P</span>{{end}}
