@@ -276,13 +276,56 @@ func sendTestNotification(pool *pgxpool.Pool, id int64) {
 	ctx := context.Background()
 	var typ string
 	var enabled bool
-	if err := pool.QueryRow(ctx, `SELECT destination_type,enabled FROM notification_destinations WHERE id=$1`, id).Scan(&typ, &enabled); err != nil {
+	var cfg []byte
+	var secret *string
+	if err := pool.QueryRow(ctx, `SELECT destination_type,enabled,config,secret_ref FROM notification_destinations WHERE id=$1`, id).Scan(&typ, &enabled, &cfg, &secret); err != nil {
 		fatal(err)
 	}
 	if !enabled {
 		fatal(errors.New("destination disabled"))
 	}
-	fmt.Printf("destination=%d type=%s test=queued\n", id, typ)
+	var config map[string]any
+	_ = json.Unmarshal(cfg, &config)
+	body := fmt.Sprintf("Test notification from Call Recorder — %s", time.Now().UTC().Format(time.RFC3339))
+	if typ == "smtp" {
+		if err := sendSMTPNotification(config, secret, body); err != nil {
+			fatal(fmt.Errorf("test send failed: %w", err))
+		}
+		fmt.Printf("destination=%d type=%s test=sent\n", id, typ)
+		return
+	}
+	endpoint, _ := config["url"].(string)
+	if endpoint == "" {
+		fatal(errors.New("destination URL missing"))
+	}
+	if !strings.HasPrefix(endpoint, "https://") && !strings.HasPrefix(endpoint, "http://") {
+		fatal(errors.New("destination URL must use HTTP(S)"))
+	}
+	if err := validateNotificationURL(endpoint); err != nil {
+		fatal(err)
+	}
+	var payload map[string]any
+	switch typ {
+	case "discord":
+		payload = map[string]any{"content": body}
+	case "telegram":
+		payload = map[string]any{"text": body, "chat_id": config["chat_id"]}
+	default:
+		payload = map[string]any{"text": body}
+	}
+	b, _ := json.Marshal(payload)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(b)))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := safeHTTPClient().Do(req)
+	if err != nil {
+		fatal(fmt.Errorf("test send failed: %w", err))
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		fatal(fmt.Errorf("destination returned HTTP %d", resp.StatusCode))
+	}
+	fmt.Printf("destination=%d type=%s test=sent\n", id, typ)
 }
 func sanitizeError(err error) string {
 	s := err.Error()

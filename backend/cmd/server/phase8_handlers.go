@@ -3,11 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
+	"net/smtp"
 	"net/url"
 	"os"
 	"strconv"
@@ -295,7 +299,10 @@ func (s *server) adminNotifications(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	s.page(w, r, "admin_notifications.html", "Notifications", "notifications", map[string]any{"Destinations": items, "Rules": ruleItems, "Deliveries": deliveryItems, "FavouriteGroups": groups})
+	s.page(w, r, "admin_notifications.html", "Notifications", "notifications", map[string]any{
+		"Destinations": items, "Rules": ruleItems, "Deliveries": deliveryItems, "FavouriteGroups": groups,
+		"TestOK": r.URL.Query().Get("test") == "ok", "TestError": r.URL.Query().Get("error"),
+	})
 }
 
 func (s *server) adminDestinationAction(w http.ResponseWriter, r *http.Request) {
@@ -315,7 +322,23 @@ func (s *server) adminDestinationAction(w http.ResponseWriter, r *http.Request) 
 	case "delete":
 		_, err = s.db.Exec(r.Context(), `DELETE FROM notification_destinations WHERE id=$1`, id)
 	case "test":
-		http.Redirect(w, r, "/admin/notifications?test=queued", 303)
+		// Send a real test notification.
+		var cfg []byte
+		var secret *string
+		var typ string
+		if err := s.db.QueryRow(r.Context(), `SELECT destination_type,config,secret_ref FROM notification_destinations WHERE id=$1`, id).Scan(&typ, &cfg, &secret); err != nil {
+			http.Redirect(w, r, "/admin/notifications?test=fail&error=destination+not+found", 303)
+			return
+		}
+		var config map[string]any
+		_ = json.Unmarshal(cfg, &config)
+		body := fmt.Sprintf("Test notification from Call Recorder — %s", time.Now().UTC().Format(time.RFC3339))
+		testErr := s.sendTestNotificationDirect(r.Context(), typ, config, secret, body)
+		if testErr != nil {
+			http.Redirect(w, r, "/admin/notifications?test=fail&error="+url.QueryEscape(testErr.Error()), 303)
+			return
+		}
+		http.Redirect(w, r, "/admin/notifications?test=ok", 303)
 		return
 	default:
 		http.Error(w, "invalid action", 400)
@@ -1164,6 +1187,97 @@ func (s *server) apiTranscripts(w http.ResponseWriter, r *http.Request) {
 		result[info.ID] = info
 	}
 	s.phase8JSON(w, result)
+}
+
+// sendTestNotificationDirect sends a test notification directly from the web
+// server without going through the delivery queue. Reuses the same sending
+// logic as the admin CLI.
+func (s *server) sendTestNotificationDirect(ctx context.Context, typ string, config map[string]any, secret *string, body string) error {
+	if typ == "smtp" {
+		host, _ := config["host"].(string)
+		port, _ := config["port"].(string)
+		from, _ := config["from"].(string)
+		to, _ := config["to"].(string)
+		user, _ := config["username"].(string)
+		useTLS, _ := config["tls"].(bool)
+		if host == "" || port == "" || from == "" || to == "" {
+			return fmt.Errorf("SMTP host, port, from, and to are required")
+		}
+		password := ""
+		if secret != nil && *secret != "" {
+			password = os.Getenv(*secret)
+		}
+		dialer := &net.Dialer{Timeout: 15 * time.Second}
+		conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		client, err := smtp.NewClient(conn, host)
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+		if useTLS {
+			if ok, _ := client.Extension("STARTTLS"); !ok {
+				return fmt.Errorf("SMTP server does not support STARTTLS")
+			}
+			if err := client.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
+				return err
+			}
+		}
+		if user != "" {
+			if err := client.Auth(smtp.PlainAuth("", user, password, host)); err != nil {
+				return err
+			}
+		}
+		if err := client.Mail(from); err != nil {
+			return err
+		}
+		if err := client.Rcpt(to); err != nil {
+			return err
+		}
+		writer, err := client.Data()
+		if err != nil {
+			return err
+		}
+		headers := "From: " + from + "\r\nTo: " + to + "\r\nSubject: Call Recorder test notification\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n"
+		if _, err = io.WriteString(writer, headers+"<p>"+html.EscapeString(body)+"</p>"); err != nil {
+			_ = writer.Close()
+			return err
+		}
+		return writer.Close()
+	}
+	endpoint, _ := config["url"].(string)
+	if endpoint == "" {
+		return fmt.Errorf("destination URL missing")
+	}
+	if !strings.HasPrefix(endpoint, "https://") && !strings.HasPrefix(endpoint, "http://") {
+		return fmt.Errorf("destination URL must use HTTP(S)")
+	}
+	var payload map[string]any
+	switch typ {
+	case "discord":
+		payload = map[string]any{"content": body}
+	case "telegram":
+		payload = map[string]any{"text": body, "chat_id": config["chat_id"]}
+	default:
+		payload = map[string]any{"text": body}
+	}
+	b, _ := json.Marshal(payload)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(b)))
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("destination returned HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func (s *server) phase8JSON(w http.ResponseWriter, value any) {
