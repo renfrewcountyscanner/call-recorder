@@ -14,20 +14,34 @@
 <div class="table-wrap">
 <table class="data responsive">
   <thead>
-    <tr><th scope="col" class="col-play"><span class="visually-hidden">Play</span></th><th scope="col" data-column="time">Time</th><th scope="col" data-column="context">Receiver / system / site</th><th scope="col" data-column="talkgroup">Talkgroup</th><th scope="col" data-column="radio">Radio</th><th scope="col" data-column="freq">Freq / LCN</th><th scope="col" data-column="duration">Dur</th><th scope="col" data-column="type">Type</th></tr>
+    <tr><th scope="col" class="col-play"><span class="sr-only">Play</span></th><th scope="col" data-column="time">Time</th><th scope="col" data-column="context">System / Site</th><th scope="col" data-column="talkgroup">Talkgroup</th><th scope="col" data-column="radio">Radio</th><th scope="col" data-column="freq">Freq</th><th scope="col" data-column="duration">Dur</th><th scope="col" data-column="type">Type</th><th scope="col" data-column="flags">Flags</th></tr>
   </thead>
   <tbody>
     {{range .Calls}}
     <tr class="call-row">
       <td class="col-play"><button type="button" class="play-btn" data-play="{{.ID}}" data-title="{{if .TalkgroupName}}{{.TalkgroupName}}{{else}}Talkgroup {{.TalkgroupID}}{{end}}" data-meta="{{.SystemID}} · {{.StartTime.Local.Format "2006-01-02 15:04:05"}}" aria-label="Play {{if .TalkgroupName}}{{.TalkgroupName}}{{else}}talkgroup {{.TalkgroupID}}{{end}} call from {{.StartTime.Local.Format "15:04"}}"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg></button></td>
       <td class="col-time" data-label="Time" data-column="time"><a class="time-link" href="/call/{{.ID}}">{{.StartTime.Local.Format "15:04:05"}}</a><span class="date">{{.StartTime.Local.Format "2006-01-02"}}</span></td>
-      <td class="col-system" data-label="System" data-column="context">{{if .ReceiverID}}{{.ReceiverID}} · {{end}}{{.SystemID}}{{if .SystemName}} <span class="muted small">· {{.SystemName}}</span>{{end}}{{if .SiteID}} <span class="muted small">· {{.SiteID}}{{if .SiteName}} {{.SiteName}}{{end}}</span>{{end}}</td>
+      <td class="col-system" data-label="System" data-column="context">{{.SystemID}}{{if .SiteID}}<span class="muted small"> / {{.SiteID}}</span>{{end}}</td>
       <td class="col-tg" data-label="Talkgroup" data-column="talkgroup"><span class="alias" title="{{.TalkgroupName}}">{{if .TalkgroupName}}{{.TalkgroupName}}{{else}}<span class="muted">—</span>{{end}}</span> <span class="id-chip">{{.TalkgroupID}}</span>{{if .TalkgroupTag}} <span class="muted small">{{.TalkgroupTag}}</span>{{end}}</td>
       <td class="col-radio" data-label="Radio" data-column="radio"><span class="alias" title="{{.RadioName}}">{{if .RadioName}}{{.RadioName}}{{else}}<span class="muted">—</span>{{end}}</span> {{if .RadioID}}<span class="id-chip">{{.RadioID}}</span>{{end}}{{if .RadioTag}} <span class="muted small">{{.RadioTag}}</span>{{end}}</td>
       <td class="col-freq" data-label="Freq" data-column="freq">{{.Frequency}}{{if .LCN}} <span class="muted small">/ {{.LCN}}</span>{{end}}</td>
       <td class="col-dur" data-label="Dur" data-column="duration">{{dur .DurationMS}}</td>
-      <td class="col-type" data-label="Type" data-column="type">{{if .CallType}}<span class="badge">{{.CallType}}</span>{{end}}{{if .VoiceService}} <span class="muted small">{{.VoiceService}}</span>{{end}}{{if .Protected}}<span class="badge info" title="Protected from retention">Protected</span>{{end}}{{if .Notes}}<span class="badge" title="Administrative notes present">Notes</span>{{end}}{{if .Transcript}}<span class="badge" title="Received call text present">Text</span>{{end}}{{if .GeneratedTranscript}}<span class="badge info" title="Generated transcript available">Transcript</span>{{end}}{{if eq .TranscriptionStatus "pending"}}<span class="badge" title="Transcription pending">Transcription pending</span>{{end}}{{if eq .TranscriptionStatus "failed"}}<span class="badge danger" title="Transcription failed">Transcription failed</span>{{end}}{{if gt .Patches 0}}<span class="badge warn" title="{{.Patches}} patched talkgroup{{if ne .Patches 1}}s{{end}}">+{{.Patches}}</span>{{end}}</td>
-      <td class="col-type" data-label="Type" data-column="type">{{if .CallType}}<span class="badge">{{.CallType}}</span>{{end}}{{if .VoiceService}} <span class="muted small">{{.VoiceService}}</span>{{end}}{{if .Protected}}<span class="badge info" title="Protected from retention">Protected</span>{{end}}{{if .Notes}}<span class="badge" title="Administrative notes present">Notes</span>{{end}}{{if .Transcript}}<span class="badge" title="Received call text present">Text</span>{{end}}{{if .GeneratedTranscript}}<span class="badge info" title="Generated transcript available">Transcript</span>{{end}}{{if eq .TranscriptionStatus "pending"}}<span class="badge" title="Transcription pending">Transcription pending</span>{{end}}{{if eq .TranscriptionStatus "failed"}}<span class="badge danger" title="Transcription failed">Transcription failed</span>{{end}}{{if gt .Patches 0}}<span class="badge warn" title="{{.Patches}} patched talkgroup{{if ne .Patches 1}}s{{end}}">+{{.Patches}}</span>{{end}}<details class="row-more"><summary>Details</summary><span class="small muted">{{if .GroupCall}}Group{{else}}Private or unknown{{end}}{{if .VoiceService}} · voice {{.VoiceService}}{{end}} · {{.AudioFormat}} · {{.AudioSize}} bytes{{if .TalkgroupTag}} · target tag {{.TalkgroupTag}}{{end}}{{if .RadioTag}} · source tag {{.RadioTag}}{{end}}{{if .Transcript}} · {{.Transcript}}{{end}}{{if .Notes}} · notes: {{.Notes}}{{end}}</span></details></td>
+      <td class="col-type" data-label="Type" data-column="type">{{if .CallType}}<span class="badge">{{.CallType}}</span>{{else}}<span class="muted">—</span>{{end}}{{if .VoiceService}} <span class="muted small">{{.VoiceService}}</span>{{end}}</td>
+      <td class="col-flags" data-label="Flags" data-column="flags">
+        <span class="flags">
+          {{if .Protected}}<span class="flag warn" title="Protected from retention">P</span>{{end}}
+          {{if .Notes}}<span class="flag info" title="Administrative notes present">N</span>{{end}}
+          {{if .Transcript}}<span class="flag" title="Received call text present">T</span>{{end}}
+          {{if .GeneratedTranscript}}<span class="flag ok" title="Generated transcript available">G</span>{{end}}
+          {{if eq .TranscriptionStatus "pending"}}<span class="flag" title="Transcription pending">Q</span>{{end}}
+          {{if eq .TranscriptionStatus "failed"}}<span class="flag danger" title="Transcription failed">!</span>{{end}}
+          {{if gt .Patches 0}}<span class="flag warn" title="{{.Patches}} patched talkgroup{{if ne .Patches 1}}s{{end}}">+{{.Patches}}</span>{{end}}
+        </span>
+        <details class="row-more">
+          <summary>Details</summary>
+          <span class="muted">{{if .GroupCall}}Group{{else}}Private or unknown{{end}}{{if .VoiceService}} · voice {{.VoiceService}}{{end}} · {{.AudioFormat}} · {{.AudioSize}} bytes{{if .TalkgroupTag}} · target tag {{.TalkgroupTag}}{{end}}{{if .RadioTag}} · source tag {{.RadioTag}}{{end}}{{if .Transcript}} · {{.Transcript}}{{end}}{{if .Notes}} · notes: {{.Notes}}{{end}}</span>
+        </details>
+      </td>
     </tr>
     {{end}}
   </tbody>

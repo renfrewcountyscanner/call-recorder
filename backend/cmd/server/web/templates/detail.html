@@ -1,27 +1,54 @@
 {{define "detail.html"}}
 {{template "head" .}}
 {{template "top" .}}
-<p class="small"><a href="/?system={{.Call.SystemID}}&talkgroup={{.Call.TalkgroupID}}">← Calls for this talkgroup</a></p>
-<p class="small"><a href="/export/call/{{.Call.ID}}">Export JSON</a> · <a href="/download/{{.Call.ID}}">Download audio</a></p>
-{{if .Nav.Authorized}}<form method="post" action="/admin/protect/{{.Call.ID}}" class="card"><h2>Retention protection</h2><label><input type="checkbox" name="protected" {{if .Call.Protected}}checked{{end}}> Protect from retention</label><label>Reason <input name="reason" maxlength="500" value="{{.Call.ProtectionReason}}"></label><label>Expires at <input name="expires_at" type="datetime-local"></label><button class="btn" type="submit">Save protection</button>{{if .Call.Protected}}<p class="muted">Protected by {{.Call.ProtectedBy}} at {{.Call.ProtectedAt}}</p>{{end}}</form>{{end}}
-{{if .ProtectionEvents}}<details class="card"><summary>Protection audit history</summary><ul>{{range .ProtectionEvents}}<li>{{if .Protected}}Protected{{else}}Unprotected{{end}} by {{.Identity}} at {{.At}} {{if .Reason}}— {{.Reason}}{{end}}</li>{{end}}</ul></details>{{end}}
+<div class="breadcrumbs">
+  <a href="/">Calls</a>
+  <span aria-hidden="true">/</span>
+  <a href="/?system={{.Call.SystemID}}&talkgroup={{.Call.TalkgroupID}}">Talkgroup {{.Call.TalkgroupID}}</a>
+</div>
 <div class="detail-hero">
   <button type="button" class="play-btn" data-play="{{.Call.ID}}" data-title="{{if .Call.TalkgroupName}}{{.Call.TalkgroupName}}{{else}}Talkgroup {{.Call.TalkgroupID}}{{end}}" data-meta="{{.Call.SystemID}} · {{.Call.StartTime.Local.Format "2006-01-02 15:04:05"}}" aria-label="Play this call"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg></button>
   <div>
     <h1 class="alias" title="{{.Call.TalkgroupName}}">{{if .Call.TalkgroupName}}{{.Call.TalkgroupName}}{{else}}Talkgroup {{.Call.TalkgroupID}}{{end}}</h1>
     <div class="muted">{{.Call.SystemID}}{{if .Call.SystemName}} · {{.Call.SystemName}}{{end}} · {{.Call.StartTime.Local.Format "2006-01-02 15:04:05"}}</div>
   </div>
-  <div>
+  <div class="badges">
     {{if .Call.CallType}}<span class="badge info">{{.Call.CallType}}</span>{{end}}
     {{if .Call.Protected}}<span class="badge warn">Protected</span>{{end}}
     {{if gt .Call.Patches 0}}<span class="badge warn" title="{{.Call.Patches}} patched talkgroups">+{{.Call.Patches}} patch</span>{{end}}
     <span class="badge">{{.Call.AudioFormat}}</span>
   </div>
 </div>
+<div class="detail-actions">
+  <a class="btn small" href="/export/call/{{.Call.ID}}">Export JSON</a>
+  <a class="btn small" href="/download/{{.Call.ID}}">Download audio</a>
+</div>
+{{if .Nav.Authorized}}
+<section class="card" aria-labelledby="d-protect">
+  <h2 id="d-protect">Retention protection</h2>
+  <form method="post" action="/admin/protect/{{.Call.ID}}">
+    <div class="form-grid compact">
+      <label class="check"><input type="checkbox" name="protected" {{if .Call.Protected}}checked{{end}}> Protect from retention</label>
+      <label>Reason <input name="reason" maxlength="500" value="{{.Call.ProtectionReason}}"></label>
+      <label>Expires at <input name="expires_at" type="datetime-local"></label>
+    </div>
+    <div class="filter-actions">
+      <button class="btn primary" type="submit">Save protection</button>
+      {{if .Call.Protected}}<p class="muted">Protected by {{.Call.ProtectedBy}} at {{.Call.ProtectedAt}}</p>{{end}}
+    </div>
+  </form>
+</section>
+{{end}}
+{{if .ProtectionEvents}}
+<details class="card">
+  <summary>Protection audit history</summary>
+  <ul>{{range .ProtectionEvents}}<li>{{if .Protected}}Protected{{else}}Unprotected{{end}} by {{.Identity}} at {{.At}} {{if .Reason}}— {{.Reason}}{{end}}</li>{{end}}</ul>
+</details>
+{{end}}
 <div class="detail-grid">
   <section class="card" aria-labelledby="d-tg">
     <h2 id="d-tg">Talkgroup</h2>
-    <dl>
+    <dl class="kv">
       <dt>Alias</dt><dd>{{if .Call.TalkgroupName}}{{.Call.TalkgroupName}}{{else}}<span class="muted">none (numeric fallback)</span>{{end}}</dd>
       <dt>ID</dt><dd class="mono">{{.Call.TalkgroupID}}{{if .Call.TalkgroupTag}} · {{.Call.TalkgroupTag}}{{end}}</dd>
       <dt>Calls</dt><dd><a href="/?system={{.Call.SystemID}}&talkgroup={{.Call.TalkgroupID}}">Filtered call list</a></dd>
@@ -30,7 +57,7 @@
   </section>
   <section class="card" aria-labelledby="d-radio">
     <h2 id="d-radio">Radio</h2>
-    <dl>
+    <dl class="kv">
       <dt>Alias</dt><dd>{{if .Call.RadioName}}{{.Call.RadioName}}{{else}}<span class="muted">none</span>{{end}}</dd>
       <dt>ID</dt><dd class="mono">{{if .Call.RadioID}}{{.Call.RadioID}}{{if .Call.RadioTag}} · {{.Call.RadioTag}}{{end}}{{else}}<span class="muted">—</span>{{end}}</dd>
       {{if .Call.RadioID}}<dt>Calls</dt><dd><a href="/?system={{.Call.SystemID}}&radio={{.Call.RadioID}}">Filtered call list</a></dd>{{end}}
@@ -39,7 +66,7 @@
   </section>
   <section class="card" aria-labelledby="d-sys">
     <h2 id="d-sys">System and site</h2>
-    <dl>
+    <dl class="kv">
       <dt>System</dt><dd>{{.Call.SystemID}}{{if .Call.SystemName}} · {{.Call.SystemName}}{{end}}</dd>
       <dt>Site</dt><dd>{{if .Call.SiteID}}{{.Call.SiteID}}{{if .Call.SiteName}} · {{.Call.SiteName}}{{end}}{{else}}<span class="muted">—</span>{{end}}</dd>
       <dt>Sender</dt><dd class="mono">{{.Call.SenderID}}</dd>
@@ -48,14 +75,14 @@
   </section>
   <section class="card" aria-labelledby="d-time">
     <h2 id="d-time">Timing and signal</h2>
-    <dl>
+    <dl class="kv">
       <dt>Start</dt><dd class="mono">{{.Call.StartTime.Local.Format "2006-01-02 15:04:05 MST"}}</dd>
       <dt>Duration</dt><dd class="mono">{{dur .Call.DurationMS}}</dd>
       <dt>Frequency</dt><dd class="mono">{{if .Call.Frequency}}{{.Call.Frequency}}{{else}}<span class="muted">—</span>{{end}}</dd>
       <dt>LCN</dt><dd class="mono">{{if .Call.LCN}}{{.Call.LCN}}{{else}}<span class="muted">—</span>{{end}}</dd>
       <dt>Call type</dt><dd>{{if .Call.CallType}}{{.Call.CallType}}{{else}}<span class="muted">—</span>{{end}}</dd>
-	  <dt>Voice service</dt><dd>{{if .Call.VoiceService}}{{.Call.VoiceService}}{{else}}<span class="muted">—</span>{{end}}</dd>
-	  <dt>Classification</dt><dd>{{if .Call.GroupCall}}Group{{else}}Private or unknown{{end}}</dd>
+      <dt>Voice service</dt><dd>{{if .Call.VoiceService}}{{.Call.VoiceService}}{{else}}<span class="muted">—</span>{{end}}</dd>
+      <dt>Classification</dt><dd>{{if .Call.GroupCall}}Group{{else}}Private or unknown{{end}}</dd>
       <dt>Audio</dt><dd class="mono">{{.Call.AudioFormat}} · {{.Call.AudioSize}} bytes</dd>
     </dl>
   </section>
@@ -66,15 +93,22 @@
   <div class="chips">{{range .Patches}}<span class="badge warn">{{.}}</span>{{end}}</div>
 </section>
 {{end}}
-<section class="card" aria-labelledby="d-notes"><h2 id="d-notes">Call text and notes</h2>
+<section class="card" aria-labelledby="d-notes">
+  <h2 id="d-notes">Call text and notes</h2>
   {{if .Call.Transcript}}<p><strong>Received text:</strong> {{.Call.Transcript}}</p>{{end}}
   {{if .GeneratedTranscript}}<p><strong>Generated transcript:</strong> {{.GeneratedTranscript}}</p>{{end}}
-  {{if .Nav.Authorized}}<form method="post" action="/admin/transcription/queue/{{.Call.ID}}"><button class="btn small">Queue transcription</button></form>{{end}}
-  {{if .Nav.Authorized}}<form method="post" action="/admin/call/{{.Call.ID}}"><label for="notes">Notes</label><textarea id="notes" name="notes" maxlength="10000" rows="5">{{.Call.Notes}}</textarea><button class="btn primary" type="submit">Save notes</button></form>{{else if .Call.Notes}}<p>{{.Call.Notes}}</p>{{else}}<p class="muted">No notes.</p>{{end}}
+  {{if .Nav.Authorized}}
+  <form method="post" action="/admin/transcription/queue/{{.Call.ID}}"><button class="btn small">Queue transcription</button></form>
+  <form method="post" action="/admin/call/{{.Call.ID}}">
+    <label for="notes">Notes</label>
+    <textarea id="notes" name="notes" maxlength="10000" rows="5">{{.Call.Notes}}</textarea>
+    <div class="filter-actions"><button class="btn primary" type="submit">Save notes</button></div>
+  </form>
+  {{else if .Call.Notes}}<p>{{.Call.Notes}}</p>{{else}}<p class="muted">No notes.</p>{{end}}
 </section>
-<details class="metadata">
+<details class="card metadata">
   <summary>Preserved metadata</summary>
-  <pre>{{.Metadata}}</pre>
+  <pre class="mono small">{{.Metadata}}</pre>
 </details>
 {{template "playerbar" .}}
 {{template "bottom" .}}

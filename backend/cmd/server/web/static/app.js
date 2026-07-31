@@ -37,7 +37,7 @@
 
   /* Browser-local call-list column preferences. The table remains usable with
      JavaScript disabled; this only hides optional columns after interaction. */
-  var columnDefaults = {time:true, context:true, talkgroup:true, radio:true, freq:true, duration:true, type:true};
+  var columnDefaults = {time:true, context:true, talkgroup:true, radio:true, freq:true, duration:true, type:true, flags:true};
   function columnPrefs() {
     try { return Object.assign({}, columnDefaults, JSON.parse(localStorage.getItem('cr-columns') || '{}')); }
     catch (e) { return Object.assign({}, columnDefaults); }

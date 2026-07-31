@@ -1,11 +1,11 @@
 {{define "admin_aliases.html"}}
 {{template "head" .}}
 {{template "top" .}}
-<h1>{{.Title}}</h1>
+<div class="page-head"><div><p class="eyebrow">Administration</p><h1>{{.Title}}</h1><p class="muted">{{if eq .Kind "talkgroups"}}Manage talkgroup aliases, transcription, and notification flags.{{else}}Manage radio aliases and categories.{{end}}</p></div></div>
 <details class="filters" open>
   <summary>Search</summary>
   <form method="get">
-    <div class="filter-grid">
+    <div class="filter-grid compact">
       <label>System, ID, or alias <input name="q" value="{{.Q}}" autocomplete="off"></label>
     </div>
     <div class="filter-actions">
@@ -14,7 +14,7 @@
     </div>
   </form>
 </details>
-<section class="form-panel" aria-labelledby="alias-form-heading">
+<section class="card" aria-labelledby="alias-form-heading">
   <h2 id="alias-form-heading">Add or update alias</h2>
   <form method="post" id="alias-form">
     <input type="hidden" name="q" value="{{.Q}}">
@@ -25,11 +25,11 @@
       <label>Description <input name="description" maxlength="2000" autocomplete="off"></label>
       <label>Category <input name="category" maxlength="120" autocomplete="off"></label>
       {{if eq .Kind "talkgroups"}}<label>Priority <input name="priority" type="number" value="0"></label>{{end}}
-      {{if eq .Kind "talkgroups"}}<label class="form-check"><input type="checkbox" name="transcription_enabled" id="transcription_enabled"> Transcription enabled</label><label>Transcription language <input name="transcription_language" id="transcription_language" maxlength="20"></label><label class="form-check"><input type="checkbox" name="notification_eligible" id="notification_eligible" checked> Notification eligible</label>{{end}}
+      {{if eq .Kind "talkgroups"}}<label class="check"><input type="checkbox" name="transcription_enabled" id="transcription_enabled"> Transcription enabled</label><label>Transcription language <input name="transcription_language" id="transcription_language" maxlength="20"></label><label class="check"><input type="checkbox" name="notification_eligible" id="notification_eligible" checked> Notification eligible</label>{{end}}
       <label>Source
         <select name="source"><option value="manual">manual</option><option value="imported">imported</option></select>
       </label>
-      <label class="form-check"><input type="checkbox" name="enabled" checked> Enabled</label>
+      <label class="check"><input type="checkbox" name="enabled" checked> Enabled</label>
     </div>
     <div class="filter-actions"><button class="btn primary" type="submit">Save alias</button></div>
   </form>

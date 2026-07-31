@@ -1,13 +1,22 @@
 {{define "index.html"}}
 {{template "head" .}}
 {{template "top" .}}
-<h1>Calls</h1>
-<div class="live-controls"><div id="live-status" class="live-status" role="status" aria-live="polite">Live updates: connecting…</div><button id="live-toggle" class="btn small ghost" type="button" aria-pressed="false">Pause updates</button></div>
+<div class="page-head">
+  <div>
+    <p class="eyebrow">Live call log</p>
+    <h1>Calls</h1>
+  </div>
+  <div class="live-controls" style="margin:0">
+    <div id="live-status" class="live-status" role="status" aria-live="polite">Live updates: connecting…</div>
+    <button id="live-toggle" class="btn small ghost" type="button" aria-pressed="false">Pause</button>
+  </div>
+</div>
 {{if .Error}}<div class="alert danger" role="alert">{{.Error}}</div>{{end}}
+
 <details class="filters" open>
   <summary>Filters</summary>
   <form id="filter-form" hx-get="/calls" hx-target="#calls" hx-swap="innerHTML" hx-trigger="submit, keyup changed delay:350ms from:input, change changed from:select, change changed from:input[type=date]">
-    <div class="filter-grid">
+    <div class="filter-grid compact">
       <label>Search <input name="q" value="{{.Filter.Q}}" autocomplete="off" placeholder="Alias, ID, or transcript"></label>
       <label>Sender <input name="sender" list="sender-values" value="{{.Filter.Sender}}" autocomplete="off"></label>
       <label>System <input name="system" list="system-values" value="{{.Filter.System}}" autocomplete="off"></label>
@@ -21,9 +30,9 @@
         <select name="group"><option value="">All calls</option><option value="group" {{if eq .Filter.Group "group"}}selected{{end}}>Group calls</option><option value="private" {{if eq .Filter.Group "private"}}selected{{end}}>Private calls</option></select>
       </label>
       <label>Frequency <input name="frequency" value="{{.Filter.Frequency}}" autocomplete="off"></label>
-      <label>Min duration (sec) <input name="min_duration" value="{{.Filter.MinDuration}}" inputmode="decimal"></label>
-      <label>Max duration (sec) <input name="max_duration" value="{{.Filter.MaxDuration}}" inputmode="decimal"></label>
-      <label class="check"><input type="checkbox" name="patched" value="1" {{if .Filter.Patched}}checked{{end}}> Patched calls only</label>
+      <label>Min duration (s) <input name="min_duration" value="{{.Filter.MinDuration}}" inputmode="decimal"></label>
+      <label>Max duration (s) <input name="max_duration" value="{{.Filter.MaxDuration}}" inputmode="decimal"></label>
+      <label class="check"><input type="checkbox" name="patched" value="1" {{if .Filter.Patched}}checked{{end}}> Patched only</label>
       <label>From <input type="date" name="from" value="{{.Filter.From}}"></label>
       <label>To <input type="date" name="to" value="{{.Filter.To}}"></label>
       <label>Per page
@@ -31,7 +40,7 @@
           <option value="25" {{if eq .Filter.PageSize 25}}selected{{end}}>25</option>
           <option value="50" {{if eq .Filter.PageSize 50}}selected{{end}}>50</option>
           <option value="100" {{if eq .Filter.PageSize 100}}selected{{end}}>100</option>
-          <option value="250" {{if eq .Filter.PageSize 250}}selected{{end}}>250 (maximum)</option>
+          <option value="250" {{if eq .Filter.PageSize 250}}selected{{end}}>250 (max)</option>
         </select>
       </label>
       <label>Sort
@@ -51,7 +60,7 @@
           <option value="radio_label" {{if eq .Filter.Sort "radio_label"}}selected{{end}}>Radio label</option>
         </select>
       </label>
-      <label class="check"><input type="checkbox" name="smart_sort" value="1" {{if .Filter.SmartSort}}checked{{end}}> SmartSort priority calls</label>
+      <label class="check"><input type="checkbox" name="smart_sort" value="1" {{if .Filter.SmartSort}}checked{{end}}> SmartSort priority</label>
     </div>
     <div class="filter-actions">
       <button class="btn primary" type="submit">Apply filters</button>
@@ -60,22 +69,24 @@
     </div>
     <p class="muted small">Large result sets are capped at 250 rows per page. Use CSV export for a complete filtered result.</p>
   </form>
-  <datalist id="sender-values">{{range .Senders}}<option value="{{.}}">{{end}}</datalist><datalist id="system-values">{{range .Systems}}<option value="{{.}}">{{end}}</datalist><datalist id="site-values">{{range .Sites}}<option value="{{.}}">{{end}}</datalist><datalist id="receiver-values">{{range .Receivers}}<option value="{{.}}">{{end}}</datalist><datalist id="talkgroup-values">{{range .Talkgroups}}<option value="{{.}}">{{end}}</datalist><datalist id="radio-values">{{range .Radios}}<option value="{{.}}">{{end}}</datalist><datalist id="call-type-values">{{range .CallTypes}}<option value="{{.}}">{{end}}</datalist>
 </details>
+
 <details class="filters column-chooser">
   <summary>Columns</summary>
   <p class="muted small">Choose the compact columns shown in the call list. Preferences are stored only in this browser.</p>
   <div class="column-options" role="group" aria-label="Call list columns">
-    <label><input type="checkbox" data-column-toggle="time" checked> Time</label>
-    <label><input type="checkbox" data-column-toggle="context" checked> Receiver / system</label>
-    <label><input type="checkbox" data-column-toggle="talkgroup" checked> Talkgroup</label>
-    <label><input type="checkbox" data-column-toggle="radio" checked> Radio</label>
-    <label><input type="checkbox" data-column-toggle="freq" checked> Frequency / LCN</label>
-    <label><input type="checkbox" data-column-toggle="duration" checked> Duration</label>
-    <label><input type="checkbox" data-column-toggle="type" checked> Call type</label>
+    <label class="check"><input type="checkbox" data-column-toggle="time" checked> Time</label>
+    <label class="check"><input type="checkbox" data-column-toggle="context" checked> System</label>
+    <label class="check"><input type="checkbox" data-column-toggle="talkgroup" checked> Talkgroup</label>
+    <label class="check"><input type="checkbox" data-column-toggle="radio" checked> Radio</label>
+    <label class="check"><input type="checkbox" data-column-toggle="freq" checked> Frequency</label>
+    <label class="check"><input type="checkbox" data-column-toggle="duration" checked> Duration</label>
+    <label class="check"><input type="checkbox" data-column-toggle="type" checked> Type</label>
+    <label class="check"><input type="checkbox" data-column-toggle="flags" checked> Flags</label>
     <button type="button" class="btn ghost small" id="columns-reset">Restore defaults</button>
   </div>
 </details>
+
 <section id="calls" hx-get="/calls?{{.RawQuery}}" hx-trigger="load" hx-swap="innerHTML" aria-label="Call list">
   <div class="loading">Loading calls…</div>
 </section>
