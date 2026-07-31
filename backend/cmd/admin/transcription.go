@@ -233,11 +233,11 @@ func runTranscription(pool *pgxpool.Pool) {
 }
 
 type transcriptionJob struct {
-	id          int64
-	callID      string
-	audioPath   string
-	audioFormat string
-	durationMS  int64
+	id           int64
+	callID       string
+	audioPath    string
+	audioFormat  string
+	durationMS   int64
 	attemptCount int64
 }
 
@@ -401,7 +401,6 @@ func sanitizeTranscriptionError(err error) string {
 	}
 	return s
 }
-
 
 func diagnoseTranscription(pool *pgxpool.Pool) {
 	ctx := context.Background()

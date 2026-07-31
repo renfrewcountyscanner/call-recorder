@@ -1,10 +1,15 @@
 FROM golang:1.26-alpine AS build
 WORKDIR /src
+ARG COMMIT=unknown
+ARG BUILD_TIME=unknown
+ENV COMMIT=${COMMIT}
+ENV BUILD_TIME=${BUILD_TIME}
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/call-recorder ./cmd/server \
- && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/call-recorder-admin ./cmd/admin
+RUN echo "Building commit: $COMMIT at $BUILD_TIME" \
+ && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.commit=${COMMIT} -X main.buildTime=${BUILD_TIME}" -o /out/call-recorder ./cmd/server \
+ && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.commit=${COMMIT} -X main.buildTime=${BUILD_TIME}" -o /out/call-recorder-admin ./cmd/admin
 FROM alpine:3.21
 RUN apk add --no-cache tzdata \
  && addgroup -S -g 10001 recorder && adduser -S -u 10001 -G recorder recorder \

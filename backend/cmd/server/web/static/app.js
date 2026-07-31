@@ -137,7 +137,7 @@
       if (field && btn.dataset[name] !== undefined) field.value = btn.dataset[name];
     });
     var source = form.elements['source'];
-    if (source && btn.dataset.source) source.value = btn.dataset.source === 'received' ? 'manual' : btn.dataset.source;
+    if (source && btn.dataset.source) source.value = btn.dataset.source;
     var enabled = form.elements['enabled'];
     if (enabled) enabled.checked = btn.dataset.enabled === 'true';
     var transcriptionEnabled = form.elements['transcription_enabled'];

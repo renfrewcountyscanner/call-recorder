@@ -70,6 +70,7 @@
       <td class="col-flags" data-label="Flags" data-column="flags">
         <span class="flags">
           {{if .Protected}}<span class="flag warn" title="Protected from retention">P</span>{{end}}
+          {{if .FavouriteGroups}}<span class="flag ok" title="Favourite: {{.FavouriteGroups}}">★</span>{{end}}
           {{if .Notes}}<span class="flag info" title="Administrative notes present">N</span>{{end}}
           {{if .Transcript}}<span class="flag" title="Received call text present">T</span>{{end}}
           {{if .GeneratedTranscript}}<span class="flag ok" title="Generated transcript available">G</span>{{end}}

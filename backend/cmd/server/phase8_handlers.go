@@ -473,17 +473,17 @@ func (s *server) adminSaveNotificationRule(w http.ResponseWriter, r *http.Reques
 
 type transcriptionStatus struct {
 	Enabled, Processing, SecretAvailable, EndpointAllowed, WorkerOnline bool
-	Provider, ProviderType, Endpoint, Model, Language, AllowedCIDRs    string
-	PhrasePrompt                                                       string
-	MinDurationMS, MaxAudioDurationMS, MaxFileSize                     int64
-	Temperature                                                        float64
-	VADEnabled, PhrasePromptsEnabled                                   bool
-	Timeout, Concurrency, RetryLimit                                   int
-	Pending, Failed, Completed                                         int64
-	Heartbeat                                                        *time.Time
-	LastTestAt                                                       *time.Time
-	LastTestOK                                                       *bool
-	LastTestError                                                    string
+	Provider, ProviderType, Endpoint, Model, Language, AllowedCIDRs     string
+	PhrasePrompt                                                        string
+	MinDurationMS, MaxAudioDurationMS, MaxFileSize                      int64
+	Temperature                                                         float64
+	VADEnabled, PhrasePromptsEnabled                                    bool
+	Timeout, Concurrency, RetryLimit                                    int
+	Pending, Failed, Completed                                          int64
+	Heartbeat                                                           *time.Time
+	LastTestAt                                                          *time.Time
+	LastTestOK                                                          *bool
+	LastTestError                                                       string
 }
 
 func (s *server) loadTranscriptionStatus(ctx context.Context) (transcriptionStatus, error) {
@@ -764,6 +764,7 @@ func (s *server) adminEditTranscript(w http.ResponseWriter, r *http.Request) {
 	_, _ = s.db.Exec(r.Context(), `UPDATE calls SET search_document=to_tsvector('simple',coalesce(search_document::text,'')||' '||$2) WHERE id=$1`, callID, text)
 	http.Redirect(w, r, "/admin/transcription", 303)
 }
+
 type transcriptionEligibilityResult struct {
 	Eligible bool
 	Reason   string

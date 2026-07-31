@@ -15,6 +15,7 @@
   <div class="badges">
     {{if .Call.CallType}}<span class="badge info">{{.Call.CallType}}</span>{{end}}
     {{if .Call.Protected}}<span class="badge warn">Protected</span>{{end}}
+    {{if .Call.FavouriteGroups}}<span class="badge ok" title="Favourite: {{.Call.FavouriteGroups}}">★ Favourite</span>{{end}}
     {{if gt .Call.Patches 0}}<span class="badge warn" title="{{.Call.Patches}} patched talkgroups">+{{.Call.Patches}} patch</span>{{end}}
     <span class="badge">{{.Call.AudioFormat}}</span>
   </div>
