@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.2 (unreleased)
+## v0.4.2 (2026-07-31)
 
 - Injected git commit and build timestamp into `/healthz` response and Docker images.
 - Added backend Docker healthcheck; fixed transcription-worker healthcheck to actually run `diagnose`.

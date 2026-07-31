@@ -42,7 +42,7 @@ var staticFS embed.FS
 
 // version is reported by /healthz and shown in the interface header.
 // Build-time values are injected via -ldflags.
-var version = "v0.4.1"
+var version = "v0.4.2"
 var commit = ""
 var buildTime = ""
 

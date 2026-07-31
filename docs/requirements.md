@@ -18,4 +18,4 @@ Provide a Linux-hosted, clean-room call archive for completed calls. The first r
 
 ## Non-goals for first release
 
-Live radio streaming, email notification, transcription, external publishing, certificate automation, SQL Server support, SDR control, and radio decoding.
+Live radio streaming, email notification, external publishing, certificate automation, SQL Server support, SDR control, and radio decoding.

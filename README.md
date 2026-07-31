@@ -1,62 +1,60 @@
 # Call Recorder
 
-## v0.4.1
+## v0.4.2
 
-This release adds favourite groups, retention-protected calls, durable notification deliveries, and an optional OpenAI-compatible transcription queue while retaining the v0.3.0 scanner-oriented interface. See [docs/favourites.md](docs/favourites.md), [docs/protected-calls.md](docs/protected-calls.md), [docs/notifications.md](docs/notifications.md), and [docs/transcription.md](docs/transcription.md).
+This release adds real notification test delivery, storage diagnostics CLI, inline transcript display in the call list, and an interactive install script. It builds on v0.4.1 which added favourite groups, retention-protected calls, durable notification deliveries, and an optional OpenAI-compatible transcription queue.
 
-Call Recorder is an initial working Linux-native release for receiving completed calls from Linux Trunk Recorder installations. It uses Go, PostgreSQL, Docker Compose, bind-mounted Linux audio storage, durable sender spooling, browser playback, and verified backup/restore tooling. See [CHANGELOG.md](CHANGELOG.md) and [known limitations](docs/known-limitations.md).
+See [CHANGELOG.md](CHANGELOG.md) for the full history and [known limitations](docs/known-limitations.md) for remaining work.
 
-The v0.4.1 call list adds pause/resume live updates with queued-call indication, bounded page sizes of 25, 50, 100, or 250, and print-friendly call-list and call-detail output.
+Call Recorder is a Linux-native call logger for receiving completed calls from Linux Trunk Recorder installations. It uses Go, PostgreSQL, Docker Compose, bind-mounted Linux audio storage, durable sender spooling, browser playback, and verified backup/restore tooling.
 
-A clean-room Linux call logger for completed radio calls. The initial scope is deliberately narrow: ingest completed calls from Trunk Recorder and remote recorder sources, store normalized metadata and audio in PostgreSQL-backed storage, and provide secure browser search and playback.
+A clean-room Linux call logger for completed radio calls. The scope is: ingest completed calls from Trunk Recorder and remote recorder sources, store normalized metadata and audio in PostgreSQL-backed storage, and provide secure browser search and playback.
 
 This project does not include radio decoding, SDR control, trunking-system control, proprietary installer material, decompiled code, vendor artwork, or call recordings.
 
-## Proven local startup
-
-This is Linux-native: Docker runs PostgreSQL; the Go backend and Go uploader run without Windows, Wine, MSSQL, PowerShell, or .NET. Trunk Recorder remains responsible for recording and decoding. Call Recorder receives completed calls only.
-
-### Quick install
+## Quick install
 
 Run the installer from the repository root. It prompts for the directory where call recordings should be stored, generates secure secrets, and starts the Docker Compose stack:
 
 ```bash
+git clone https://github.com/renfrewcountyscanner/call-recorder.git
+cd call-recorder
 ./install.sh
 ```
 
-### Manual startup
+The installer supports two PostgreSQL modes:
+- **Local container** (default) — deploys PostgreSQL in Docker
+- **External server** — connects to an existing PostgreSQL instance
 
-```bash
-cd deploy
-cp example.env .env
-# Set strong, private POSTGRES_PASSWORD and CALL_RECORDER_BOOTSTRAP_SENDER_KEY values.
-docker-compose config -q
-docker-compose up --build -d
-docker-compose ps
-```
+See [docs/linux-installation.md](docs/linux-installation.md) for detailed installation instructions.
 
-See [docs/development.md](docs/development.md) for sender provisioning and synthetic ingestion.
+## What's included
 
-Runtime PostgreSQL and audio data are bind-mounted under `runtime/postgres` and `runtime/audio` (excluded from Git). Use `deploy/backup.sh DESTINATION_DIRECTORY` to create a verified PostgreSQL dump plus separate audio archive; `deploy/restore.sh` requires `CONFIRM_RESTORE=YES`.
-
-## Initial scope
-
-- Receive completed calls from multiple sources.
-- Store metadata, aliases, media references, ingestion state, and retention policy in PostgreSQL.
-- Store and play MP3/WAV media.
-- Search calls, play individual calls, and continuously play filtered calls.
-- Manage system-scoped talkgroup/radio aliases, import/export aliases as CSV, and prevent duplicate uploads.
-- Define disabled-by-default retention policies; preview them in the web UI and run them from the Linux admin command.
-
-See [docs/requirements.md](docs/requirements.md) and [docs/architecture.md](docs/architecture.md).
+- Direct Linux Trunk Recorder ingestion
+- Modern and legacy-compatible upload APIs
+- Multiple authenticated senders with durable retry
+- MP3/WAV validation and storage
+- Browser playback with sequential mode
+- Filtering, sorting, SmartSort, and CSV/JSON exports
+- SSE live updates with pause/resume
+- Aliases with CSV import/export
+- Favourites with call-list filtering
+- Protected calls with expiry and audit history
+- Retention and purging with dry-run preview
+- Notifications (SMTP, webhook, Discord, Telegram)
+- End-to-end transcription with encrypted API key
+- Inline transcripts in the call list
+- Backup and restore with checksums
+- Storage diagnostics CLI (missing/orphan audio reports)
+- Build commit and timestamp reporting in health endpoint
 
 ## Repository layout
 
-- `docs/` — clean-room interoperability and design documentation.
-- `backend/` — Go server and Linux administration command.
-- `uploader/` — Trunk Recorder sender components.
-- `deploy/` — deployment templates without secrets.
-- `tests/` — isolated synthetic integration, retention, and browser tests.
+- `backend/` — Go server and Linux administration command
+- `uploader/` — Trunk Recorder sender components
+- `deploy/` — deployment templates without secrets
+- `tests/` — integration, browser, accessibility, and retention tests
+- `docs/` — design documentation and readiness matrix
 
 ## Clean-room boundary
 

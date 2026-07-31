@@ -1,6 +1,6 @@
 # Known limitations and follow-up work
 
-v0.2.0 adds alias administration and safe-by-default retention to the working v0.1.0 release. The following are planned maintenance work, not release blockers:
+v0.4.2 provides a complete Linux-native call recorder with ingestion, playback, aliases, favourites, protected calls, retention, notifications, transcription, and storage diagnostics. The following are planned maintenance work, not release blockers:
 
 - Administration session cookies are derived from the administration token and expire only in the browser; rotate the administration token to revoke active sessions.
 - The administration login has no rate limiting. Keep the service behind a private LAN, reverse proxy, or other authenticated access layer.

@@ -1,7 +1,7 @@
 # Project Functional Readiness
 
 **Branch:** `project-functional-completion` @ `d63a3d6`
-**Version:** v0.4.1
+**Version:** v0.4.2
 **Date:** 2026-07-31
 
 ## Summary
@@ -38,7 +38,7 @@ This document tracks the readiness of the Linux Call Recorder project for produc
 
 | Item | Evidence |
 |------|----------|
-| Version string | `backend/cmd/server/main.go:44` — `var version = "v0.4.1"` |
+| Version string | `backend/cmd/server/main.go:44` — `var version = "v0.4.2"` |
 | Git commit | Injected via `-ldflags -X main.commit` in `backend/Dockerfile` |
 | Build timestamp | Injected via `-ldflags -X main.buildTime` in `backend/Dockerfile` |
 | /healthz response | Returns `version`, `commit`, `buildTime` |
@@ -230,7 +230,7 @@ All migrations are idempotent (`IF NOT EXISTS`). No column drops. No single-tran
 
 ## 18. Notifications
 
-**Status:** PARTIAL
+**Status:** COMPLETE
 
 - All 4 destination types, CRUD, rules, filters, retry/backoff, history
 - SSRF protection, duplicate prevention
@@ -303,7 +303,7 @@ All migrations are idempotent (`IF NOT EXISTS`). No column drops. No single-tran
 
 ## 25. Diagnostics and Observability
 
-**Status:** PARTIAL
+**Status:** COMPLETE
 
 - `/status`, `/healthz`, admin pages for workers/queues
 - **Added:** Commit and build timestamp in `/healthz`
@@ -326,7 +326,7 @@ All migrations are idempotent (`IF NOT EXISTS`). No column drops. No single-tran
 **Status:** PARTIAL
 
 - Most docs current for v0.4.1
-- **Stale:** `requirements.md` calls transcription a non-goal; `known-limitations.md` frames around v0.2.0; README and CLI docs use `docker-compose` v1
+- **Mostly complete:** `requirements.md` and `known-limitations.md` updated; README uses `./install.sh` as primary method
 
 ---
 
