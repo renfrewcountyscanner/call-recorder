@@ -79,22 +79,47 @@ def queue(audio, metadata, cfg):
     root=Path(cfg["SPOOL_DIR"]); pending=root/"pending"; failed=root/"failed"; pending.mkdir(parents=True, exist_ok=True); failed.mkdir(parents=True, exist_ok=True)
     item=pending/(uuid.uuid4().hex+".json"); item.write_text(json.dumps({"audio":str(Path(audio).resolve()),"metadata":str(Path(metadata).resolve()),"attempts":0,"next":0}), encoding="utf-8"); return item
 
+def safe_error(error, cfg):
+    message = " ".join(str(error).split())
+    for name in ("UPLOAD_KEY", "SECONDARY_UPLOAD_KEY"):
+        secret = cfg.get(name, "")
+        if secret:
+            message = message.replace(secret, "[redacted]")
+    return message[:500] or error.__class__.__name__
+
 def drain(cfg):
-    root=Path(cfg["SPOOL_DIR"]); retries=int(cfg.get("RETRY_COUNT","5"))
-    for item in sorted((root/"pending").glob("*.json")):
+    root=Path(cfg["SPOOL_DIR"]); pending=root/"pending"; failed=root/"failed"; retries=int(cfg.get("RETRY_COUNT","5"))
+    pending.mkdir(parents=True, exist_ok=True); failed.mkdir(parents=True, exist_ok=True)
+    for item in sorted(pending.glob("*.json")):
         record=json.loads(item.read_text())
         if record["next"] > time.time(): continue
         try:
-            for destination in destinations(cfg): attempt(record, destination)
+            for destination in destinations(cfg):
+                try:
+                    attempt(record, destination)
+                except (OSError, ValueError, URLError, RuntimeError) as error:
+                    sender = " ".join(destination.get("UPLOAD_ID", "unknown").split())[:128]
+                    raise RuntimeError(f"sender={sender} {safe_error(error, destination)}") from error
             item.unlink()
-        except (OSError, ValueError, URLError, RuntimeError):
+        except (OSError, ValueError, URLError, RuntimeError) as error:
             record["attempts"] += 1
-            if record["attempts"] > retries: shutil.move(str(item), root/"failed"/item.name)
-            else: record["next"] = time.time()+min(300, 2**record["attempts"]); item.write_text(json.dumps(record))
+            if record["attempts"] > retries:
+                shutil.move(str(item), failed/item.name)
+                state = "failed"
+            else:
+                record["next"] = time.time()+min(300, 2**record["attempts"]); item.write_text(json.dumps(record))
+                state = "pending"
+            print(f"call-recorder upload failed item={item.name} attempts={record['attempts']} state={state} error={safe_error(error, cfg)}", file=sys.stderr)
+    pending_count = sum(1 for _ in pending.glob("*.json"))
+    failed_count = sum(1 for _ in failed.glob("*.json"))
+    if pending_count or failed_count:
+        print(f"call-recorder spool not empty pending={pending_count} failed={failed_count}", file=sys.stderr)
+        return False
+    return True
 
 def main():
     p=argparse.ArgumentParser(); p.add_argument("--env", required=True); p.add_argument("--audio"); p.add_argument("--metadata"); p.add_argument("--drain", action="store_true"); a=p.parse_args(); envfile(a.env); cfg=dict(os.environ)
-    if a.drain: drain(cfg); return
+    if a.drain: return 0 if drain(cfg) else 1
     if not a.audio or not a.metadata: p.error("--audio and --metadata are required")
-    queue(a.audio,a.metadata,cfg); drain(cfg)
-if __name__ == "__main__": main()
+    queue(a.audio,a.metadata,cfg); return 0 if drain(cfg) else 1
+if __name__ == "__main__": raise SystemExit(main())
