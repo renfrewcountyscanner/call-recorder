@@ -808,22 +808,10 @@ dialog.confirm .dialog-actions { display: flex; gap: 0.45rem; justify-content: f
   font-size: 0.82rem; line-height: 1.4; color: var(--muted);
 }
 .transcript-inline .transcript-preview {
-  color: var(--text); font-weight: 600;
+  display: block; color: var(--text); font-weight: 600;
+  overflow: visible; white-space: normal;
+  overflow-wrap: anywhere; word-break: break-word;
 }
-.transcript-inline .transcript-preview {
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  overflow: hidden; text-overflow: ellipsis;
-  word-break: break-word;
-}
-.transcript-inline.expanded .transcript-preview {
-  -webkit-line-clamp: unset; display: block;
-}
-.transcript-inline .transcript-toggle {
-  display: inline-block; margin-top: 0.1rem;
-  color: var(--info); font-size: 0.72rem; cursor: pointer;
-  background: none; border: none; padding: 0; font: inherit;
-}
-.transcript-inline .transcript-toggle:hover { text-decoration: underline; }
 .transcript-inline .transcript-status {
   color: var(--muted); font-style: italic; font-size: 0.78rem; font-weight: 400;
 }
@@ -837,6 +825,28 @@ dialog.confirm .dialog-actions { display: flex; gap: 0.45rem; justify-content: f
 .transcript-inline mark {
   background: var(--accent-soft); color: var(--accent);
   border-radius: 2px; padding: 0 0.1rem;
+}
+
+@media (min-width: 768px) {
+  table.call-table { font-size: 0.78rem; line-height: 1.2; }
+  table.call-table thead th { padding: 0.2rem 0.35rem; font-size: 0.65rem; }
+  table.call-table .call-row td { padding: 0.12rem 0.35rem; }
+  table.call-table .call-row .col-play { width: 1.65rem; padding-right: 0.15rem; }
+  table.call-table .play-btn { width: 1.3rem; height: 1.3rem; font-size: 0.65rem; }
+  table.call-table .call-row .date,
+  table.call-table .call-row .id-chip,
+  table.call-table .call-row .badge { font-size: 0.68rem; }
+  table.call-table .call-row .id-chip { padding: 0 0.22rem; }
+  table.call-table .call-row .badge { padding: 0.02rem 0.28rem; line-height: 1.25; }
+  table.call-table .call-row .flags { gap: 0.12rem; }
+  table.call-table .call-row .flag { width: 1.05rem; height: 1.05rem; font-size: 0.66rem; }
+  table.call-table .call-row .col-flags { white-space: nowrap; }
+  table.call-table .call-row .row-more {
+    display: inline-block; margin: 0 0 0 0.2rem;
+    font-size: 0.7rem; line-height: 1.2; vertical-align: middle;
+  }
+  table.call-table .call-row .btn.small { min-height: 1.4rem; padding: 0.08rem 0.35rem; font-size: 0.7rem; }
+  table.call-table .call-row-transcript td { padding: 0.18rem 0.35rem 0.28rem; }
 }
 
 /* ---------- Storage capacity ---------- */

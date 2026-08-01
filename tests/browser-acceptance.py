@@ -79,6 +79,8 @@ try:
     d.get(BASE + "/")
     rows = wait_for(d, "[data-play]", 3)
     assert d.find_element(By.CSS_SELECTOR, "table.data"), "desktop table missing"
+    desktop_padding = float(d.execute_script("return parseFloat(getComputedStyle(document.querySelector('.call-row .col-time')).paddingTop)"))
+    assert desktop_padding <= 3, f"desktop call rows are not compact: {desktop_padding}px top padding"
     count_text = d.find_element(By.ID, "result-count").text
     assert "calls" in count_text, f"result count missing: {count_text}"
 
@@ -174,6 +176,8 @@ for width in (375, 320):
     try:
         m.get(BASE + "/")
         wait_for(m, "[data-play]", 1)
+        mobile_padding = float(m.execute_script("return parseFloat(getComputedStyle(document.querySelector('.call-row .col-time')).paddingTop)"))
+        assert mobile_padding >= 4, f"mobile call-row touch spacing was compacted: {mobile_padding}px top padding"
         scroll_w = m.execute_script("return document.documentElement.scrollWidth")
         assert scroll_w <= width + 1, f"horizontal overflow at {width}px: {scroll_w}"
         assert m.execute_script("return getComputedStyle(document.querySelector('table.data thead')).display") == "none", "mobile table header should be hidden"

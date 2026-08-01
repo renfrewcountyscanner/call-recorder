@@ -62,8 +62,11 @@ $compose exec -T transcription-worker /usr/local/bin/call-recorder-admin transcr
 # Verify the transcript was stored.
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT text FROM transcripts WHERE call_id='$call_id'")" = 'synthetic transcript'
 
-# Verify transcript is searchable via the call list.
-curl -fsS "http://127.0.0.1:18080/calls?q=synthetic+transcript" | grep -q "$call_id"
+# Verify the complete transcript is searchable and rendered without a collapsed preview control.
+transcript_page=$(curl -fsS "http://127.0.0.1:18080/calls?q=synthetic+transcript")
+printf '%s' "$transcript_page" | grep -q "$call_id"
+printf '%s' "$transcript_page" | grep -q 'synthetic transcript'
+if printf '%s' "$transcript_page" | grep -q 'transcript-toggle'; then echo 'transcript was rendered with a collapse control'; exit 1; fi
 
 # Test retry: reset a failed job without erasing history.
 $compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -c "UPDATE transcription_jobs SET status='failed',error='synthetic failure',attempt_count=2 WHERE call_id='$call_id'" >/dev/null

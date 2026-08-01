@@ -12,7 +12,7 @@
 </div>
 {{if .Calls}}
 <div class="table-wrap">
-<table class="data responsive">
+<table class="data responsive call-table">
   <thead>
     <tr>
       <th scope="col" class="col-play"><span class="sr-only">Play</span></th>
@@ -86,9 +86,9 @@
     </tr>
     {{if or .GeneratedTranscript .TranscriptionStatus}}
     <tr class="call-row-transcript" data-call-id="{{.ID}}">
-      <td colspan="19">
+      <td colspan="24" data-label="Transcript">
         <div class="transcript-inline" data-call-id="{{.ID}}" data-transcript-status="{{.TranscriptionStatus}}" data-generated="{{if .GeneratedText}}true{{else}}false{{end}}">
-          {{if .GeneratedText}}<div class="transcript-preview">{{.GeneratedText}}</div><button class="transcript-toggle" aria-expanded="false" aria-label="Expand transcript">More</button>{{else if eq .TranscriptionStatus "pending"}}<span class="transcript-status">Waiting for transcription</span>{{else if eq .TranscriptionStatus "running"}}<span class="transcript-status">Transcribing…</span>{{else if eq .TranscriptionStatus "failed"}}<span class="transcript-status failed">Transcription failed</span>{{if and $.Nav $.Nav.Authorized}}<button class="transcript-retry" data-call-id="{{.ID}}" aria-label="Retry transcription">Retry</button>{{end}}{{else if eq .TranscriptionStatus "queued"}}<span class="transcript-status">Waiting for transcription worker</span>{{end}}</div>
+          {{if .GeneratedText}}<div class="transcript-preview">{{.GeneratedText}}</div>{{else if eq .TranscriptionStatus "pending"}}<span class="transcript-status">Waiting for transcription</span>{{else if eq .TranscriptionStatus "running"}}<span class="transcript-status">Transcribing…</span>{{else if eq .TranscriptionStatus "failed"}}<span class="transcript-status failed">Transcription failed</span>{{if and $.Nav $.Nav.Authorized}}<button class="transcript-retry" data-call-id="{{.ID}}" aria-label="Retry transcription">Retry</button>{{end}}{{else if eq .TranscriptionStatus "queued"}}<span class="transcript-status">Waiting for transcription worker</span>{{end}}</div>
       </td>
     </tr>
     {{end}}

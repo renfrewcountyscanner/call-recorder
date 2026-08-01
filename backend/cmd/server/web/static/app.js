@@ -503,17 +503,6 @@
     if (details && details.open && summary && menu) positionAdminMenu(summary, menu);
   });
 
-  /* ---------- Inline transcript expand/collapse ---------- */
-  document.addEventListener('click', function (e) {
-    var toggle = e.target.closest ? e.target.closest('.transcript-toggle') : null;
-    if (!toggle) return;
-    var container = toggle.closest('.transcript-inline');
-    if (!container) return;
-    var expanded = container.classList.toggle('expanded');
-    toggle.textContent = expanded ? 'Less' : 'More';
-    toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-  });
-
   /* ---------- Transcript retry ---------- */
   document.addEventListener('click', function (e) {
     var retry = e.target.closest ? e.target.closest('.transcript-retry') : null;
@@ -553,15 +542,11 @@
         if (!info) return;
         var oldStatus = container.getAttribute('data-transcript-status');
         var newStatus = info.status || '';
-        // Preserve expanded state.
-        var wasExpanded = container.classList.contains('expanded');
         if (info.generated_flag) {
-          var html = '<div class="transcript-preview">' + escapeHtml(info.generated) + '</div>' +
-            '<button class="transcript-toggle" aria-expanded="' + (wasExpanded ? 'true' : 'false') + '" aria-label="Expand transcript">' + (wasExpanded ? 'Less' : 'More') + '</button>';
+          var html = '<div class="transcript-preview">' + escapeHtml(info.generated) + '</div>';
           container.innerHTML = html;
           container.setAttribute('data-transcript-status', 'completed');
           container.setAttribute('data-generated', 'true');
-          if (wasExpanded) container.classList.add('expanded');
         } else if (newStatus !== oldStatus) {
           var statusHtml = '';
           if (newStatus === 'pending') statusHtml = '<span class="transcript-status">Waiting for transcription</span>';
