@@ -22,6 +22,7 @@ curl -fsS http://127.0.0.1:18080/login | grep -q 'Sign in'
 curl -fsS -c "$work/admin-cookie" -d 'username=admin&password=testpassword&return=/' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/login | grep -q 303
 curl -fsS -b "$work/admin-cookie" http://127.0.0.1:18080/ | grep -q 'Calls'
 curl -fsS -b "$work/admin-cookie" http://127.0.0.1:18080/admin/storage | grep -q 'Audio filesystem capacity'
+curl -fsS -b "$work/admin-cookie" http://127.0.0.1:18080/admin/users | grep -q 'admin'
 curl -fsS -c "$work/editor-cookie" -d 'username=editor&password=editpassword&return=/' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/login | grep -q 303
 curl -fsS -b "$work/editor-cookie" http://127.0.0.1:18080/admin/talkgroups | grep -q 'Talkgroup aliases'
 curl -fsS -b "$work/editor-cookie" http://127.0.0.1:18080/admin/transcription | grep -q 'Transcription'

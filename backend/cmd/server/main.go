@@ -1667,7 +1667,9 @@ func (s *server) adminUsers(w http.ResponseWriter, r *http.Request) {
 	users := []userRow{}
 	for rows.Next() {
 		var u userRow
-		if err := rows.Scan(&u.Username, &u.Role, &u.Enabled, &u.CreatedAt); err == nil {
+		var created time.Time
+		if err := rows.Scan(&u.Username, &u.Role, &u.Enabled, &created); err == nil {
+			u.CreatedAt = created.Local().Format("2006-01-02 15:04")
 			users = append(users, u)
 		}
 	}
