@@ -101,10 +101,10 @@
   var dialog = document.createElement('dialog');
   dialog.className = 'confirm';
   dialog.innerHTML = '<p id="confirm-text"></p>' +
-    '<div class="dialog-actions">' +
+    '<form method="dialog" class="dialog-actions">' +
     '<button class="btn ghost" value="cancel">Cancel</button>' +
     '<button class="btn danger" value="confirm" id="confirm-yes">Confirm</button>' +
-    '</div>';
+    '</form>';
   document.body.appendChild(dialog);
   var pendingForm = null;
   document.addEventListener('submit', function (e) {
