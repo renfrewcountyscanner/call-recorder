@@ -2,6 +2,7 @@
 {{template "head" .}}{{template "top" .}}
 <h1>Receiver status</h1>
 <p class="muted">Activity is considered stale after 15 minutes without a completed call.</p>
+{{if .Storage}}<section class="card storage-card"><div class="page-head compact"><div><h2>Audio storage</h2><p class="muted">Current free space on the audio filesystem.</p></div><a class="btn small ghost" href="/admin/storage">Details</a></div><div class="storage-gauge" role="img" aria-label="{{printf "%.1f" .Storage.FreePct}} percent free; {{bytes .Storage.FreeBytes}} free of {{bytes .Storage.TotalBytes}} total"><div class="storage-used" style="width: {{printf "%.2f" .Storage.UsedPct}}%"></div></div><div class="storage-legend"><span><strong>{{bytes .Storage.FreeBytes}}</strong> free ({{printf "%.1f" .Storage.FreePct}}%)</span><span><strong>{{bytes .Storage.TotalBytes}}</strong> total</span></div></section>{{end}}
 <div class="table-wrap"><table class="data"><thead><tr><th>Sender</th><th>System</th><th>Site</th><th>Calls</th><th>Last activity</th><th>Status</th></tr></thead><tbody>
 {{range .Rows}}<tr><td>{{.Sender}}</td><td>{{.System}}</td><td>{{.Site}}</td><td>{{.Calls}}</td><td>{{.Last.Local.Format "2006-01-02 15:04:05 MST"}}</td><td>{{if .Active}}<span class="badge success">Active</span>{{else}}<span class="badge muted">Stale</span>{{end}}</td></tr>{{else}}<tr><td colspan="6" class="empty-state">No received calls yet.</td></tr>{{end}}
 </tbody></table></div>

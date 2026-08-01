@@ -22,6 +22,8 @@ It starts a separate Compose project on port 18080, uses `.test-runtime`, sends 
 
 `tests/administration.sh` verifies the protected login/session flow, alias update, and safe default retention-policy creation. `tests/phase7.sh` runs the complete isolated group: the Phase 6 suites plus the browser suites below.
 
+`COMPOSE=docker-compose tests/authentication.sh` verifies the site-wide login gate, local admin/viewer roles, protected storage diagnostics, and public health behavior. It uses only `callrecorder_it` and `.test-runtime`.
+
 Web interface suites (Chromium + vendored axe-core, isolated only):
 
 ```bash

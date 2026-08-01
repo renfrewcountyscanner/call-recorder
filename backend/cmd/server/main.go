@@ -27,6 +27,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -69,14 +71,25 @@ type config struct {
 	CloudflareTrustedProxyIPs []string
 	SecretsRoot               string
 	SessionSecret             string
+	AuthRequired              bool
+	LocalAuthEnabled          bool
+	SessionCookieSecure       bool
+	AuthLoginURL              string
 }
 
 type server struct {
-	cfg       config
-	db        *pgxpool.Pool
-	logger    *slog.Logger
-	templates *template.Template
-	masterKey []byte
+	cfg        config
+	db         *pgxpool.Pool
+	logger     *slog.Logger
+	templates  *template.Template
+	masterKey  []byte
+	loginMu    sync.Mutex
+	loginFails map[string]loginFailure
+}
+
+type loginFailure struct {
+	Count int
+	Until time.Time
 }
 
 type callMetadata struct {
@@ -148,6 +161,14 @@ func main() {
 		slog.Error("CALL_RECORDER_DATABASE_URL is required")
 		os.Exit(2)
 	}
+	if cfg.AuthRequired && !cfg.LocalAuthEnabled && !cfg.CloudflareAccessEnabled {
+		slog.Error("browser authentication is required but no authentication provider is enabled")
+		os.Exit(2)
+	}
+	if cfg.AuthRequired && cfg.LocalAuthEnabled && cfg.SessionSecret == "" {
+		slog.Error("CALL_RECORDER_SESSION_SECRET is required for local browser authentication")
+		os.Exit(2)
+	}
 	if err := os.MkdirAll(cfg.AudioRoot, 0o750); err != nil {
 		slog.Error("create audio root", "error", err)
 		os.Exit(2)
@@ -167,7 +188,7 @@ func main() {
 		slog.Error("load application secrets key", "error", err)
 		os.Exit(2)
 	}
-	s := &server{cfg: cfg, db: pool, logger: slog.Default(), masterKey: masterKey, templates: template.Must(template.New("cr").Funcs(template.FuncMap{"dur": formatDuration, "tdate": formatTimePtr, "srcBadge": sourceBadge, "base": filepath.Base, "inc": func(n int) int { return n + 1 }, "dec": func(n int) int { return n - 1 }, "slice": func(v ...string) []string { return v }, "dict": func(values ...any) (map[string]any, error) {
+	s := &server{cfg: cfg, db: pool, logger: slog.Default(), masterKey: masterKey, loginFails: make(map[string]loginFailure), templates: template.Must(template.New("cr").Funcs(template.FuncMap{"dur": formatDuration, "tdate": formatTimePtr, "srcBadge": sourceBadge, "bytes": formatBytes, "base": filepath.Base, "inc": func(n int) int { return n + 1 }, "dec": func(n int) int { return n - 1 }, "slice": func(v ...string) []string { return v }, "dict": func(values ...any) (map[string]any, error) {
 		if len(values)%2 != 0 {
 			return nil, errors.New("invalid dict call")
 		}
@@ -202,16 +223,16 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.health)
-	mux.HandleFunc("GET /", s.callsPage)
-	mux.HandleFunc("GET /calls", s.callsFragment)
-	mux.HandleFunc("GET /call/", s.callDetail)
-	mux.HandleFunc("GET /export/calls.csv", s.exportCallsCSV)
-	mux.HandleFunc("GET /export/calls.audio", s.exportCallsAudio)
-	mux.HandleFunc("GET /export/call/", s.exportCallJSON)
-	mux.HandleFunc("GET /download/", s.downloadCall)
-	mux.HandleFunc("GET /events/calls", s.eventsCalls)
-	mux.HandleFunc("GET /api/transcripts", s.apiTranscripts)
-	mux.HandleFunc("GET /status", s.statusPage)
+	mux.HandleFunc("GET /", s.requireViewer(s.callsPage))
+	mux.HandleFunc("GET /calls", s.requireViewer(s.callsFragment))
+	mux.HandleFunc("GET /call/", s.requireViewer(s.callDetail))
+	mux.HandleFunc("GET /export/calls.csv", s.requireViewer(s.exportCallsCSV))
+	mux.HandleFunc("GET /export/calls.audio", s.requireViewer(s.exportCallsAudio))
+	mux.HandleFunc("GET /export/call/", s.requireViewer(s.exportCallJSON))
+	mux.HandleFunc("GET /download/", s.requireViewer(s.downloadCall))
+	mux.HandleFunc("GET /events/calls", s.requireViewer(s.eventsCalls))
+	mux.HandleFunc("GET /api/transcripts", s.requireViewer(s.apiTranscripts))
+	mux.HandleFunc("GET /status", s.requireViewer(s.statusPage))
 	staticSub, err := fs.Sub(staticFS, "web/static")
 	if err != nil {
 		slog.Error("static assets", "error", err)
@@ -221,7 +242,9 @@ func main() {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 		http.FileServerFS(staticSub).ServeHTTP(w, r)
 	})))
-	if cfg.AdminEnabled && (cfg.AdminOpen || cfg.AdminToken != "" || cfg.SessionSecret != "" || (cfg.CloudflareAccessEnabled && cfg.CloudflareAdminEmail != "")) {
+	if cfg.AdminEnabled || cfg.AuthRequired {
+		mux.HandleFunc("GET /login", s.loginPage)
+		mux.HandleFunc("POST /login", s.adminLogin)
 		mux.HandleFunc("GET /admin/login", s.adminLogin)
 		mux.HandleFunc("POST /admin/login", s.adminLogin)
 		mux.HandleFunc("GET /admin/logout", s.adminLogout)
@@ -268,8 +291,9 @@ func main() {
 		mux.HandleFunc("POST /admin/users", s.adminCreateUser)
 		mux.HandleFunc("POST /admin/users/action", s.adminUserAction)
 		mux.HandleFunc("POST /admin/users/password", s.adminChangePassword)
+		mux.HandleFunc("GET /admin/storage", s.adminStorage)
 	}
-	mux.HandleFunc("GET /media/", s.media)
+	mux.HandleFunc("GET /media/", s.requireViewer(s.media))
 	mux.HandleFunc("POST /api/v1/uploads", s.createUpload)
 	mux.HandleFunc("POST /api/v1/uploads/", s.receiveAudio)
 	if cfg.LegacyEnabled {
@@ -285,7 +309,7 @@ func main() {
 }
 
 func loadConfig() config {
-	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), SecretsRoot: env("CALL_RECORDER_SECRETS_ROOT", "/var/lib/call-recorder/secrets"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyDebug: env("CALL_RECORDER_LEGACY_DEBUG", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminOpen: env("CALL_RECORDER_ADMIN_OPEN", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS")), SessionSecret: env("CALL_RECORDER_SESSION_SECRET", "")}
+	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), SecretsRoot: env("CALL_RECORDER_SECRETS_ROOT", "/var/lib/call-recorder/secrets"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyDebug: env("CALL_RECORDER_LEGACY_DEBUG", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminOpen: env("CALL_RECORDER_ADMIN_OPEN", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS")), SessionSecret: env("CALL_RECORDER_SESSION_SECRET", ""), AuthRequired: env("CALL_RECORDER_AUTH_REQUIRED", "true") == "true", LocalAuthEnabled: env("CALL_RECORDER_LOCAL_AUTH_ENABLED", "true") == "true", SessionCookieSecure: env("CALL_RECORDER_SESSION_COOKIE_SECURE", "true") == "true", AuthLoginURL: strings.TrimSpace(os.Getenv("CALL_RECORDER_AUTH_LOGIN_URL"))}
 }
 func splitCSV(value string) []string {
 	var out []string
@@ -1258,7 +1282,47 @@ func (s *server) statusPage(w http.ResponseWriter, r *http.Request) {
 			items = append(items, x)
 		}
 	}
-	s.page(w, r, "status.html", "Receiver status", "status", map[string]any{"Rows": items})
+	data := map[string]any{"Rows": items}
+	if s.isAdmin(r) {
+		data["Storage"], _ = s.storageStats()
+	}
+	s.page(w, r, "status.html", "Receiver status", "status", data)
+}
+
+type storageStats struct {
+	TotalBytes uint64
+	FreeBytes  uint64
+	UsedBytes  uint64
+	FreePct    float64
+	UsedPct    float64
+}
+
+func (s *server) storageStats() (storageStats, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(s.cfg.AudioRoot, &st); err != nil {
+		return storageStats{}, err
+	}
+	total := st.Blocks * uint64(st.Bsize)
+	free := st.Bavail * uint64(st.Bsize)
+	used := total - free
+	stats := storageStats{TotalBytes: total, FreeBytes: free, UsedBytes: used}
+	if total > 0 {
+		stats.FreePct = float64(free) * 100 / float64(total)
+		stats.UsedPct = float64(used) * 100 / float64(total)
+	}
+	return stats, nil
+}
+
+func (s *server) adminStorage(w http.ResponseWriter, r *http.Request) {
+	if !s.adminOnly(w, r) {
+		return
+	}
+	stats, err := s.storageStats()
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	s.page(w, r, "storage.html", "Storage", "storage", map[string]any{"Storage": stats})
 }
 
 func (s *server) eventsCalls(w http.ResponseWriter, r *http.Request) {
@@ -1318,24 +1382,20 @@ func (s *server) adminOK(r *http.Request) bool {
 			}
 		}
 	}
-	if s.cfg.CloudflareAccessEnabled {
-		remote, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			remote = r.RemoteAddr
-		}
-		trusted := false
-		for _, ip := range s.cfg.CloudflareTrustedProxyIPs {
-			if remote == ip {
-				trusted = true
-				break
-			}
-		}
-		if !trusted {
+	if s.cfg.CloudflareAccessEnabled && s.trustedCloudflareProxy(r) {
+		email := strings.ToLower(strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email")))
+		if email == "" {
 			return false
 		}
-		return s.cfg.CloudflareAdminEmail != "" && strings.EqualFold(strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email")), s.cfg.CloudflareAdminEmail)
+		role := "viewer"
+		if s.cfg.CloudflareAdminEmail != "" && email == s.cfg.CloudflareAdminEmail {
+			role = "admin"
+		}
+		r.Header.Set("X-Call-Recorder-User", email)
+		r.Header.Set("X-Call-Recorder-Role", role)
+		return true
 	}
-	if s.cfg.AdminOpen {
+	if s.cfg.AdminOpen && !s.cfg.AuthRequired {
 		return true
 	}
 	// Check for username/password session cookie.
@@ -1358,7 +1418,7 @@ func (s *server) adminOK(r *http.Request) bool {
 		}
 	}
 	// Legacy admin token mode (for API/CLI compatibility).
-	if s.cfg.AdminToken != "" {
+	if s.cfg.AdminToken != "" && s.cfg.LocalAuthEnabled {
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Call-Recorder-Admin")), []byte(s.cfg.AdminToken)) == 1 {
 			r.Header.Set("X-Call-Recorder-User", "admin-token")
 			r.Header.Set("X-Call-Recorder-Role", "admin")
@@ -1367,15 +1427,58 @@ func (s *server) adminOK(r *http.Request) bool {
 	}
 	return false
 }
-func (s *server) adminAuthorized(w http.ResponseWriter, r *http.Request) bool {
-	if !s.adminOK(r) {
-		s.renderStatus(w, r, http.StatusUnauthorized, "admin_required.html", "Administration sign-in required", "", nil)
+func (s *server) trustedCloudflareProxy(r *http.Request) bool {
+	if !s.cfg.CloudflareAccessEnabled {
 		return false
 	}
-	return true
+	remote, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		remote = r.RemoteAddr
+	}
+	for _, allowed := range s.cfg.CloudflareTrustedProxyIPs {
+		allowed = strings.TrimSpace(allowed)
+		if remote == allowed {
+			return true
+		}
+		if _, network, err := net.ParseCIDR(allowed); err == nil && network.Contains(net.ParseIP(remote)) {
+			return true
+		}
+	}
+	return false
+}
+func (s *server) requireViewer(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.cfg.AuthRequired || s.adminOK(r) {
+			next(w, r)
+			return
+		}
+		if s.cfg.CloudflareAccessEnabled && s.trustedCloudflareProxy(r) && s.cfg.AuthLoginURL != "" {
+			http.Redirect(w, r, s.cfg.AuthLoginURL, http.StatusFound)
+			return
+		}
+		http.Redirect(w, r, "/login?return="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
+	}
+}
+func (s *server) loginPage(w http.ResponseWriter, r *http.Request) {
+	if s.adminOK(r) {
+		returnURL := r.URL.Query().Get("return")
+		if returnURL == "" || !strings.HasPrefix(returnURL, "/") {
+			returnURL = "/"
+		}
+		http.Redirect(w, r, returnURL, http.StatusFound)
+		return
+	}
+	s.renderStatus(w, r, http.StatusOK, "admin_login.html", "Sign in", "", map[string]any{"LoginURL": s.cfg.AuthLoginURL, "ReturnURL": r.URL.Query().Get("return")})
+}
+func (s *server) adminAuthorized(w http.ResponseWriter, r *http.Request) bool {
+	return s.adminOnly(w, r)
 }
 func (s *server) adminLogin(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.CloudflareAccessEnabled {
+	if s.cfg.CloudflareAccessEnabled && s.trustedCloudflareProxy(r) && !s.cfg.LocalAuthEnabled {
+		if s.cfg.AuthLoginURL != "" {
+			http.Redirect(w, r, s.cfg.AuthLoginURL, http.StatusFound)
+			return
+		}
 		s.renderStatus(w, r, http.StatusUnauthorized, "admin_required.html", "Cloudflare Access administration", "", nil)
 		return
 	}
@@ -1393,23 +1496,74 @@ func (s *server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		s.renderStatus(w, r, http.StatusUnauthorized, "admin_login.html", "Administration sign-in", "", map[string]any{"Error": "Username and password are required."})
 		return
 	}
+	if s.loginBlocked(r, username) {
+		s.renderStatus(w, r, http.StatusTooManyRequests, "admin_login.html", "Administration sign-in", "", map[string]any{"Error": "Too many sign-in attempts. Try again later."})
+		return
+	}
 	// Look up user in database.
 	var passwordHash string
 	var role string
 	var enabled bool
 	err := s.db.QueryRow(r.Context(), `SELECT password_hash, role, enabled FROM users WHERE username=$1`, username).Scan(&passwordHash, &role, &enabled)
 	if err != nil || !enabled {
+		s.recordLoginFailure(r, username)
 		s.renderStatus(w, r, http.StatusUnauthorized, "admin_login.html", "Administration sign-in", "", map[string]any{"Error": "Invalid username or password."})
 		return
 	}
 	// Verify password.
 	if !verifyAPIKey(passwordHash, password) {
+		s.recordLoginFailure(r, username)
 		s.renderStatus(w, r, http.StatusUnauthorized, "admin_login.html", "Administration sign-in", "", map[string]any{"Error": "Invalid username or password."})
 		return
 	}
 	// Create session cookie.
 	s.createSession(w, username, role)
-	http.Redirect(w, r, "/admin/talkgroups", http.StatusSeeOther)
+	returnURL := r.Form.Get("return")
+	if returnURL == "" || !strings.HasPrefix(returnURL, "/") {
+		returnURL = "/"
+		if r.URL.Path == "/admin/login" {
+			returnURL = "/admin/talkgroups"
+		}
+	}
+	http.Redirect(w, r, returnURL, http.StatusSeeOther)
+}
+
+func (s *server) loginKey(r *http.Request, username string) string {
+	remote, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		remote = r.RemoteAddr
+	}
+	return remote + ":" + strings.ToLower(username)
+}
+func (s *server) loginBlocked(r *http.Request, username string) bool {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	item, ok := s.loginFails[s.loginKey(r, username)]
+	if !ok {
+		return false
+	}
+	if time.Now().After(item.Until) {
+		delete(s.loginFails, s.loginKey(r, username))
+		return false
+	}
+	return item.Count >= 5
+}
+func (s *server) recordLoginFailure(r *http.Request, username string) {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	if len(s.loginFails) >= 10000 {
+		now := time.Now()
+		for key, item := range s.loginFails {
+			if now.After(item.Until) {
+				delete(s.loginFails, key)
+			}
+		}
+	}
+	key := s.loginKey(r, username)
+	item := s.loginFails[key]
+	item.Count++
+	item.Until = time.Now().Add(15 * time.Minute)
+	s.loginFails[key] = item
 }
 
 func (s *server) createSession(w http.ResponseWriter, username, role string) {
@@ -1424,13 +1578,13 @@ func (s *server) createSession(w http.ResponseWriter, username, role string) {
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   true,
+		Secure:   s.cfg.SessionCookieSecure,
 		MaxAge:   3600,
 	})
 }
 
 func (s *server) adminLogout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{Name: "call_recorder_session", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: true})
+	http.SetCookie(w, &http.Cookie{Name: "call_recorder_session", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: s.cfg.SessionCookieSecure})
 	http.SetCookie(w, &http.Cookie{Name: "call_recorder_admin", Path: "/admin", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: true})
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -2302,6 +2456,20 @@ func formatDuration(ms int64) string {
 	}
 	return fmt.Sprintf("%d:%02d", m, s)
 }
+
+func formatBytes(value uint64) string {
+	units := []string{"B", "KiB", "MiB", "GiB", "TiB"}
+	n := float64(value)
+	i := 0
+	for n >= 1024 && i < len(units)-1 {
+		n /= 1024
+		i++
+	}
+	if i == 0 {
+		return fmt.Sprintf("%d %s", value, units[i])
+	}
+	return fmt.Sprintf("%.1f %s", n, units[i])
+}
 func formatTimePtr(t *time.Time) string {
 	if t == nil {
 		return "—"
@@ -2345,19 +2513,19 @@ func (s *server) render(w http.ResponseWriter, name string, data any) {
 
 type navContext struct {
 	Title, Active, Version, Username, Role string
-	AdminEnabled, Authorized               bool
+	AdminEnabled, AuthRequired, Authorized bool
 	IsAdmin                                bool
 }
 
 func (s *server) nav(r *http.Request, active, title string) navContext {
-	authorized := s.cfg.AdminEnabled && s.adminOK(r)
+	authorized := (s.cfg.AdminEnabled || s.cfg.AuthRequired) && s.adminOK(r)
 	username := ""
 	role := ""
 	if authorized {
 		username = r.Header.Get("X-Call-Recorder-User")
 		role = s.getUserRole(r)
 	}
-	return navContext{Title: title, Active: active, Version: version, AdminEnabled: s.cfg.AdminEnabled, Authorized: authorized, Username: username, Role: role, IsAdmin: role == "admin"}
+	return navContext{Title: title, Active: active, Version: version, AdminEnabled: s.cfg.AdminEnabled, AuthRequired: s.cfg.AuthRequired, Authorized: authorized, Username: username, Role: role, IsAdmin: role == "admin"}
 }
 func (s *server) renderStatus(w http.ResponseWriter, r *http.Request, status int, name, title, active string, data map[string]any) {
 	if data == nil {

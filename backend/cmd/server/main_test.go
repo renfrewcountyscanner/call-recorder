@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -147,5 +148,50 @@ func TestContentTypeMatches(t *testing.T) {
 	}
 	if contentTypeMatches("wav", "audio/mpeg") {
 		t.Fatal("mismatch accepted")
+	}
+}
+
+func TestStorageStatsUsesConfiguredAudioFilesystem(t *testing.T) {
+	dir := t.TempDir()
+	s := &server{cfg: config{AudioRoot: dir}}
+	stats, err := s.storageStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.TotalBytes == 0 || stats.FreeBytes == 0 || stats.FreeBytes > stats.TotalBytes {
+		t.Fatalf("invalid filesystem stats: %#v", stats)
+	}
+	if stats.FreePct < 0 || stats.FreePct > 100 || stats.UsedPct < 0 || stats.UsedPct > 100 {
+		t.Fatalf("invalid percentages: %#v", stats)
+	}
+}
+
+func TestFormatBytesIsHumanReadable(t *testing.T) {
+	for value, want := range map[uint64]string{0: "0 B", 1024: "1.0 KiB", 1024 * 1024: "1.0 MiB"} {
+		if got := formatBytes(value); got != want {
+			t.Fatalf("formatBytes(%d) = %q, want %q", value, got, want)
+		}
+	}
+}
+
+func TestCloudflareIdentityMapsAdminAndViewer(t *testing.T) {
+	s := &server{cfg: config{CloudflareAccessEnabled: true, CloudflareAdminEmail: "admin@example.test", CloudflareTrustedProxyIPs: []string{"192.0.2.10"}}}
+	adminReq := httptest.NewRequest("GET", "/", nil)
+	adminReq.RemoteAddr = "192.0.2.10:443"
+	adminReq.Header.Set("Cf-Access-Authenticated-User-Email", "admin@example.test")
+	if !s.adminOK(adminReq) || s.getUserRole(adminReq) != "admin" {
+		t.Fatalf("admin identity was not mapped: role=%q", s.getUserRole(adminReq))
+	}
+	viewerReq := httptest.NewRequest("GET", "/", nil)
+	viewerReq.RemoteAddr = "192.0.2.10:443"
+	viewerReq.Header.Set("Cf-Access-Authenticated-User-Email", "guest@example.test")
+	if !s.adminOK(viewerReq) || s.getUserRole(viewerReq) != "viewer" {
+		t.Fatalf("viewer identity was not mapped: role=%q", s.getUserRole(viewerReq))
+	}
+	spoofed := httptest.NewRequest("GET", "/", nil)
+	spoofed.RemoteAddr = "198.51.100.8:443"
+	spoofed.Header.Set("Cf-Access-Authenticated-User-Email", "admin@example.test")
+	if s.adminOK(spoofed) {
+		t.Fatal("untrusted Cloudflare identity was accepted")
 	}
 }

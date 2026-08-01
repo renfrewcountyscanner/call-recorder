@@ -3,7 +3,7 @@
 v0.4.2 provides a complete Linux-native call recorder with ingestion, playback, aliases, favourites, protected calls, retention, notifications, transcription, and storage diagnostics. The following are planned maintenance work, not release blockers:
 
 - Administration session cookies are derived from the administration token and expire only in the browser; rotate the administration token to revoke active sessions.
-- The administration login has no rate limiting. Keep the service behind a private LAN, reverse proxy, or other authenticated access layer.
+- Local administration login uses an in-memory per-process throttle; keep the service behind a private LAN, reverse proxy, or other authenticated access layer and use Cloudflare Access for internet-facing deployments.
 - Alias CSV import is not transactional; a mid-file failure can leave a partial import that is safe to re-run.
 - A retention run interrupted by a process kill can leave staged audio under `.retention-trash` inside the audio root. Call rows remain in PostgreSQL; staged files can be moved back manually.
 - Expand authentication and validation integration coverage.

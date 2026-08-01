@@ -3,6 +3,7 @@
   <h1>Administration sign-in</h1>
   {{if .Error}}<div class="alert danger" role="alert">{{.Error}}</div>{{end}}
   <form method="post" action="/admin/login">
+    {{if .ReturnURL}}<input type="hidden" name="return" value="{{.ReturnURL}}">{{end}}
     <div class="form-grid">
       <label>Username <input name="username" type="text" autocomplete="username" required autofocus></label>
       <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
@@ -11,6 +12,7 @@
       <button class="btn primary" type="submit">Sign in</button>
     </div>
   </form>
+  {{if .LoginURL}}<p class="form-actions"><a class="btn primary" href="{{.LoginURL}}">Sign in with Google</a></p>{{end}}
   <p class="help">Sign-in creates a one-hour session. Contact your administrator for account access.</p>
 </div>
 {{template "bottom" .}}{{end}}

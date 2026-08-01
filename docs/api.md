@@ -8,7 +8,7 @@
 
 ## Administration surface
 
-`/admin/login`, `/admin/talkgroups`, `/admin/radios`, and `/admin/retention` exist only when `CALL_RECORDER_ADMIN_ENABLED=true` and `CALL_RECORDER_ADMIN_TOKEN` is configured. They require the `X-Call-Recorder-Admin` header or the session cookie issued by the login form. See [administration.md](administration.md).
+When `CALL_RECORDER_AUTH_REQUIRED=true`, browser pages, media, exports, SSE and status require an authenticated viewer or administrator session. `/login` and `/admin/login` provide the local login flow; Cloudflare Access may provide the external login flow. Administration routes require an administrator role. Machine ingestion APIs remain sender-key authenticated and do not use browser sessions. See [administration.md](administration.md).
 
 ## Start with Docker Compose
 

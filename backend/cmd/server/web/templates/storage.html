@@ -1,0 +1,14 @@
+{{define "storage.html"}}
+{{template "head" .}}{{template "top" .}}
+<div class="page-head"><div><p class="eyebrow">Administration</p><h1>Storage</h1></div><a class="btn ghost" href="/status">Receiver status</a></div>
+<section class="card storage-card">
+  <h2>Audio filesystem capacity</h2>
+  <p class="muted">Current capacity for the filesystem that stores call audio. This is a live reading; it is not historical usage.</p>
+  <div class="storage-gauge" role="img" aria-label="{{printf "%.1f" .Storage.FreePct}} percent free; {{bytes .Storage.FreeBytes}} free of {{bytes .Storage.TotalBytes}} total">
+    <div class="storage-used" style="width: {{printf "%.2f" .Storage.UsedPct}}%"></div>
+  </div>
+  <div class="storage-legend"><span><strong>{{bytes .Storage.FreeBytes}}</strong> free ({{printf "%.1f" .Storage.FreePct}}%)</span><span><strong>{{bytes .Storage.UsedBytes}}</strong> used ({{printf "%.1f" .Storage.UsedPct}}%)</span><span><strong>{{bytes .Storage.TotalBytes}}</strong> total</span></div>
+  {{if lt .Storage.FreePct 10.0}}<div class="alert danger" role="alert">Less than 10% of the audio filesystem is free.</div>{{else if lt .Storage.FreePct 20.0}}<div class="alert warning" role="status">Less than 20% of the audio filesystem is free.</div>{{end}}
+</section>
+{{template "bottom" .}}
+{{end}}

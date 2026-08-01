@@ -260,12 +260,12 @@ All migrations are idempotent (`IF NOT EXISTS`). No column drops. No single-tran
 
 ## 21. Authentication and Authorization
 
-**Status:** PARTIAL
+**Status:** COMPLETE on `auth-storage-dashboard` (pending release deployment)
 
-- Local token + Cloudflare Access modes
-- Admin-only routes, login, cookie with HttpOnly/SameSite/Secure
-- **Added:** `/admin/logout` endpoint
-- **Missing:** Rate limiting, generic X-Forwarded-For support
+- Site-wide browser authentication with local admin/viewer sessions
+- Trusted Cloudflare Access identity mapping with an exact administrator email
+- Admin-only writes, HttpOnly/SameSite session cookies, logout and login throttling
+- Machine ingestion APIs remain sender-key authenticated
 
 ---
 
@@ -275,7 +275,7 @@ All migrations are idempotent (`IF NOT EXISTS`). No column drops. No single-tran
 
 - Parameterized SQL, template escaping, path traversal guards
 - SSRF protection, CSP, upload/body limits, server timeouts
-- **Missing:** SRI hashes, rate limiting
+- SRI remains unnecessary for self-embedded assets; login throttling is implemented
 
 ---
 
@@ -307,7 +307,7 @@ All migrations are idempotent (`IF NOT EXISTS`). No column drops. No single-tran
 
 - `/status`, `/healthz`, admin pages for workers/queues
 - **Added:** Commit and build timestamp in `/healthz`
-- **Missing:** Audio count, missing/orphan audio report, storage usage
+- Administrator storage-capacity gauge backed by filesystem statistics; CLI missing/orphan diagnostics remain available
 
 ---
 

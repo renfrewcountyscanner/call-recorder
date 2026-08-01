@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Added an optional site-wide browser authentication gate with local admin/viewer sessions and trusted Cloudflare Access identity mapping.
+- Added login throttling, explicit viewer/admin separation, and a visible sign-in flow.
+- Added an administrator-only current free-space gauge for the configured audio filesystem.
+- Stopped the installer from printing sender and administrator secrets.
+
 ## v0.4.2 (2026-07-31)
 
 - Injected git commit and build timestamp into `/healthz` response and Docker images.

@@ -167,6 +167,10 @@ CALL_RECORDER_BOOTSTRAP_SENDER_KEY=${SENDER_KEY}
 CALL_RECORDER_ADMIN_ENABLED=${ADMIN_ENABLED}
 CALL_RECORDER_ADMIN_OPEN=false
 CALL_RECORDER_ADMIN_TOKEN=${ADMIN_TOKEN}
+CALL_RECORDER_AUTH_REQUIRED=true
+CALL_RECORDER_LOCAL_AUTH_ENABLED=true
+CALL_RECORDER_SESSION_COOKIE_SECURE=true
+CALL_RECORDER_AUTH_LOGIN_URL=
 
 CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED=false
 CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL=
@@ -286,9 +290,9 @@ echo "  Secrets path:           $SECRETS_PATH"
 echo "  External port:          $EXTERNAL_PORT"
 echo "  Admin enabled:          $ADMIN_ENABLED"
 if [ "$ADMIN_ENABLED" = "true" ]; then
-  echo "  Admin token:            ${ADMIN_TOKEN}"
+  echo "  Admin credentials:      stored in the private .env file"
 fi
-echo "  Bootstrap sender key:   ${SENDER_KEY}"
+echo "  Bootstrap sender key:   stored in the private .env file"
 echo "  PostgreSQL mode:        $([ "$DEPLOY_POSTGRES" = "true" ] && echo 'local container' || echo 'external server')"
 if [ "$DEPLOY_POSTGRES" = "true" ]; then
   echo "  PostgreSQL data path:   $POSTGRES_PATH"

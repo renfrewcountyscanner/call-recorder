@@ -44,6 +44,8 @@ See [docs/linux-installation.md](docs/linux-installation.md) for detailed instal
 - Notifications (SMTP, webhook, Discord, Telegram)
 - End-to-end transcription with encrypted API key
 - Inline transcripts in the call list
+- Site-wide browser authentication with local admin/viewer accounts and Cloudflare Access identity mapping
+- Administrator storage-capacity gauge for the audio filesystem
 - Backup and restore with checksums
 - Storage diagnostics CLI (missing/orphan audio reports)
 - Build commit and timestamp reporting in health endpoint
