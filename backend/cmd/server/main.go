@@ -254,6 +254,7 @@ func main() {
 		mux.HandleFunc("POST /admin/senders/create", s.adminCreateSender)
 		mux.HandleFunc("POST /admin/senders/replace", s.adminReplaceSender)
 		mux.HandleFunc("POST /admin/senders/disable", s.adminDisableSender)
+		mux.HandleFunc("POST /admin/senders/delete", s.adminDeleteSender)
 		mux.HandleFunc("GET /admin/call/{id}/notes", s.adminCallNotesForm)
 		mux.HandleFunc("POST /admin/call/{id}/notes", s.adminUpdateCallNotesInline)
 		mux.HandleFunc("POST /admin/call/", s.adminUpdateCallNotes)
@@ -1914,6 +1915,32 @@ func (s *server) adminDisableSender(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/admin/senders", http.StatusSeeOther)
+}
+
+func (s *server) adminDeleteSender(w http.ResponseWriter, r *http.Request) {
+	if !s.adminOnly(w, r) {
+		return
+	}
+	v, err := adminForm(r)
+	if err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(v.Get("sender_id"))
+	if id == "" {
+		http.Error(w, "sender ID is required", http.StatusBadRequest)
+		return
+	}
+	tag, err := s.db.Exec(r.Context(), `DELETE FROM remote_senders WHERE sender_id=$1`, id)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		http.Error(w, "sender not found", http.StatusNotFound)
+		return
+	}
+	http.Redirect(w, r, "/admin/senders?deleted=1", http.StatusSeeOther)
 }
 func adminForm(r *http.Request) (url.Values, error) {
 	if err := r.ParseForm(); err != nil {
