@@ -292,6 +292,7 @@ func main() {
 		mux.HandleFunc("POST /admin/users", s.adminCreateUser)
 		mux.HandleFunc("POST /admin/users/action", s.adminUserAction)
 		mux.HandleFunc("POST /admin/users/password", s.adminChangePassword)
+		mux.HandleFunc("POST /admin/users/delete", s.adminDeleteUser)
 		mux.HandleFunc("GET /admin/storage", s.adminStorage)
 	}
 	mux.HandleFunc("GET /media/", s.requireViewer(s.media))
@@ -1770,6 +1771,47 @@ func (s *server) adminChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/admin/users?updated=1", http.StatusSeeOther)
+}
+
+func (s *server) adminDeleteUser(w http.ResponseWriter, r *http.Request) {
+	if !s.adminOnly(w, r) {
+		return
+	}
+	username := strings.TrimSpace(r.FormValue("username"))
+	if username == "" {
+		http.Error(w, "username is required", http.StatusBadRequest)
+		return
+	}
+	if strings.EqualFold(username, r.Header.Get("X-Call-Recorder-User")) {
+		http.Error(w, "you cannot delete the account currently in use", http.StatusBadRequest)
+		return
+	}
+	var role string
+	var enabled bool
+	if err := s.db.QueryRow(r.Context(), `SELECT role,enabled FROM users WHERE username=$1`, username).Scan(&role, &enabled); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "user not found", http.StatusNotFound)
+			return
+		}
+		s.internal(w, err)
+		return
+	}
+	if role == "admin" && enabled {
+		var admins int
+		if err := s.db.QueryRow(r.Context(), `SELECT count(*) FROM users WHERE role='admin' AND enabled=true`).Scan(&admins); err != nil {
+			s.internal(w, err)
+			return
+		}
+		if admins <= 1 {
+			http.Error(w, "cannot delete the last enabled administrator", http.StatusBadRequest)
+			return
+		}
+	}
+	if _, err := s.db.Exec(r.Context(), `DELETE FROM users WHERE username=$1`, username); err != nil {
+		s.internal(w, err)
+		return
+	}
+	http.Redirect(w, r, "/admin/users?deleted=1", http.StatusSeeOther)
 }
 
 func (s *server) adminSenders(w http.ResponseWriter, r *http.Request) {
