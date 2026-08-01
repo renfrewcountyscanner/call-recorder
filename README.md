@@ -44,7 +44,7 @@ See [docs/linux-installation.md](docs/linux-installation.md) for detailed instal
 - Notifications (SMTP, webhook, Discord, Telegram)
 - End-to-end transcription with encrypted API key
 - Inline transcripts in the call list
-- Site-wide browser authentication with local admin/viewer accounts and Cloudflare Access identity mapping
+- Site-wide browser authentication with local admin/editor/viewer accounts and 30-day remembered sessions
 - Administrator storage-capacity gauge for the audio filesystem
 - Backup and restore with checksums
 - Storage diagnostics CLI (missing/orphan audio reports)

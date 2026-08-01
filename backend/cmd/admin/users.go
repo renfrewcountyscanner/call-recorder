@@ -37,13 +37,13 @@ func userCreate(pool *pgxpool.Pool, args []string) {
 	f := flag.NewFlagSet("users create", flag.ExitOnError)
 	username := f.String("username", "", "username")
 	password := f.String("password", "", "password")
-	role := f.String("role", "viewer", "role (admin or viewer)")
+	role := f.String("role", "viewer", "role (admin, editor, or viewer)")
 	f.Parse(args)
 	if *username == "" || *password == "" {
 		fatal(errors.New("--username and --password are required"))
 	}
-	if *role != "admin" && *role != "viewer" {
-		fatal(errors.New("--role must be admin or viewer"))
+	if *role != "admin" && *role != "editor" && *role != "viewer" {
+		fatal(errors.New("--role must be admin, editor, or viewer"))
 	}
 	hash, err := hashAPIKey(*password)
 	if err != nil {

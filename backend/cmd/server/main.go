@@ -1009,7 +1009,7 @@ func (s *server) callDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) adminUpdateCallNotes(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/admin/call/")
@@ -1038,7 +1038,7 @@ func (s *server) adminUpdateCallNotes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) adminCallNotesForm(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	id := r.PathValue("id")
@@ -1053,7 +1053,7 @@ func (s *server) adminCallNotesForm(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) adminUpdateCallNotesInline(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	id := r.PathValue("id")
@@ -1474,6 +1474,18 @@ func (s *server) loginPage(w http.ResponseWriter, r *http.Request) {
 func (s *server) adminAuthorized(w http.ResponseWriter, r *http.Request) bool {
 	return s.adminOnly(w, r)
 }
+
+func (s *server) editorAuthorized(w http.ResponseWriter, r *http.Request) bool {
+	if !s.adminOK(r) {
+		s.renderStatus(w, r, http.StatusUnauthorized, "admin_required.html", "Administration sign-in required", "", nil)
+		return false
+	}
+	if !s.isEditor(r) {
+		s.renderStatus(w, r, http.StatusForbidden, "admin_required.html", "Access denied", "", map[string]any{"Error": "You do not have permission to perform this action."})
+		return false
+	}
+	return true
+}
 func (s *server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.CloudflareAccessEnabled && s.trustedCloudflareProxy(r) && !s.cfg.LocalAuthEnabled {
 		if s.cfg.AuthLoginURL != "" {
@@ -1606,9 +1618,14 @@ func (s *server) isAdmin(r *http.Request) bool {
 	return s.getUserRole(r) == "admin"
 }
 
+func (s *server) isEditor(r *http.Request) bool {
+	role := s.getUserRole(r)
+	return role == "admin" || role == "editor"
+}
+
 func (s *server) isViewer(r *http.Request) bool {
 	role := s.getUserRole(r)
-	return role == "admin" || role == "viewer"
+	return role == "admin" || role == "editor" || role == "viewer"
 }
 
 func (s *server) viewerOK(w http.ResponseWriter, r *http.Request) bool {
@@ -1672,7 +1689,7 @@ func (s *server) adminCreateUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "username and password are required", http.StatusBadRequest)
 		return
 	}
-	if role != "admin" && role != "viewer" {
+	if role != "admin" && role != "editor" && role != "viewer" {
 		role = "viewer"
 	}
 	hash, err := hashAPIKey(password)
@@ -1757,7 +1774,7 @@ func (s *server) adminSenders(w http.ResponseWriter, r *http.Request) {
 	s.adminSendersPage(w, r, "", "")
 }
 func (s *server) adminSendersPage(w http.ResponseWriter, r *http.Request, oneTimeSender, oneTimeKey string) {
-	if !s.adminAuthorized(w, r) {
+	if !s.adminOnly(w, r) {
 		return
 	}
 	rows, err := s.db.Query(r.Context(), `SELECT sender_id,enabled,created_at FROM remote_senders ORDER BY sender_id`)
@@ -1783,7 +1800,7 @@ func (s *server) adminSendersPage(w http.ResponseWriter, r *http.Request, oneTim
 	s.page(w, r, "admin_senders.html", "Sender credentials", "senders", map[string]any{"Senders": items, "OneTimeKey": oneTimeKey, "OneTimeSender": oneTimeSender})
 }
 func (s *server) adminSenderWrite(w http.ResponseWriter, r *http.Request, replace bool) (string, string, error) {
-	if !s.adminAuthorized(w, r) {
+	if !s.adminOnly(w, r) {
 		return "", "", errors.New("unauthorized")
 	}
 	v, err := adminForm(r)
@@ -1835,7 +1852,7 @@ func (s *server) adminReplaceSender(w http.ResponseWriter, r *http.Request) {
 	s.adminSendersPage(w, r, id, key)
 }
 func (s *server) adminDisableSender(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.adminOnly(w, r) {
 		return
 	}
 	v, err := adminForm(r)
@@ -1880,7 +1897,7 @@ func aliasInput(v url.Values) (system, id, alias, description, category, source 
 	return
 }
 func (s *server) adminSaveTalkgroup(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	v, err := adminForm(r)
@@ -1901,7 +1918,7 @@ func (s *server) adminSaveTalkgroup(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin/talkgroups?q="+url.QueryEscape(v.Get("q")), http.StatusSeeOther)
 }
 func (s *server) adminSaveRadio(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	v, err := adminForm(r)
@@ -1922,7 +1939,7 @@ func (s *server) adminSaveRadio(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin/radios?q="+url.QueryEscape(v.Get("q")), http.StatusSeeOther)
 }
 func (s *server) adminTalkgroups(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	q := r.URL.Query().Get("q")
@@ -1951,7 +1968,7 @@ func (s *server) adminTalkgroups(w http.ResponseWriter, r *http.Request) {
 	s.page(w, r, "admin_aliases.html", "Talkgroup aliases", "talkgroups", map[string]any{"Title": "Talkgroup aliases", "Kind": "talkgroups", "Aliases": list, "Q": q})
 }
 func (s *server) adminRadios(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	q := r.URL.Query().Get("q")
@@ -1981,7 +1998,7 @@ func (s *server) adminRadios(w http.ResponseWriter, r *http.Request) {
 	s.page(w, r, "admin_aliases.html", "Radio aliases", "radios", map[string]any{"Title": "Radio aliases", "Kind": "radios", "Aliases": list, "Q": q})
 }
 func (s *server) adminRetention(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	rows, err := s.db.Query(r.Context(), `SELECT id,name,enabled,dry_run,retention_days,coalesce(sender_filter,''),coalesce(system_filter,''),coalesce(talkgroup_filter,''),coalesce(call_type_filter,''),priority,coalesce(min_duration_ms::text,''),coalesce(max_duration_ms::text,'') FROM retention_policies ORDER BY priority DESC,id`)
@@ -2047,7 +2064,7 @@ func scanRetentionRuns(rows pgx.Rows) []retentionRun {
 }
 
 func (s *server) adminRetentionHistory(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	rows, err := s.db.Query(r.Context(), `SELECT r.id,coalesce(r.policy_id,0),coalesce(p.name,'(deleted policy)'),r.dry_run,r.calls_matched,r.calls_deleted,r.audio_files_deleted,r.failures,r.started_at,r.ended_at FROM retention_runs r LEFT JOIN retention_policies p ON p.id=r.policy_id ORDER BY r.id DESC LIMIT 200`)
@@ -2058,7 +2075,7 @@ func (s *server) adminRetentionHistory(w http.ResponseWriter, r *http.Request) {
 	s.page(w, r, "admin_history.html", "Retention history", "history", map[string]any{"Runs": scanRetentionRuns(rows)})
 }
 func (s *server) adminSaveRetention(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	v, err := adminForm(r)
@@ -2115,7 +2132,7 @@ func (s *server) adminSaveRetention(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin/retention", 303)
 }
 func (s *server) adminDeleteRetention(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.adminOnly(w, r) {
 		return
 	}
 	v, e := adminForm(r)
@@ -2135,7 +2152,7 @@ func (s *server) adminDeleteRetention(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin/retention", 303)
 }
 func (s *server) adminRunRetention(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.adminOnly(w, r) {
 		return
 	}
 	v, e := adminForm(r)

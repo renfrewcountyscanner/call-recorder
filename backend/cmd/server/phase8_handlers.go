@@ -53,7 +53,7 @@ func (s *server) enqueueNotifications(ctx context.Context, callID string) {
 }
 
 func (s *server) adminProtectCall(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/admin/protect/")
@@ -85,7 +85,7 @@ func (s *server) adminProtectCall(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) adminFavourites(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	rows, err := s.db.Query(r.Context(), `SELECT g.id,g.name,coalesce(g.description,''),g.enabled,g.display_order,
@@ -146,7 +146,7 @@ func (s *server) adminFavourites(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) adminDeleteFavourite(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
@@ -171,7 +171,7 @@ func (s *server) adminDeleteFavourite(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) adminDeleteFavouriteMember(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	gid, _ := strconv.ParseInt(r.FormValue("group_id"), 10, 64)
@@ -187,7 +187,7 @@ func (s *server) adminDeleteFavouriteMember(w http.ResponseWriter, r *http.Reque
 	http.Redirect(w, r, "/admin/favourites?group="+strconv.FormatInt(gid, 10), http.StatusSeeOther)
 }
 func (s *server) adminSaveFavourite(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -208,7 +208,7 @@ func (s *server) adminSaveFavourite(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin/favourites", 303)
 }
 func (s *server) adminSaveFavouriteMember(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -231,7 +231,7 @@ func (s *server) adminSaveFavouriteMember(w http.ResponseWriter, r *http.Request
 }
 
 func (s *server) adminNotifications(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	rows, err := s.db.Query(r.Context(), `SELECT id,name,destination_type,enabled,coalesce(secret_ref,'') FROM notification_destinations ORDER BY id`)
@@ -306,7 +306,7 @@ func (s *server) adminNotifications(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) adminDestinationAction(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.adminOnly(w, r) {
 		return
 	}
 	id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
@@ -352,7 +352,7 @@ func (s *server) adminDestinationAction(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *server) adminRuleAction(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
@@ -379,7 +379,7 @@ func (s *server) adminRuleAction(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) adminRetryDelivery(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
@@ -402,7 +402,7 @@ func safeAdminReturn(value, fallback string) string {
 }
 
 func (s *server) adminNotificationHistory(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	q := r.URL.Query()
@@ -451,7 +451,7 @@ func (s *server) adminNotificationHistory(w http.ResponseWriter, r *http.Request
 	s.page(w, r, "admin_notification_history.html", "Notification history", "notifications", map[string]any{"Deliveries": items, "Total": total, "Page": page, "Pages": pages, "Status": status, "Date": date, "Failed": failedOnly, "ReturnURL": r.URL.RequestURI()})
 }
 func (s *server) adminSaveDestination(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.adminOnly(w, r) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -481,7 +481,7 @@ func (s *server) adminSaveDestination(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) adminSaveNotificationRule(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -547,7 +547,7 @@ func (s *server) loadTranscriptionStatus(ctx context.Context) (transcriptionStat
 }
 
 func (s *server) adminTranscription(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	ctx := r.Context()
@@ -648,7 +648,7 @@ func (s *server) adminTranscription(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) adminRetryTranscription(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
@@ -668,7 +668,7 @@ func (s *server) adminRetryTranscription(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *server) adminSaveTranscriptionSecret(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.adminOnly(w, r) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -698,7 +698,7 @@ func (s *server) adminSaveTranscriptionSecret(w http.ResponseWriter, r *http.Req
 }
 
 func (s *server) adminRemoveTranscriptionSecret(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.adminOnly(w, r) {
 		return
 	}
 	_, err := s.db.Exec(r.Context(), `DELETE FROM application_secrets WHERE purpose='transcription_api_key'`)
@@ -710,7 +710,7 @@ func (s *server) adminRemoveTranscriptionSecret(w http.ResponseWriter, r *http.R
 }
 
 func (s *server) adminSaveTranscriptionConfig(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.adminOnly(w, r) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -775,7 +775,7 @@ func (s *server) adminSaveTranscriptionConfig(w http.ResponseWriter, r *http.Req
 }
 
 func (s *server) adminEditTranscript(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
@@ -863,7 +863,7 @@ func (s *server) transcriptionEligibility(ctx context.Context, callID string) (t
 }
 
 func (s *server) adminQueueTranscription(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/admin/transcription/queue/")
@@ -906,7 +906,7 @@ func (s *server) loadTranscriptionAPIKey(ctx context.Context) (string, error) {
 }
 
 func (s *server) adminTestTranscription(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -1076,7 +1076,7 @@ func (s *server) applyTranscriptionToggle(ctx context.Context, systems, talkgrou
 // adminUpdateTalkgroupTranscription handles bulk enable/disable from the unified
 // talkgroup form on the transcription administration page.
 func (s *server) adminUpdateTalkgroupTranscription(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -1112,7 +1112,7 @@ func (s *server) adminUpdateTalkgroupTranscription(w http.ResponseWriter, r *htt
 // adminToggleSingleTalkgroupTranscription handles per-row enable/disable
 // actions from the inline button on each talkgroup row.
 func (s *server) adminToggleSingleTalkgroupTranscription(w http.ResponseWriter, r *http.Request) {
-	if !s.adminAuthorized(w, r) {
+	if !s.editorAuthorized(w, r) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {

@@ -11,7 +11,9 @@ rm -rf "$root/.test-runtime"
 mkdir -p "$root/.test-runtime/postgres" "$root/.test-runtime/audio" "$root/.test-runtime/secrets"
 CALL_RECORDER_AUTH_REQUIRED=true CALL_RECORDER_SESSION_COOKIE_SECURE=false CALL_RECORDER_ADMIN_ENABLED=true $compose up -d --build
 for n in $(seq 1 60); do curl -fsS --max-time 2 http://127.0.0.1:18080/healthz >/dev/null 2>&1 && break || true; sleep 1; done
+$compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/009_editor_role.sql >/dev/null
 $compose exec -T backend /usr/local/bin/call-recorder-admin users create --username admin --password testpassword --role admin
+$compose exec -T backend /usr/local/bin/call-recorder-admin users create --username editor --password editpassword --role editor
 $compose exec -T backend /usr/local/bin/call-recorder-admin users create --username viewer --password viewpassword --role viewer
 status=$(curl -s -o "$work/root" -w '%{http_code}' http://127.0.0.1:18080/)
 test "$status" = 302
@@ -20,8 +22,15 @@ curl -fsS http://127.0.0.1:18080/login | grep -q 'Sign in'
 curl -fsS -c "$work/admin-cookie" -d 'username=admin&password=testpassword&return=/' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/login | grep -q 303
 curl -fsS -b "$work/admin-cookie" http://127.0.0.1:18080/ | grep -q 'Calls'
 curl -fsS -b "$work/admin-cookie" http://127.0.0.1:18080/admin/storage | grep -q 'Audio filesystem capacity'
+curl -fsS -c "$work/editor-cookie" -d 'username=editor&password=editpassword&return=/' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/login | grep -q 303
+curl -fsS -b "$work/editor-cookie" http://127.0.0.1:18080/admin/talkgroups | grep -q 'Talkgroup aliases'
+curl -fsS -b "$work/editor-cookie" http://127.0.0.1:18080/admin/transcription | grep -q 'Transcription'
+test "$(curl -s -o /dev/null -w '%{http_code}' -b "$work/editor-cookie" http://127.0.0.1:18080/admin/storage)" = 403
+test "$(curl -s -o /dev/null -w '%{http_code}' -b "$work/editor-cookie" http://127.0.0.1:18080/admin/users)" = 403
+test "$(curl -s -o /dev/null -w '%{http_code}' -b "$work/editor-cookie" http://127.0.0.1:18080/admin/senders)" = 403
 curl -fsS -c "$work/viewer-cookie" -d 'username=viewer&password=viewpassword&return=/' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/login | grep -q 303
 curl -fsS -b "$work/viewer-cookie" http://127.0.0.1:18080/ | grep -q 'Calls'
+test "$(curl -s -o /dev/null -w '%{http_code}' -b "$work/viewer-cookie" http://127.0.0.1:18080/admin/talkgroups)" = 403
 test "$(curl -s -o /dev/null -w '%{http_code}' -b "$work/viewer-cookie" http://127.0.0.1:18080/admin/storage)" = 403
 # Health and sender ingestion remain machine endpoints, not browser-session gated.
 curl -fsS http://127.0.0.1:18080/healthz | grep -q '"status"'

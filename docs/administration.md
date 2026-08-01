@@ -1,12 +1,12 @@
 # Administration
 
-Browser pages can be protected site-wide with `CALL_RECORDER_AUTH_REQUIRED=true` (the production default). Set `CALL_RECORDER_ADMIN_ENABLED=true` and a strong `CALL_RECORDER_SESSION_SECRET`; keep the service behind Cloudflare Access or a private reverse proxy.
+Browser pages can be protected site-wide with `CALL_RECORDER_AUTH_REQUIRED=true` (the production default). Set `CALL_RECORDER_ADMIN_ENABLED=true`, `CALL_RECORDER_LOCAL_AUTH_ENABLED=true`, and a strong `CALL_RECORDER_SESSION_SECRET`; keep the service behind HTTPS and a private network or reverse proxy.
 
 Protected routes are `/admin/talkgroups`, `/admin/radios`, `/admin/retention`, and `/admin/retention/history`. Alias CSV import/export and destructive retention execution remain Linux `call-recorder-admin` CLI operations.
 
 ## Web administration
 
-When `CALL_RECORDER_AUTH_REQUIRED=true`, unauthenticated browser requests are redirected to `/login`; calls and audio are not rendered before sign-in. Local username/password login creates a one-hour HttpOnly, SameSite session. The legacy `X-Call-Recorder-Admin` header is for private maintenance compatibility only.
+When `CALL_RECORDER_AUTH_REQUIRED=true`, unauthenticated browser requests are redirected to `/login`; calls and audio are not rendered before sign-in. Local username/password login creates an HttpOnly, SameSite session; “Remember me” persists it for 30 days. The legacy `X-Call-Recorder-Admin` header is for private maintenance compatibility only.
 
 Talkgroup and radio pages provide search (preserved across edits), call counts, last-seen times, source badges (manual, imported, received, numeric fallback), and in-page edit forms. Retention pages create disabled, dry-run policies by default, show obvious enabled and dry-run/live-delete badges, and permit only dry-run previews; policy deletion asks for explicit confirmation. `/admin/retention/history` lists every recorded execution. Destructive retention remains a Linux CLI action.
 
@@ -28,10 +28,12 @@ The last command that omits `--dry-run` can delete calls only when an enabled po
 
 For production, put the service behind a Cloudflare Access application configured for Google authentication and require login for the site. Set `CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED=true`, `CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL=renfrewcountyscanner@gmail.com`, `CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS` to the tunnel/reverse-proxy source addresses, and `CALL_RECORDER_AUTH_LOGIN_URL` to the Access login URL. Cloudflare supplies the authenticated identity in `Cf-Access-Authenticated-User-Email`; only that exact configured email receives administrative rights. Other authenticated users become read-only viewers. Identity headers from any other source are rejected.
 
-The local fallback is controlled by `CALL_RECORDER_LOCAL_AUTH_ENABLED`. Use `CALL_RECORDER_SESSION_COOKIE_SECURE=true` behind HTTPS; set it to false only for private HTTP development. Login attempts are rate-limited and all administrative writes require an administrator role.
+The local fallback is controlled by `CALL_RECORDER_LOCAL_AUTH_ENABLED`. Use `CALL_RECORDER_SESSION_COOKIE_SECURE=true` behind HTTPS; set it to false only for private HTTP development. Sessions can be remembered for 30 days with `CALL_RECORDER_SESSION_MAX_AGE_SECONDS=2592000`. Login attempts are rate-limited.
 
-When Cloudflare mode is enabled, trusted proxy requests use the Cloudflare identity; local login remains available only when `CALL_RECORDER_LOCAL_AUTH_ENABLED=true` for private-LAN fallback. Do not expose the origin directly; otherwise clients could forge the identity header. Restrict origin access to Cloudflare or an equivalent trusted reverse proxy.
-Phase 8 adds favourite groups, protected-call actions, notification destination metadata, and transcription queue status. All writes remain behind the existing admin token/Cloudflare Access checks. Secret values are never entered into or displayed by the application; use deployment environment or Docker secret references.
+Local users have three roles: viewers can browse only; editors can manage aliases, favourites, notes, protected calls, notification operations, transcription operations, and retention dry-runs; administrators additionally manage users, sender credentials, storage, encrypted secrets, and destructive retention.
+
+Cloudflare identity mode is disabled for the current deployment. Keep `CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED=false` and use local login. Do not expose the origin directly without HTTPS and network controls.
+Phase 8 adds favourite groups, protected-call actions, notification destination metadata, and transcription queue status. Operational writes require an editor or administrator; users, senders, storage, secrets, and destructive retention require an administrator. Secret values are never entered into or displayed by the application; use deployment environment or Docker secret references.
 
 ## Storage capacity
 

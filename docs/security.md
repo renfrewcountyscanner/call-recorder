@@ -2,7 +2,7 @@
 
 The backend runs as an unprivileged container user. A one-shot Compose service prepares `/app/call-recorder/runtime/audio` with mode 0750 and backend ownership; PostgreSQL uses `/app/call-recorder/runtime/postgres` with mode 0700. API keys are randomly generated and saved only as Argon2id hashes; upload tokens are stored only as SHA-256 hashes. Sender filenames never select permanent storage paths, temporary uploads remain inside the configured storage root, and audio request bodies are size-limited. Do not commit `.env`, runtime data, recordings, logs, API keys, or tokens.
 
-Run production with `CALL_RECORDER_AUTH_REQUIRED=true` behind Cloudflare Access or a private reverse proxy. Health/readiness and machine sender APIs remain separate: sender APIs require sender credentials, while browser routes require a local session or a trusted Cloudflare identity. Never enable `CALL_RECORDER_ADMIN_OPEN` in production. Administrative writes require an admin role and same-origin request checks.
+Run production with `CALL_RECORDER_AUTH_REQUIRED=true` and local authentication enabled. Health/readiness and machine sender APIs remain separate: sender APIs require sender credentials, while browser routes require a local session. Never enable `CALL_RECORDER_ADMIN_OPEN` in production. Operational writes require an editor or administrator role; security-sensitive writes remain administrator-only.
 
 ## Web interface
 
