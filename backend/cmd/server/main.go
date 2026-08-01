@@ -683,8 +683,8 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if err == nil && call.TalkgroupName != "" {
-		_, err = tx.Exec(r.Context(), `INSERT INTO talkgroup_aliases (system_id,talkgroup_id,alias,source) VALUES ($1,$2,$3,'received') ON CONFLICT (system_id,talkgroup_id) DO UPDATE SET alias=EXCLUDED.alias,updated_at=now() WHERE talkgroup_aliases.source='received'`, call.SystemID, call.TalkgroupID, call.TalkgroupName)
+	if err == nil {
+		_, err = tx.Exec(r.Context(), `INSERT INTO talkgroup_aliases (system_id,talkgroup_id,alias,source) VALUES ($1,$2,NULLIF($3,''),'received') ON CONFLICT (system_id,talkgroup_id) DO UPDATE SET alias=EXCLUDED.alias,updated_at=now() WHERE talkgroup_aliases.source='received' AND EXCLUDED.alias IS NOT NULL`, call.SystemID, call.TalkgroupID, call.TalkgroupName)
 	}
 	if err == nil && call.RadioID != "" && call.RadioName != "" {
 		_, err = tx.Exec(r.Context(), `INSERT INTO radio_aliases (system_id,radio_id,alias,source) VALUES ($1,$2,$3,'received') ON CONFLICT (system_id,radio_id) DO UPDATE SET alias=EXCLUDED.alias,updated_at=now() WHERE radio_aliases.source='received'`, call.SystemID, call.RadioID, call.RadioName)

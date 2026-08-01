@@ -38,6 +38,7 @@ curl -fsS -H 'X-Call-Recorder-Sender: integration-sender' -H 'X-Call-Recorder-Ke
 count=$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc 'SELECT count(*) FROM calls')
 test "$count" = 1
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT alias FROM talkgroup_aliases WHERE system_id='system-a' AND talkgroup_id='100'")" = Dispatch
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT transcription_enabled FROM talkgroup_aliases WHERE system_id='system-a' AND talkgroup_id='100'")" = t
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT alias FROM radio_aliases WHERE system_id='system-a' AND radio_id='200'")" = 'Unit 200'
 id=$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc 'SELECT id FROM calls LIMIT 1')
 test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Range: bytes=0-3' "http://127.0.0.1:18080/media/$id")" = 206
