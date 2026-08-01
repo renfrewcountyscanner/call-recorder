@@ -1,4 +1,6 @@
-{{define "admin_login.html"}}{{template "head" .}}{{template "top" .}}
+{{define "admin_login.html"}}{{template "head" .}}
+<body>
+<main id="main" class="wrap login-shell">
 <div class="login-card">
   <h1>Administration sign-in</h1>
   {{if .Error}}<div class="alert danger" role="alert">{{.Error}}</div>{{end}}
@@ -8,11 +10,13 @@
       <label>Username <input name="username" type="text" autocomplete="username" required autofocus></label>
       <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
     </div>
+    <label class="checkbox"><input name="remember" type="checkbox" value="1" checked> Remember me for 30 days</label>
     <div class="form-actions">
       <button class="btn primary" type="submit">Sign in</button>
     </div>
   </form>
   {{if .LoginURL}}<p class="form-actions"><a class="btn primary" href="{{.LoginURL}}">Sign in with Google</a></p>{{end}}
-  <p class="help">Sign-in creates a one-hour session. Contact your administrator for account access.</p>
+  <p class="help">Your local session remains valid for 30 days when “Remember me” is selected. Contact your administrator for account access.</p>
 </div>
-{{template "bottom" .}}{{end}}
+</main>
+</body></html>{{end}}

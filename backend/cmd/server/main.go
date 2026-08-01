@@ -74,6 +74,7 @@ type config struct {
 	AuthRequired              bool
 	LocalAuthEnabled          bool
 	SessionCookieSecure       bool
+	SessionMaxAge             int
 	AuthLoginURL              string
 }
 
@@ -309,7 +310,7 @@ func main() {
 }
 
 func loadConfig() config {
-	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), SecretsRoot: env("CALL_RECORDER_SECRETS_ROOT", "/var/lib/call-recorder/secrets"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyDebug: env("CALL_RECORDER_LEGACY_DEBUG", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminOpen: env("CALL_RECORDER_ADMIN_OPEN", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS")), SessionSecret: env("CALL_RECORDER_SESSION_SECRET", ""), AuthRequired: env("CALL_RECORDER_AUTH_REQUIRED", "true") == "true", LocalAuthEnabled: env("CALL_RECORDER_LOCAL_AUTH_ENABLED", "true") == "true", SessionCookieSecure: env("CALL_RECORDER_SESSION_COOKIE_SECURE", "true") == "true", AuthLoginURL: strings.TrimSpace(os.Getenv("CALL_RECORDER_AUTH_LOGIN_URL"))}
+	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), SecretsRoot: env("CALL_RECORDER_SECRETS_ROOT", "/var/lib/call-recorder/secrets"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyDebug: env("CALL_RECORDER_LEGACY_DEBUG", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminOpen: env("CALL_RECORDER_ADMIN_OPEN", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS")), SessionSecret: env("CALL_RECORDER_SESSION_SECRET", ""), AuthRequired: env("CALL_RECORDER_AUTH_REQUIRED", "true") == "true", LocalAuthEnabled: env("CALL_RECORDER_LOCAL_AUTH_ENABLED", "true") == "true", SessionCookieSecure: env("CALL_RECORDER_SESSION_COOKIE_SECURE", "true") == "true", SessionMaxAge: int(envInt64("CALL_RECORDER_SESSION_MAX_AGE_SECONDS", 2592000)), AuthLoginURL: strings.TrimSpace(os.Getenv("CALL_RECORDER_AUTH_LOGIN_URL"))}
 }
 func splitCSV(value string) []string {
 	var out []string
@@ -1517,7 +1518,7 @@ func (s *server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Create session cookie.
-	s.createSession(w, username, role)
+	s.createSession(w, username, role, r.FormValue("remember") != "")
 	returnURL := r.Form.Get("return")
 	if returnURL == "" || !strings.HasPrefix(returnURL, "/") {
 		returnURL = "/"
@@ -1566,12 +1567,16 @@ func (s *server) recordLoginFailure(r *http.Request, username string) {
 	s.loginFails[key] = item
 }
 
-func (s *server) createSession(w http.ResponseWriter, username, role string) {
+func (s *server) createSession(w http.ResponseWriter, username, role string, remember bool) {
 	if s.cfg.SessionSecret == "" {
 		return
 	}
 	h := sha256.Sum256([]byte(username + ":" + role + ":" + s.cfg.SessionSecret))
 	value := username + ":" + role + ":" + hex.EncodeToString(h[:])
+	maxAge := 0
+	if remember {
+		maxAge = s.cfg.SessionMaxAge
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "call_recorder_session",
 		Value:    value,
@@ -1579,7 +1584,7 @@ func (s *server) createSession(w http.ResponseWriter, username, role string) {
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
 		Secure:   s.cfg.SessionCookieSecure,
-		MaxAge:   3600,
+		MaxAge:   maxAge,
 	})
 }
 
