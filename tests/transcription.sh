@@ -84,7 +84,11 @@ $compose exec -T transcription-worker /usr/local/bin/call-recorder-admin transcr
 # Create a second talkgroup for testing.
 curl -fsS -b "$work/cookie" -d 'system=system-a&id=200&alias=Operations&description=test&category=test&priority=1&source=manual&enabled=on' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/talkgroups | grep -q 303
 
-# Verify talkgroup 200 has transcription disabled by default.
+# Verify newly created talkgroups have transcription enabled by default.
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT transcription_enabled FROM talkgroup_aliases WHERE system_id='system-a' AND talkgroup_id='200'")" = "t"
+
+# Administrators can explicitly opt out before later re-enabling the group.
+curl -fsS -b "$work/cookie" -d 'action=disable&talkgroup=system-a:200' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/transcription/talkgroups/toggle | grep -q 303
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT transcription_enabled FROM talkgroup_aliases WHERE system_id='system-a' AND talkgroup_id='200'")" = "f"
 
 # Bulk enable: enable talkgroup 200 for transcription with language override.

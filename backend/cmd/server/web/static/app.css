@@ -19,6 +19,7 @@
   --accent: #f0a33f;
   --accent-contrast: #1a1206;
   --accent-soft: rgba(240, 163, 63, 0.14);
+  --call-data: #ffd166;
   --ok: #4cc38a;
   --ok-soft: rgba(76, 195, 138, 0.14);
   --danger: #e5534b;
@@ -56,6 +57,7 @@
   --accent: #9a5b00;
   --accent-contrast: #ffffff;
   --accent-soft: rgba(154, 91, 0, 0.12);
+  --call-data: #8a5100;
   --ok: #14714b;
   --ok-soft: rgba(20, 113, 75, 0.12);
   --danger: #c0332b;
@@ -440,7 +442,7 @@ table.data thead th {
 }
 table.data tbody tr:hover { background: var(--panel-2); }
 table.data tbody tr.is-playing { background: var(--ok-soft); }
-table.data tbody tr.is-playing .alias { color: var(--ok); }
+table.data tbody tr.is-playing .alias { color: var(--call-data); }
 table.data tbody tr:last-child td { border-bottom: none; }
 
 table.data .actions {
@@ -490,9 +492,15 @@ table.data .actions {
 }
 .play-btn:hover { background: var(--ok); color: var(--accent-contrast); border-color: var(--ok); }
 
-.call-row .time-link { font-family: var(--mono); font-weight: 600; color: var(--text); }
+.call-table .call-row { color: var(--call-data); }
+.call-table .call-row a,
+.call-table .call-row .alias,
+.call-table .call-row .time-link { color: var(--call-data); }
+.call-table .call-row .muted { color: var(--muted); }
+.call-row .time-link { font-family: var(--mono); font-weight: 600; }
 .call-row .time-link:hover { color: var(--accent); }
-.call-row .date { display: block; color: var(--muted); font-size: 0.75rem; font-family: var(--mono); }
+.call-row .date { display: block; color: var(--call-data); font-size: 0.75rem; font-family: var(--mono); }
+.call-row .col-notes_text .small { color: var(--text); }
 
 .alias {
   font-weight: 600; color: var(--text);
@@ -717,6 +725,7 @@ dialog.confirm .dialog-actions { display: flex; gap: 0.45rem; justify-content: f
   flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: column; gap: 0.1rem;
   min-height: 5rem;
 }
+.dt-filter.is-loading .dt-filter-list { opacity: 0.55; }
 .dt-filter-item {
   display: flex; align-items: center; gap: 0.35rem; padding: 0.25rem 0.35rem;
   border-radius: var(--radius-sm); cursor: pointer; font-size: 0.85rem;

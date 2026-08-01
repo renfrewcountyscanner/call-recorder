@@ -15,7 +15,7 @@
 
 <details class="filters" open>
   <summary>Search options</summary>
-  <form id="filter-form" hx-get="/calls" hx-target="#calls" hx-swap="innerHTML" hx-trigger="submit, keyup changed delay:350ms from:input, change changed from:select, change changed from:input[type=date], change changed from:input[type=checkbox]">
+  <form id="filter-form" hx-get="/calls" hx-target="#calls" hx-swap="innerHTML" hx-trigger="submit, keyup changed delay:350ms from:input[name], change changed from:select, change changed from:input[type=date], change changed from:input[type=checkbox]">
     <div class="filter-grid compact">
       <label>Search <input name="q" value="{{.Filter.Q}}" autocomplete="off" placeholder="Alias, ID, or text"></label>
       {{template "filterDropdown" (dict "Field" "sender" "Label" "Sender" "Value" .Filter.Sender "Options" (index .FilterOptions "sender"))}}

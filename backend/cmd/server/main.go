@@ -226,6 +226,7 @@ func main() {
 	mux.HandleFunc("GET /readyz", s.health)
 	mux.HandleFunc("GET /", s.requireViewer(s.callsPage))
 	mux.HandleFunc("GET /calls", s.requireViewer(s.callsFragment))
+	mux.HandleFunc("GET /filter-options", s.requireViewer(s.filterOptionsEndpoint))
 	mux.HandleFunc("GET /call/", s.requireViewer(s.callDetail))
 	mux.HandleFunc("GET /export/calls.csv", s.requireViewer(s.exportCallsCSV))
 	mux.HandleFunc("GET /export/calls.audio", s.requireViewer(s.exportCallsAudio))
@@ -684,7 +685,7 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err == nil {
-		_, err = tx.Exec(r.Context(), `INSERT INTO talkgroup_aliases (system_id,talkgroup_id,alias,source) VALUES ($1,$2,NULLIF($3,''),'received') ON CONFLICT (system_id,talkgroup_id) DO UPDATE SET alias=EXCLUDED.alias,updated_at=now() WHERE talkgroup_aliases.source='received' AND EXCLUDED.alias IS NOT NULL`, call.SystemID, call.TalkgroupID, call.TalkgroupName)
+		_, err = tx.Exec(r.Context(), `INSERT INTO talkgroup_aliases (system_id,talkgroup_id,alias,source,transcription_enabled) VALUES ($1,$2,NULLIF($3,''),'received',true) ON CONFLICT (system_id,talkgroup_id) DO UPDATE SET alias=EXCLUDED.alias,updated_at=now() WHERE talkgroup_aliases.source='received' AND EXCLUDED.alias IS NOT NULL`, call.SystemID, call.TalkgroupID, call.TalkgroupName)
 	}
 	if err == nil && call.RadioID != "" && call.RadioName != "" {
 		_, err = tx.Exec(r.Context(), `INSERT INTO radio_aliases (system_id,radio_id,alias,source) VALUES ($1,$2,$3,'received') ON CONFLICT (system_id,radio_id) DO UPDATE SET alias=EXCLUDED.alias,updated_at=now() WHERE radio_aliases.source='received'`, call.SystemID, call.RadioID, call.RadioName)
@@ -744,34 +745,11 @@ func (s *server) callsPage(w http.ResponseWriter, r *http.Request) {
 		}
 		return map[string]struct{}{}
 	}
-	queries := map[string]string{
-		"sender":    `SELECT DISTINCT sender_id AS value, sender_id AS label FROM calls WHERE coalesce(sender_id,'')<>'' ORDER BY label LIMIT 250`,
-		"system":    `SELECT DISTINCT c.system_id AS value, coalesce(NULLIF(c.system_name,''), c.system_id) AS label FROM calls c WHERE coalesce(c.system_id,'')<>'' ORDER BY label LIMIT 250`,
-		"site":      `SELECT DISTINCT c.site_id AS value, coalesce(NULLIF(c.site_name,''), c.site_id) AS label FROM calls c WHERE coalesce(c.site_id,'')<>'' ORDER BY label LIMIT 250`,
-		"receiver":  `SELECT DISTINCT receiver_id AS value, receiver_id AS label FROM calls WHERE coalesce(receiver_id,'')<>'' ORDER BY label LIMIT 250`,
-		"talkgroup": `SELECT DISTINCT c.talkgroup_id AS value, coalesce(NULLIF(ta.alias,''), NULLIF(c.talkgroup_name,''), c.talkgroup_id) AS label FROM calls c LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled WHERE coalesce(c.talkgroup_id,'')<>'' ORDER BY label LIMIT 250`,
-		"radio":     `SELECT DISTINCT c.radio_id AS value, coalesce(NULLIF(ra.alias,''), NULLIF(c.radio_name,''), c.radio_id) AS label FROM calls c LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled WHERE coalesce(c.radio_id,'')<>'' ORDER BY label LIMIT 250`,
-		"call_type": `SELECT DISTINCT call_type AS value, call_type AS label FROM calls WHERE coalesce(call_type,'')<>'' ORDER BY label LIMIT 250`,
-	}
-	for key, q := range queries {
-		rows, err := s.db.Query(r.Context(), q)
-		if err != nil {
-			continue
+	for _, key := range []string{"sender", "system", "site", "receiver", "talkgroup", "radio", "call_type"} {
+		opts, err := s.filterOptions(r.Context(), key, "", selected(key))
+		if err == nil {
+			filterOpts[key] = opts
 		}
-		sel := selected(key)
-		opts := []filterOption{}
-		for rows.Next() {
-			var opt filterOption
-			if rows.Scan(&opt.Value, &opt.Label) == nil {
-				_, opt.Selected = sel[opt.Value]
-				if opt.Label == "" {
-					opt.Label = opt.Value
-				}
-				opts = append(opts, opt)
-			}
-		}
-		rows.Close()
-		filterOpts[key] = opts
 	}
 	data["FilterOptions"] = filterOpts
 	if ferr != nil {
@@ -783,8 +761,90 @@ func (s *server) callsPage(w http.ResponseWriter, r *http.Request) {
 type filterChip struct{ Label, ClearURL string }
 
 type filterOption struct {
-	Value, Label string
-	Selected     bool
+	Value    string `json:"value"`
+	Label    string `json:"label"`
+	Selected bool   `json:"selected,omitempty"`
+}
+
+// filterOptions returns current filter suggestions ordered by their most
+// recent call. The SQL is selected from a strict allowlist; user input is
+// passed only as a query parameter.
+func (s *server) filterOptions(ctx context.Context, field, search string, selected map[string]struct{}) ([]filterOption, error) {
+	queries := map[string]string{
+		"sender": `SELECT sender_id, sender_id, max(start_time) FROM calls
+			WHERE coalesce(sender_id,'')<>'' AND ($1='' OR sender_id ILIKE '%'||$1||'%')
+			GROUP BY sender_id ORDER BY max(start_time) DESC, sender_id LIMIT 250`,
+		"system": `SELECT system_id, coalesce(max(NULLIF(system_name,'')),system_id), max(start_time) FROM calls
+			WHERE coalesce(system_id,'')<>'' AND ($1='' OR system_id ILIKE '%'||$1||'%' OR coalesce(system_name,'') ILIKE '%'||$1||'%')
+			GROUP BY system_id ORDER BY max(start_time) DESC, system_id LIMIT 250`,
+		"site": `SELECT site_id, coalesce(max(NULLIF(site_name,'')),site_id), max(start_time) FROM calls
+			WHERE coalesce(site_id,'')<>'' AND ($1='' OR site_id ILIKE '%'||$1||'%' OR coalesce(site_name,'') ILIKE '%'||$1||'%')
+			GROUP BY site_id ORDER BY max(start_time) DESC, site_id LIMIT 250`,
+		"receiver": `SELECT receiver_id, receiver_id, max(start_time) FROM calls
+			WHERE coalesce(receiver_id,'')<>'' AND ($1='' OR receiver_id ILIKE '%'||$1||'%')
+			GROUP BY receiver_id ORDER BY max(start_time) DESC, receiver_id LIMIT 250`,
+		"talkgroup": `SELECT c.talkgroup_id, coalesce(max(NULLIF(ta.alias,'')),max(NULLIF(c.talkgroup_name,'')),c.talkgroup_id),max(c.start_time) FROM calls c
+			LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled
+			WHERE coalesce(c.talkgroup_id,'')<>'' AND ($1='' OR c.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(c.talkgroup_name,'') ILIKE '%'||$1||'%' OR coalesce(ta.alias,'') ILIKE '%'||$1||'%')
+			GROUP BY c.talkgroup_id ORDER BY max(c.start_time) DESC,c.talkgroup_id LIMIT 250`,
+		"radio": `SELECT c.radio_id, coalesce(max(NULLIF(ra.alias,'')),max(NULLIF(c.radio_name,'')),c.radio_id),max(c.start_time) FROM calls c
+			LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled
+			WHERE coalesce(c.radio_id,'')<>'' AND ($1='' OR c.radio_id ILIKE '%'||$1||'%' OR coalesce(c.radio_name,'') ILIKE '%'||$1||'%' OR coalesce(ra.alias,'') ILIKE '%'||$1||'%')
+			GROUP BY c.radio_id ORDER BY max(c.start_time) DESC,c.radio_id LIMIT 250`,
+		"call_type": `SELECT call_type,call_type,max(start_time) FROM calls
+			WHERE coalesce(call_type,'')<>'' AND ($1='' OR call_type ILIKE '%'||$1||'%')
+			GROUP BY call_type ORDER BY max(start_time) DESC,call_type LIMIT 250`,
+	}
+	query, ok := queries[field]
+	if !ok {
+		return nil, fmt.Errorf("unsupported filter field %q", field)
+	}
+	rows, err := s.db.Query(ctx, query, strings.TrimSpace(search))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	opts := make([]filterOption, 0, 32)
+	seen := make(map[string]struct{})
+	for rows.Next() {
+		var opt filterOption
+		var lastSeen time.Time
+		if err := rows.Scan(&opt.Value, &opt.Label, &lastSeen); err != nil {
+			return nil, err
+		}
+		if opt.Label == "" {
+			opt.Label = opt.Value
+		}
+		_, opt.Selected = selected[opt.Value]
+		seen[opt.Value] = struct{}{}
+		opts = append(opts, opt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Never make a current filter disappear merely because it is older than
+	// the suggestion limit or does not match the menu's search text.
+	for value := range selected {
+		if _, ok := seen[value]; !ok {
+			opts = append(opts, filterOption{Value: value, Label: value, Selected: true})
+		}
+	}
+	return opts, nil
+}
+
+func (s *server) filterOptionsEndpoint(w http.ResponseWriter, r *http.Request) {
+	field := strings.TrimSpace(r.URL.Query().Get("field"))
+	selected := splitFilterValues(r.URL.Query().Get("selected"))
+	opts, err := s.filterOptions(r.Context(), field, r.URL.Query().Get("q"), selected)
+	if err != nil {
+		if strings.Contains(err.Error(), "unsupported filter field") {
+			writeJSON(w, http.StatusBadRequest, errorResponse{"unsupported filter field"})
+			return
+		}
+		s.internal(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"options": opts})
 }
 
 func splitFilterValues(s string) map[string]struct{} {
@@ -1981,7 +2041,11 @@ func (s *server) adminSaveTalkgroup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	_, err = s.db.Exec(r.Context(), `INSERT INTO talkgroup_aliases(system_id,talkgroup_id,alias,description,category,priority,enabled,source,transcription_enabled,transcription_language,notification_eligible) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,''),$11) ON CONFLICT(system_id,talkgroup_id) DO UPDATE SET alias=EXCLUDED.alias,description=EXCLUDED.description,category=EXCLUDED.category,priority=EXCLUDED.priority,enabled=EXCLUDED.enabled,source=EXCLUDED.source,transcription_enabled=EXCLUDED.transcription_enabled,transcription_language=EXCLUDED.transcription_language,notification_eligible=EXCLUDED.notification_eligible,updated_at=now()`, system, id, alias, desc, category, priority, enabled, source, v.Get("transcription_enabled") == "on", strings.TrimSpace(v.Get("transcription_language")), v.Get("notification_eligible") != "off")
+	transcriptionEnabled := true
+	if v.Get("transcription_setting") == "explicit" {
+		transcriptionEnabled = v.Get("transcription_enabled") == "on"
+	}
+	_, err = s.db.Exec(r.Context(), `INSERT INTO talkgroup_aliases(system_id,talkgroup_id,alias,description,category,priority,enabled,source,transcription_enabled,transcription_language,notification_eligible) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,''),$11) ON CONFLICT(system_id,talkgroup_id) DO UPDATE SET alias=EXCLUDED.alias,description=EXCLUDED.description,category=EXCLUDED.category,priority=EXCLUDED.priority,enabled=EXCLUDED.enabled,source=EXCLUDED.source,transcription_enabled=EXCLUDED.transcription_enabled,transcription_language=EXCLUDED.transcription_language,notification_eligible=EXCLUDED.notification_eligible,updated_at=now()`, system, id, alias, desc, category, priority, enabled, source, transcriptionEnabled, strings.TrimSpace(v.Get("transcription_language")), v.Get("notification_eligible") != "off")
 	if err != nil {
 		s.internal(w, err)
 		return

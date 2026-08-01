@@ -40,11 +40,18 @@ test "$count" = 1
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT alias FROM talkgroup_aliases WHERE system_id='system-a' AND talkgroup_id='100'")" = Dispatch
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT transcription_enabled FROM talkgroup_aliases WHERE system_id='system-a' AND talkgroup_id='100'")" = t
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT alias FROM radio_aliases WHERE system_id='system-a' AND radio_id='200'")" = 'Unit 200'
+# Filter suggestions come from current call data and support remote searching.
+curl -fsS 'http://127.0.0.1:18080/filter-options?field=system' | grep -q '"value":"system-a"'
+curl -fsS 'http://127.0.0.1:18080/filter-options?field=talkgroup&q=Dispatch' | grep -q '"label":"Dispatch"'
+curl -fsS 'http://127.0.0.1:18080/filter-options?field=receiver&selected=receiver-not-yet-seen' | grep -q '"value":"receiver-not-yet-seen","label":"receiver-not-yet-seen","selected":true'
+test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:18080/filter-options?field=not-a-field')" = 400
 id=$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc 'SELECT id FROM calls LIMIT 1')
 test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Range: bytes=0-3' "http://127.0.0.1:18080/media/$id")" = 206
 duplicate=$(curl -fsS -H 'Content-Type: application/json' -H 'X-Call-Recorder-Key: synthetic-integration-key' --data-binary "@$work/call.json" http://127.0.0.1:18080/api/v1/uploads)
 printf '%s' "$duplicate" | grep -q '"duplicate":true'
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc 'SELECT count(*) FROM calls')" = 1
+# An administrator's explicit opt-out must survive later received metadata.
+$compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -c "UPDATE talkgroup_aliases SET transcription_enabled=false WHERE system_id='system-a' AND talkgroup_id='100'" >/dev/null
 printf 'ID3synthetic' > "$work/call.mp3"
 sed 's/fixture-1/fixture-mp3/g; s/03:04:05Z/03:05:10Z/; s/"wav"/"mp3"/' "$work/call.json" > "$work/mp3.json"
 response=$(curl -fsS -H 'Content-Type: application/json' -H 'X-Call-Recorder-Key: synthetic-integration-key' --data-binary "@$work/mp3.json" http://127.0.0.1:18080/api/v1/uploads)
@@ -52,6 +59,7 @@ token=$(printf '%s' "$response" | sed -n 's/.*"upload_token":"\([^"]*\)".*/\1/p'
 test -n "$token"
 curl -fsS -H 'X-Call-Recorder-Sender: integration-sender' -H 'X-Call-Recorder-Key: synthetic-integration-key' -H 'Content-Type: audio/mpeg' --data-binary "@$work/call.mp3" "http://127.0.0.1:18080/api/v1/uploads/$token" >/dev/null
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc 'SELECT count(*) FROM calls')" = 2
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT transcription_enabled FROM talkgroup_aliases WHERE system_id='system-a' AND talkgroup_id='100'")" = f
 before_audio=$(find "$root/.test-runtime/audio" -type f | wc -l)
 sed 's/fixture-1/fixture-rollback/g; s/03:04:05Z/03:06:10Z/' "$work/call.json" > "$work/rollback.json"
 CALL_RECORDER_TEST_FAIL_FINALIZE=true $compose up -d --no-deps --force-recreate backend

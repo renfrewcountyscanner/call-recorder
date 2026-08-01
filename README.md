@@ -6,6 +6,8 @@ This release adds real notification test delivery, storage diagnostics CLI, inli
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history and [known limitations](docs/known-limitations.md) for remaining work.
 
+For planning and migration work, see the [complete feature inventory](docs/logger-feature-inventory.md) and the [legacy recorder comparison](docs/legacy-vs-logger-comparison.md).
+
 Call Recorder is a Linux-native call logger for receiving completed calls from Linux Trunk Recorder installations. It uses Go, PostgreSQL, Docker Compose, bind-mounted Linux audio storage, durable sender spooling, browser playback, and verified backup/restore tooling.
 
 A clean-room Linux call logger for completed radio calls. The scope is: ingest completed calls from Trunk Recorder and remote recorder sources, store normalized metadata and audio in PostgreSQL-backed storage, and provide secure browser search and playback.

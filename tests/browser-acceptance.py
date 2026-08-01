@@ -81,8 +81,25 @@ try:
     assert d.find_element(By.CSS_SELECTOR, "table.data"), "desktop table missing"
     desktop_padding = float(d.execute_script("return parseFloat(getComputedStyle(document.querySelector('.call-row .col-time')).paddingTop)"))
     assert desktop_padding <= 3, f"desktop call rows are not compact: {desktop_padding}px top padding"
+    call_colour = d.execute_script("return getComputedStyle(document.querySelector('.call-row .col-time')).color")
+    assert call_colour == "rgb(255, 209, 102)", f"dark-theme call details are not yellow: {call_colour}"
     count_text = d.find_element(By.ID, "result-count").text
     assert "calls" in count_text, f"result count missing: {count_text}"
+
+    # A value received after the full page was rendered must appear when its
+    # menu is opened, without reloading the page or submitting menu-search text.
+    post_call(99)
+    talkgroup_filter = d.find_element(By.CSS_SELECTOR, ".dt-filter[data-field=talkgroup]")
+    talkgroup_filter.find_element(By.CSS_SELECTOR, ".dt-filter-toggle").click()
+    menu_search = talkgroup_filter.find_element(By.CSS_SELECTOR, ".dt-filter-search")
+    menu_search.send_keys("Accept TG 99")
+    for _ in range(40):
+        if "Accept TG 99" in talkgroup_filter.find_element(By.CSS_SELECTOR, ".dt-filter-list").text:
+            break
+        time.sleep(.25)
+    assert "Accept TG 99" in talkgroup_filter.find_element(By.CSS_SELECTOR, ".dt-filter-list").text, "new talkgroup missing from live filter choices"
+    assert "talkgroup=" not in d.current_url, "searching filter choices submitted the calls form"
+    talkgroup_filter.find_element(By.CSS_SELECTOR, ".dt-filter-toggle").click()
 
     system = d.find_element(By.CSS_SELECTOR, "input[name=system]")
     system.send_keys("system-a")

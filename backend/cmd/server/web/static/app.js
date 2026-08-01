@@ -384,6 +384,8 @@
       var list = root.querySelector('.dt-filter-list');
       var clearBtn = root.querySelector('.dt-filter-clear');
       var doneBtn = root.querySelector('.dt-filter-done');
+      var loadTimer = null;
+      var loadController = null;
       if (!input || !toggle || !menu || !list) return;
 
       function syncFromInput() {
@@ -403,12 +405,51 @@
         });
         input.value = vals.join(',');
       }
+      function renderOptions(options) {
+        list.textContent = '';
+        (options || []).forEach(function (option) {
+          var label = document.createElement('label');
+          label.className = 'dt-filter-item';
+          var checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.value = option.value || '';
+          checkbox.dataset.label = option.label || option.value || '';
+          checkbox.checked = !!option.selected;
+          var text = document.createElement('span');
+          text.textContent = option.label || option.value || '';
+          label.appendChild(checkbox);
+          label.appendChild(document.createTextNode(' '));
+          label.appendChild(text);
+          list.appendChild(label);
+        });
+        syncFromInput();
+      }
+      function loadOptions(query) {
+        if (!window.fetch) return;
+        if (loadController) loadController.abort();
+        loadController = window.AbortController ? new AbortController() : null;
+        root.classList.add('is-loading');
+        var params = new URLSearchParams({field: field, q: query || '', selected: input.value});
+        var options = loadController ? {signal: loadController.signal} : {};
+        fetch('/filter-options?' + params.toString(), options)
+          .then(function (response) {
+            if (!response.ok) throw new Error('filter options request failed');
+            return response.json();
+          })
+          .then(function (payload) { renderOptions(payload.options); })
+          .catch(function (error) {
+            if (error && error.name === 'AbortError') return;
+            /* Keep the last usable choices when a refresh fails. */
+          })
+          .then(function () { root.classList.remove('is-loading'); });
+      }
       function open() {
         menu.hidden = false;
         toggle.setAttribute('aria-expanded', 'true');
         syncFromInput();
         if (search) search.value = '';
         filterItems('');
+        loadOptions('');
         if (search) setTimeout(function () { search.focus(); }, 0);
         document.addEventListener('click', outsideClick);
       }
@@ -444,14 +485,17 @@
         var form = input.closest('form');
         if (form) form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       });
-      list.querySelectorAll('input[type="checkbox"]').forEach(function (cb) {
-        on(cb, 'change', function () {
+      on(list, 'change', function (event) {
+        if (event.target && event.target.matches('input[type="checkbox"]')) {
           syncToInput();
-          var event = new Event('input', { bubbles: true });
-          input.dispatchEvent(event);
-        });
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
       });
-      on(search, 'input', function () { filterItems(search.value); });
+      on(search, 'input', function () {
+        filterItems(search.value);
+        if (loadTimer) window.clearTimeout(loadTimer);
+        loadTimer = window.setTimeout(function () { loadOptions(search.value); }, 250);
+      });
       on(input, 'change', syncFromInput);
       on(input, 'input', syncFromInput);
       root.addEventListener('keydown', function (e) {
