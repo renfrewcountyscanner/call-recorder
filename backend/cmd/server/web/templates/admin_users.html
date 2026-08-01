@@ -9,7 +9,8 @@
     <label>Role
       <select name="role">
         <option value="viewer">Viewer (read-only)</option>
-        <option value="admin">Admin (read/write)</option>
+        <option value="editor">Editor (operational administration)</option>
+        <option value="admin">Admin (full access)</option>
       </select>
     </label>
     <button class="btn primary">Create user</button>
@@ -34,7 +35,7 @@
         {{range .Users}}
         <tr>
           <td><strong>{{.Username}}</strong></td>
-          <td>{{if eq .Role "admin"}}<span class="badge info">Admin</span>{{else}}<span class="badge">Viewer</span>{{end}}</td>
+          <td>{{if eq .Role "admin"}}<span class="badge info">Admin</span>{{else if eq .Role "editor"}}<span class="badge purple">Editor</span>{{else}}<span class="badge">Viewer</span>{{end}}</td>
           <td>{{if .Enabled}}<span class="badge ok">Enabled</span>{{else}}<span class="badge warn">Disabled</span>{{end}}</td>
           <td>{{.CreatedAt}}</td>
           <td>
