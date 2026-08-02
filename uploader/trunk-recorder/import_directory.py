@@ -32,15 +32,19 @@ def parse_time(value):
 
 def infer(audio, root, cfg):
     parts = audio.relative_to(root).parts; stem = audio.stem
-    system = cfg.get("SYSTEM_NAME", "") or (parts[0] if len(parts) > 1 else "")
-    receiver = cfg.get("RECEIVER_ID", "") or system; site = cfg.get("SITE_NAME", ""); talkgroup = ""; stamp = None
-    match = re.match(r"^(\d{4}-\d{2}-\d{2}_\d{6})_(.+?)_[-_]([^_]*)_(.+?)_(.+)$", stem)
-    if match: stamp, talkgroup, site = parse_time(match.group(1)), match.group(2).strip(), site or match.group(4).strip()
+    system = cfg.get("SYSTEM_NAME", "")
+    receiver = cfg.get("RECEIVER_ID", "")
+    site = cfg.get("SITE_NAME", ""); talkgroup = ""; stamp = None; source_label = ""
+    match = re.match(r"^(\d{4}-\d{2}-\d{2}_\d{6})_(.+?)_([^_]*)_(.*?)_([^_]*)$", stem)
+    if match:
+        stamp, talkgroup, site, source_label = parse_time(match.group(1)), match.group(2).strip(), site or match.group(4).strip(), match.group(5).strip()
     match = re.match(r"^(\d{2}-\d{2}-\d{2} \d{2}-\d{2}-\d{2})\s+-\s+(.+?)\s+-\s+(.+)$", stem)
     if match: stamp, site, talkgroup = parse_time(match.group(1)), site or match.group(2).strip(), match.group(3).strip()
     match = re.match(r"^(.+?)_?(\d{8}_\d{2}-\d{2}-\d{2})$", stem)
-    if match: system, receiver, stamp = cfg.get("SYSTEM_NAME", "") or match.group(1).strip(" _-"), receiver, parse_time(match.group(2))
+    if match: system, source_label, stamp = system or match.group(1).strip(" _-"), match.group(1).strip(" _-"), parse_time(match.group(2))
     talkgroup = talkgroup or cfg.get("TALKGROUP_ID", "")
+    system = system or source_label or (parts[0] if len(parts) > 1 else "")
+    receiver = receiver or source_label or system
     if not system: raise ValueError(f"cannot infer system for {audio}; set SYSTEM_NAME or use a system subdirectory")
     return {"start_time": (stamp or datetime.now(timezone.utc)).timestamp(), "talkgroup": talkgroup, "talkgroup_description": talkgroup, "talkgroup_tag": talkgroup, "site": site, "site_description": site, "system": system, "receiver": receiver, "call_length": 0}
 
