@@ -1,0 +1,48 @@
+#!/bin/sh
+# Follow logger Docker logs and the optional legacy-import timer in one view.
+set -eu
+
+compose_file=""
+for candidate in "${COMPOSE_FILE:-}" ./docker-compose.yml ./deploy/docker-compose.yml /app/call-recorder/deploy/docker-compose.yml /opt/call-recorder/deploy/docker-compose.yml; do
+    if [ -n "$candidate" ] && [ -f "$candidate" ]; then compose_file="$candidate"; break; fi
+done
+
+compose_cmd=""
+if docker compose version >/dev/null 2>&1; then
+    compose_cmd="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+    compose_cmd="docker-compose"
+fi
+
+children=""
+cleanup() {
+    trap - INT TERM EXIT
+    [ -z "$children" ] || kill $children 2>/dev/null || true
+}
+trap cleanup INT TERM EXIT
+
+if [ -n "$compose_cmd" ] && [ -n "$compose_file" ]; then
+    compose_dir=$(dirname "$compose_file")
+    compose_name=$(basename "$compose_file")
+    (cd "$compose_dir" && $compose_cmd -f "$compose_name" logs -f --tail=100) &
+    children="$!"
+    echo "Following Docker Compose logs from $compose_file" >&2
+elif [ -n "$compose_cmd" ]; then
+    echo "No docker-compose.yml found; run this from the deployment directory or set COMPOSE_FILE." >&2
+else
+    echo "Compose unavailable; following all running containers." >&2
+    for container in $(docker ps -q); do
+        name=$(docker inspect --format '{{.Name}}' "$container" | sed 's#^/##')
+        (docker logs -f --tail=100 "$container" 2>&1 | sed "s/^/[$name] /") &
+        children="$children $!"
+    done
+fi
+
+if command -v systemctl >/dev/null 2>&1 && systemctl cat call-recorder-import.service >/dev/null 2>&1; then
+    (journalctl -fu call-recorder-import.service -o cat 2>&1 | sed 's/^/[importer] /') &
+    children="$children $!"
+else
+    echo "Importer service not installed; Docker logs only." >&2
+fi
+
+wait
