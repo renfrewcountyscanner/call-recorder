@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Recursively import legacy logger audio, deleting only successful files."""
-import argparse, json, logging, os, re, time
+import argparse, json, logging, os, re, time, wave
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -30,23 +30,54 @@ def parse_time(value):
         except ValueError: pass
     return datetime.now(timezone.utc)
 
+def numeric_id(value):
+    """The legacy endpoint accepts numeric IDs; retain labels separately."""
+    match = re.search(r"\d+(?:\.\d+)?", str(value or ""))
+    return match.group(0) if match else "0"
+
+def audio_duration_seconds(audio):
+    """Read WAV duration exactly; estimate MP3 duration from its frame bitrate."""
+    if audio.suffix.lower() == ".wav":
+        with wave.open(str(audio), "rb") as stream:
+            return stream.getnframes() / float(stream.getframerate())
+    data = audio.read_bytes()[:8192]
+    offset = 0
+    if data[:3] == b"ID3" and len(data) >= 10:
+        offset = 10 + sum((data[index] & 0x7f) << (7 * (9 - index)) for index in range(6, 10))
+    for index in range(offset, max(offset, len(data) - 3)):
+        header = int.from_bytes(data[index:index + 4], "big")
+        if header >> 21 != 0x7ff:
+            continue
+        version, layer, bitrate_index = (header >> 19) & 3, (header >> 17) & 3, (header >> 12) & 15
+        if layer != 1 or bitrate_index in (0, 15):
+            continue
+        table = (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320) if version == 3 else (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160)
+        return max(0.001, (audio.stat().st_size - index) * 8 / (table[bitrate_index] * 1000))
+    # The importer prefers an approximate but non-zero duration over throwing
+    # away an otherwise valid legacy recording with an uncommon codec.
+    return max(0.001, audio.stat().st_size * 8 / 64000)
+
 def infer(audio, root, cfg):
     parts = audio.relative_to(root).parts; stem = audio.stem
     system = cfg.get("SYSTEM_NAME", "")
     receiver = cfg.get("RECEIVER_ID", "")
-    site = cfg.get("SITE_NAME", ""); talkgroup = ""; stamp = None; source_label = ""
+    site = cfg.get("SITE_NAME", ""); talkgroup = ""; talkgroup_label = ""; source = ""; stamp = None; source_label = ""
     match = re.match(r"^(\d{4}-\d{2}-\d{2}_\d{6})_(.+?)_([^_]*)_(.*?)_([^_]*)$", stem)
     if match:
-        stamp, talkgroup, site, source_label = parse_time(match.group(1)), match.group(2).strip(), site or match.group(4).strip(), match.group(5).strip()
+        stamp, talkgroup_label, source, site, source_label = parse_time(match.group(1)), match.group(2).strip(), numeric_id(match.group(3)), site or match.group(4).strip(), match.group(5).strip()
+        talkgroup = numeric_id(talkgroup_label)
     match = re.match(r"^(\d{2}-\d{2}-\d{2} \d{2}-\d{2}-\d{2})\s+-\s+(.+?)\s+-\s+(.+)$", stem)
-    if match: stamp, site, talkgroup = parse_time(match.group(1)), site or match.group(2).strip(), match.group(3).strip()
+    if match:
+        stamp, site, talkgroup_label = parse_time(match.group(1)), site or match.group(2).strip(), match.group(3).strip()
+        talkgroup = numeric_id(talkgroup_label)
     match = re.match(r"^(.+?)_?(\d{8}_\d{2}-\d{2}-\d{2})$", stem)
     if match: system, source_label, stamp = system or match.group(1).strip(" _-"), match.group(1).strip(" _-"), parse_time(match.group(2))
-    talkgroup = talkgroup or cfg.get("TALKGROUP_ID", "")
+    talkgroup = talkgroup or cfg.get("TALKGROUP_ID", "0")
+    talkgroup_label = talkgroup_label or talkgroup
     system = system or source_label or (parts[0] if len(parts) > 1 else "")
     receiver = receiver or source_label or system
     if not system: raise ValueError(f"cannot infer system for {audio}; set SYSTEM_NAME or use a system subdirectory")
-    return {"start_time": (stamp or datetime.now(timezone.utc)).timestamp(), "talkgroup": talkgroup, "talkgroup_description": talkgroup, "talkgroup_tag": talkgroup, "site": site, "site_description": site, "system": system, "receiver": receiver, "call_length": 0}
+    return {"start_time": (stamp or datetime.now(timezone.utc)).timestamp(), "talkgroup": talkgroup, "talkgroup_description": talkgroup_label, "talkgroup_tag": talkgroup_label, "source": source, "site": site, "site_description": site, "system": system, "receiver": receiver, "call_length": 0}
 
 def load_call(audio, root, cfg):
     sidecar = audio.with_suffix(".json")
@@ -64,7 +95,8 @@ def upload(audio, call, cfg):
     system = call.get("system") or cfg.get("SYSTEM_NAME", ""); receiver = call.get("receiver") or cfg.get("RECEIVER_ID") or system
     target = {"targetid": call.get("talkgroup", ""), "targetlabel": call.get("talkgroup_description", ""), "targettag": call.get("talkgroup_tag", "")}
     info = {"callTargets": [target], "receiver": receiver, "frequency": call.get("freq", ""), "sourceid": call.get("source", ""), "sourcelabel": call.get("source_description", ""), "sourcetag": "", "lcn": call.get("lcn", ""), "voiceservice": call.get("voice_service", ""), "systemid": system, "systemlabel": system, "systemtype": "", "siteid": call.get("site", ""), "sitelabel": call.get("site_description", ""), "calltype": "1"}
-    metadata = {"apiAuthID": cfg["UPLOAD_ID"], "apiKey": cfg["UPLOAD_KEY"], "callAudioFormat": audio.suffix.lstrip(".").lower(), "recordedCall": {"talkGroupInfo": info, "startTime": started, "callDuration": call.get("call_length", 0), "startPositionSec": "00:00:00"}}
+    duration = float(call.get("call_length") or 0) or audio_duration_seconds(audio)
+    metadata = {"apiAuthID": cfg["UPLOAD_ID"], "apiKey": cfg["UPLOAD_KEY"], "callAudioFormat": audio.suffix.lstrip(".").lower(), "recordedCall": {"talkGroupInfo": info, "startTime": started, "callDuration": duration, "startPositionSec": "00:00:00"}}
     base = cfg["DESTINATION_URL"].rstrip("/"); timeout = int(cfg.get("TIMEOUT_SECONDS", "30"))
     status, body = post(base + "/api/callupload", json.dumps(metadata).encode(), {"Content-Type": "application/json"}, timeout); result = response(status, body, "metadata")
     if result.get("Duplicate"): return
