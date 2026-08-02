@@ -43,6 +43,8 @@ type watchConfig struct {
 	SystemID             string `yaml:"system_id"`
 	SystemName           string `yaml:"system_name,omitempty"`
 	ReceiverID           string `yaml:"receiver_id,omitempty"`
+	SenderID             string `yaml:"sender_id,omitempty"`
+	APIKeyFile           string `yaml:"api_key_file,omitempty"`
 	Recursive            *bool  `yaml:"recursive,omitempty"`
 	UseTPE2RadioID       *bool  `yaml:"use_tpe2_radio_id,omitempty"`
 	ProScanSystemAsSite  *bool  `yaml:"proscan_system_as_site,omitempty"`
@@ -111,6 +113,12 @@ func (cfg *config) resolveRelativePaths(base string) {
 			*target = filepath.Join(base, *target)
 		}
 	}
+	for index := range cfg.WatchDirectories {
+		target := &cfg.WatchDirectories[index].APIKeyFile
+		if *target != "" && !configuredPathIsAbs(*target) {
+			*target = filepath.Join(base, *target)
+		}
+	}
 }
 
 func (cfg config) validate() error {
@@ -124,17 +132,12 @@ func (cfg config) validate() error {
 	if parsedURL.Scheme != "https" && !(parsedURL.Scheme == "http" && isLoopbackHost(parsedURL.Hostname())) {
 		return errors.New("logger.url must use HTTPS unless it points to localhost")
 	}
-	if strings.TrimSpace(cfg.Logger.SenderID) == "" {
-		return errors.New("logger.sender_id is required")
-	}
+	globalSender := strings.TrimSpace(cfg.Logger.SenderID)
 	credentialSources := 0
 	for _, value := range []string{cfg.Logger.APIKey, cfg.Logger.APIKeyFile, os.Getenv(cfg.Logger.APIKeyEnvironment)} {
 		if strings.TrimSpace(value) != "" {
 			credentialSources++
 		}
-	}
-	if credentialSources == 0 {
-		return errors.New("set logger.api_key_file, logger.api_key, or the configured API key environment variable")
 	}
 	if credentialSources > 1 {
 		return errors.New("configure exactly one API key source")
@@ -164,11 +167,47 @@ func (cfg config) validate() error {
 			return fmt.Errorf("watch directory %q is configured more than once", watch.Path)
 		}
 		seen[key] = true
-		if strings.ContainsAny(watch.SystemID+watch.ReceiverID, "\x00\r\n") {
+		if strings.ContainsAny(watch.SystemID+watch.ReceiverID+watch.SenderID, "\x00\r\n") {
 			return fmt.Errorf("watch_directories[%d] contains a control character", index)
 		}
+		if (strings.TrimSpace(watch.SenderID) == "") != (strings.TrimSpace(watch.APIKeyFile) == "") {
+			return fmt.Errorf("watch_directories[%d] must provide both sender_id and api_key_file", index)
+		}
+	}
+	if credentialSources == 0 && globalSender == "" {
+		for index, watch := range cfg.WatchDirectories {
+			if strings.TrimSpace(watch.SenderID) == "" || strings.TrimSpace(watch.APIKeyFile) == "" {
+				return fmt.Errorf("watch_directories[%d] requires sender_id and api_key_file when no global credential is configured", index)
+			}
+		}
+	}
+	if credentialSources > 0 && globalSender == "" {
+		return errors.New("logger.sender_id is required when a global API key is configured")
 	}
 	return nil
+}
+
+func (cfg config) credentialsForWatch(watch watchConfig) (string, string, error) {
+	sender := strings.TrimSpace(cfg.Logger.SenderID)
+	if strings.TrimSpace(watch.SenderID) != "" {
+		sender = strings.TrimSpace(watch.SenderID)
+	}
+	if sender == "" {
+		return "", "", errors.New("sender_id is required")
+	}
+	if strings.TrimSpace(watch.APIKeyFile) != "" {
+		raw, err := os.ReadFile(watch.APIKeyFile)
+		if err != nil {
+			return "", "", fmt.Errorf("read watch API key file: %w", err)
+		}
+		key := strings.TrimSpace(string(raw))
+		if key == "" {
+			return "", "", errors.New("watch API key file is empty")
+		}
+		return sender, key, nil
+	}
+	key, err := cfg.apiKey()
+	return sender, key, err
 }
 
 func (cfg config) apiKey() (string, error) {

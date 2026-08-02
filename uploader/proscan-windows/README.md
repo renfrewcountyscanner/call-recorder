@@ -24,8 +24,8 @@ The watch-directory `system_id` is authoritative. The scanner model becomes the 
 
 [`config.renfrew.yaml`](config.renfrew.yaml) is preconfigured with:
 
-- `E:\BCD996` → logger system `SCANNER-DIGITAL`, receiver `BCD996P2`
-- `E:\BCT15X` → logger system `SCANNER-ANALOG`, receiver `BCT15X`
+- `E:\BCD996` → logger system `SCANNER-DIGITAL`, receiver `BCD996P2`, sender credential `SCANNER-DIGITAL`
+- `E:\BCT15X` → logger system `SCANNER-ANALOG`, receiver `BCT15X`, sender credential `SCANNER-ANALOG`
 
 It includes recordings already present when the service first starts. Set `include_existing: false` before installation to upload only future recordings.
 
@@ -41,7 +41,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\install.ps1
 ```
 
-The installer prompts for the sender key, stores it outside YAML, restricts the installation to LocalSystem and administrators, validates both recording directories and the logger health endpoint, and installs an automatically starting service with restart-on-failure behavior.
+The installer prompts for each configured sender key, stores them outside YAML, restricts the installation to LocalSystem and administrators, validates both recording directories and the logger health endpoint, and installs an automatically starting service with restart-on-failure behavior.
 
 The installer preserves an existing configuration on upgrade. The uninstaller removes only the service; it retains credentials, logs, configuration, and queued recordings.
 

@@ -2,8 +2,6 @@ version: 1
 
 logger:
   url: https://logger.renfrewcountyscanner.com
-  sender_id: windows-proscan
-  api_key_file: 'C:\ProgramData\CallLogger\sender.key'
   request_timeout_seconds: 60
 
 spool_directory: 'C:\ProgramData\CallLogger\spool'
@@ -20,6 +18,8 @@ watch_directories:
     system_id: SCANNER-DIGITAL
     system_name: Scanner Digital
     receiver_id: BCD996P2
+    sender_id: SCANNER-DIGITAL
+    api_key_file: 'C:\ProgramData\CallLogger\scanner-digital.key'
     recursive: true
     use_tpe2_radio_id: true
     proscan_system_as_site: true
@@ -29,6 +29,8 @@ watch_directories:
     system_id: SCANNER-ANALOG
     system_name: Scanner Analog
     receiver_id: BCT15X
+    sender_id: SCANNER-ANALOG
+    api_key_file: 'C:\ProgramData\CallLogger\scanner-analog.key'
     recursive: true
     use_tpe2_radio_id: false
     proscan_system_as_site: true

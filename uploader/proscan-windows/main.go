@@ -159,6 +159,10 @@ func checkCommand(args []string) error {
 		return err
 	}
 	for _, watch := range cfg.WatchDirectories {
+		senderID, _, credentialErr := cfg.credentialsForWatch(watch)
+		if credentialErr != nil {
+			return credentialErr
+		}
 		info, statErr := os.Stat(watch.Path)
 		if statErr != nil || !info.IsDir() {
 			return fmt.Errorf("watch directory %q is unavailable", watch.Path)
@@ -172,15 +176,27 @@ func checkCommand(args []string) error {
 			if readErr != nil {
 				return readErr
 			}
-			if _, parseErr := parseProScanRecording(raw, newest, watch, cfg.Logger.SenderID, location); parseErr != nil {
+			if _, parseErr := parseProScanRecording(raw, newest, watch, senderID, location); parseErr != nil {
 				return fmt.Errorf("parse newest recording in %q: %w", watch.Path, parseErr)
 			}
 		}
 		fmt.Printf("OK watch=%q system=%q newest=%q\n", watch.Path, watch.SystemID, filepath.Base(newest))
 	}
-	client, err := newLoggerClient(cfg)
-	if err != nil {
-		return err
+	clients := map[string]*loggerClient{}
+	for _, watch := range cfg.WatchDirectories {
+		client, clientErr := newLoggerClientForWatch(cfg, watch)
+		if clientErr != nil {
+			return clientErr
+		}
+		clients[client.senderID] = client
+	}
+	var client *loggerClient
+	for _, candidate := range clients {
+		client = candidate
+		break
+	}
+	if client == nil {
+		return errors.New("no logger credentials configured")
 	}
 	request, _ := http.NewRequest(http.MethodGet, client.baseURL+"/healthz", nil)
 	response, err := client.httpClient.Do(request)
@@ -192,10 +208,9 @@ func checkCommand(args []string) error {
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("logger health check returned HTTP %d", response.StatusCode)
 	}
-	if _, err := cfg.apiKey(); err != nil {
-		return err
+	for sender := range clients {
+		fmt.Printf("OK logger=%s sender=%s health=200 credential=available\n", client.baseURL, sender)
 	}
-	fmt.Printf("OK logger=%s sender=%s health=200 credential=available\n", client.baseURL, cfg.Logger.SenderID)
 	return nil
 }
 

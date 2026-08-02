@@ -31,6 +31,7 @@ type uploaderApplication struct {
 	logger       *slog.Logger
 	spool        *durableSpool
 	client       *loggerClient
+	clients      map[string]*loggerClient
 	watcher      *fsnotify.Watcher
 	observations map[string]*observedFile
 	watchedDirs  map[string]bool
@@ -46,17 +47,26 @@ func newUploaderApplication(cfg config, logger *slog.Logger) (*uploaderApplicati
 	if err != nil {
 		return nil, err
 	}
-	client, err := newLoggerClient(cfg)
-	if err != nil {
-		_ = spool.Close()
-		return nil, err
+	clients := map[string]*loggerClient{}
+	for _, watch := range cfg.WatchDirectories {
+		watchClient, clientErr := newLoggerClientForWatch(cfg, watch)
+		if clientErr != nil {
+			_ = spool.Close()
+			return nil, clientErr
+		}
+		clients[watchClient.senderID] = watchClient
+	}
+	var client *loggerClient
+	if globalClient, clientErr := newLoggerClient(cfg); clientErr == nil {
+		client = globalClient
+		clients[globalClient.senderID] = globalClient
 	}
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		_ = spool.Close()
 		return nil, err
 	}
-	return &uploaderApplication{cfg: cfg, location: location, logger: logger, spool: spool, client: client, watcher: watcher, observations: map[string]*observedFile{}, watchedDirs: map[string]bool{}}, nil
+	return &uploaderApplication{cfg: cfg, location: location, logger: logger, spool: spool, client: client, clients: clients, watcher: watcher, observations: map[string]*observedFile{}, watchedDirs: map[string]bool{}}, nil
 }
 
 func (app *uploaderApplication) Run(ctx context.Context) error {
@@ -278,7 +288,12 @@ func (app *uploaderApplication) processReadyFiles() {
 			app.deferFile(observed, fmt.Errorf("recording exceeds max_audio_bytes (%d)", app.cfg.MaxAudioBytes))
 			continue
 		}
-		recording, parseErr := parseProScanRecording(raw, observed.path, observed.watch, app.cfg.Logger.SenderID, app.location)
+		senderID, _, credentialErr := app.cfg.credentialsForWatch(observed.watch)
+		if credentialErr != nil {
+			app.deferFile(observed, credentialErr)
+			continue
+		}
+		recording, parseErr := parseProScanRecording(raw, observed.path, observed.watch, senderID, app.location)
 		if parseErr != nil {
 			app.deferFile(observed, parseErr)
 			continue
@@ -318,7 +333,17 @@ func (app *uploaderApplication) uploadWorker(ctx context.Context, number int) {
 				if !ok {
 					break
 				}
-				callID, duplicate, err := app.client.Upload(ctx, item)
+				client := app.clients[item.Request.SenderID]
+				if client == nil {
+					client = app.client
+				}
+				if client == nil {
+					err := errors.New("no credentials configured for sender " + item.Request.SenderID)
+					_ = app.spool.Retry(item, err)
+					app.logger.Error("recording upload failed", "worker", number, "item", item.ID, "attempt", item.Attempts+1, "error", err)
+					continue
+				}
+				callID, duplicate, err := client.Upload(ctx, item)
 				if err != nil {
 					if retryErr := app.spool.Retry(item, err); retryErr != nil {
 						app.logger.Error("could not save upload retry", "item", item.ID, "error", retryErr)

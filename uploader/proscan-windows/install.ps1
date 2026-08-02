@@ -21,7 +21,10 @@ $programDirectory = Join-Path $env:ProgramFiles 'CallLogger'
 $dataDirectory = Join-Path $env:ProgramData 'CallLogger'
 $installedExecutable = Join-Path $programDirectory 'proscan-uploader.exe'
 $installedConfiguration = Join-Path $dataDirectory 'proscan-uploader.yaml'
-$keyFile = Join-Path $dataDirectory 'sender.key'
+$keyFiles = @(
+    (Join-Path $dataDirectory 'scanner-digital.key'),
+    (Join-Path $dataDirectory 'scanner-analog.key')
+)
 
 function Invoke-Uploader {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$UploaderArguments)
@@ -36,8 +39,10 @@ Copy-Item -LiteralPath $Executable -Destination $installedExecutable -Force
 if (-not (Test-Path -LiteralPath $installedConfiguration)) {
     Copy-Item -LiteralPath $Configuration -Destination $installedConfiguration
 }
-if (-not (Test-Path -LiteralPath $keyFile)) {
-    $secureKey = Read-Host 'Paste the Call Logger sender API key' -AsSecureString
+foreach ($keyFile in $keyFiles) {
+    if (Test-Path -LiteralPath $keyFile) { continue }
+    $keyName = [IO.Path]::GetFileNameWithoutExtension($keyFile)
+    $secureKey = Read-Host "Paste the Call Logger sender API key for $keyName" -AsSecureString
     $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
     try {
         $plainKey = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)

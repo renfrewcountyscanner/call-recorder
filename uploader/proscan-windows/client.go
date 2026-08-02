@@ -19,17 +19,29 @@ type loggerClient struct {
 }
 
 func newLoggerClient(cfg config) (*loggerClient, error) {
-	key, err := cfg.apiKey()
+	sender, key, err := cfg.credentialsForWatch(watchConfig{})
 	if err != nil {
 		return nil, err
 	}
+	return newLoggerClientWithCredentials(cfg, sender, key), nil
+}
+
+func newLoggerClientForWatch(cfg config, watch watchConfig) (*loggerClient, error) {
+	sender, key, err := cfg.credentialsForWatch(watch)
+	if err != nil {
+		return nil, err
+	}
+	return newLoggerClientWithCredentials(cfg, sender, key), nil
+}
+
+func newLoggerClientWithCredentials(cfg config, sender, key string) *loggerClient {
 	client := &http.Client{
 		Timeout: time.Duration(cfg.Logger.RequestTimeoutSeconds) * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return errors.New("unexpected redirect; machine ingestion must bypass interactive login")
 		},
 	}
-	return &loggerClient{baseURL: strings.TrimRight(cfg.Logger.URL, "/"), senderID: cfg.Logger.SenderID, apiKey: key, httpClient: client}, nil
+	return &loggerClient{baseURL: strings.TrimRight(cfg.Logger.URL, "/"), senderID: sender, apiKey: key, httpClient: client}
 }
 
 func (client *loggerClient) Upload(ctx context.Context, item *spoolItem) (string, bool, error) {
