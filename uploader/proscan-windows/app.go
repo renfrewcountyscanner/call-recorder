@@ -26,16 +26,17 @@ type observedFile struct {
 }
 
 type uploaderApplication struct {
-	cfg          config
-	location     *time.Location
-	logger       *slog.Logger
-	spool        *durableSpool
-	client       *loggerClient
-	clients      map[string]*loggerClient
-	watcher      *fsnotify.Watcher
-	observations map[string]*observedFile
-	watchedDirs  map[string]bool
-	workers      sync.WaitGroup
+	cfg             config
+	location        *time.Location
+	logger          *slog.Logger
+	spool           *durableSpool
+	client          *loggerClient
+	clients         map[string]*loggerClient
+	clientsBySystem map[string]*loggerClient
+	watcher         *fsnotify.Watcher
+	observations    map[string]*observedFile
+	watchedDirs     map[string]bool
+	workers         sync.WaitGroup
 }
 
 func newUploaderApplication(cfg config, logger *slog.Logger) (*uploaderApplication, error) {
@@ -48,6 +49,7 @@ func newUploaderApplication(cfg config, logger *slog.Logger) (*uploaderApplicati
 		return nil, err
 	}
 	clients := map[string]*loggerClient{}
+	clientsBySystem := map[string]*loggerClient{}
 	for _, watch := range cfg.WatchDirectories {
 		watchClient, clientErr := newLoggerClientForWatch(cfg, watch)
 		if clientErr != nil {
@@ -55,6 +57,7 @@ func newUploaderApplication(cfg config, logger *slog.Logger) (*uploaderApplicati
 			return nil, clientErr
 		}
 		clients[watchClient.senderID] = watchClient
+		clientsBySystem[watch.SystemID] = watchClient
 	}
 	var client *loggerClient
 	if globalClient, clientErr := newLoggerClient(cfg); clientErr == nil {
@@ -66,7 +69,7 @@ func newUploaderApplication(cfg config, logger *slog.Logger) (*uploaderApplicati
 		_ = spool.Close()
 		return nil, err
 	}
-	return &uploaderApplication{cfg: cfg, location: location, logger: logger, spool: spool, client: client, clients: clients, watcher: watcher, observations: map[string]*observedFile{}, watchedDirs: map[string]bool{}}, nil
+	return &uploaderApplication{cfg: cfg, location: location, logger: logger, spool: spool, client: client, clients: clients, clientsBySystem: clientsBySystem, watcher: watcher, observations: map[string]*observedFile{}, watchedDirs: map[string]bool{}}, nil
 }
 
 func (app *uploaderApplication) Run(ctx context.Context) error {
@@ -336,6 +339,12 @@ func (app *uploaderApplication) uploadWorker(ctx context.Context, number int) {
 				client := app.clients[item.Request.SenderID]
 				if client == nil {
 					client = app.client
+				}
+				if client == nil {
+					client = app.clientsBySystem[item.Request.Call.SystemID]
+					if client != nil {
+						item.Request.SenderID = client.senderID
+					}
 				}
 				if client == nil {
 					err := errors.New("no credentials configured for sender " + item.Request.SenderID)
