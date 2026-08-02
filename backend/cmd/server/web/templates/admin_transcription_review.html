@@ -1,0 +1,22 @@
+{{define "admin_transcription_review.html"}}{{template "head" .}}{{template "top" .}}
+<div class="page-head"><div><p class="eyebrow">Transcription</p><h1>Fast transcript review</h1><p class="muted">Listen, correct the label, and record an explicit human decision before training.</p></div><div class="inline-actions"><a class="btn" href="/admin/datasets">Dataset exports</a><a class="btn ghost" href="/admin/transcription">Settings and jobs</a></div></div>
+<nav class="review-status-tabs" aria-label="Review queues">
+  <a class="btn {{if eq .Status "unreviewed"}}primary{{end}}" href="?status=unreviewed">Unreviewed ({{index .Counts "unreviewed"}})</a>
+  <a class="btn {{if eq .Status "reviewed"}}primary{{end}}" href="?status=reviewed">Reviewed ({{index .Counts "reviewed"}})</a>
+  <a class="btn {{if eq .Status "rejected"}}primary{{end}}" href="?status=rejected">Rejected ({{index .Counts "rejected"}})</a>
+  <a class="btn {{if eq .Status "inaudible"}}primary{{end}}" href="?status=inaudible">Inaudible ({{index .Counts "inaudible"}})</a>
+  <a class="btn {{if eq .Status "no_speech"}}primary{{end}}" href="?status=no_speech">No speech ({{index .Counts "no_speech"}})</a>
+</nav>
+{{if .HasItem}}<section class="card transcript-review" data-review-ui data-review-status="{{.Status}}" data-review-after="{{.Item.ID}}">
+  <div class="review-call-head"><div><h2>{{if .Item.TalkgroupName}}{{.Item.TalkgroupName}}{{else}}{{.Item.TalkgroupID}}{{end}}</h2><p class="muted">{{.Item.SystemName}} · {{.Item.SystemID}} · radio {{if .Item.RadioName}}{{.Item.RadioName}}{{else if .Item.RadioID}}{{.Item.RadioID}}{{else}}unknown{{end}} · {{.Item.StartTime.Local.Format "2006-01-02 15:04:05 MST"}} · {{dur .Item.DurationMS}}</p></div><a class="btn ghost small" href="/call/{{.Item.CallID}}">Call details</a></div>
+  <div class="review-player"><audio id="review-audio" controls preload="metadata" src="/media/{{.Item.CallID}}"></audio><label>Speed <select id="review-speed"><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label><button class="btn" type="button" id="review-replay">Replay</button></div>
+  <form method="post" action="/admin/transcription/review" id="review-form">
+    <input type="hidden" name="id" value="{{.Item.ID}}"><input type="hidden" name="review_ui" value="1"><input type="hidden" name="status" id="review-action" value="reviewed">
+    <label>Training label <textarea id="review-text" name="text" rows="7" maxlength="10000" spellcheck="true">{{.Item.Effective}}</textarea><span class="help">Edit this to exactly what is spoken. Saving “Reviewed” makes it eligible for fine-tuning.</span></label>
+    <details class="review-sources"><summary>Compare transcript sources</summary><dl class="stats"><dt>Generated</dt><dd>{{if .Item.Generated}}{{.Item.Generated}}{{else}}—{{end}}</dd><dt>Received</dt><dd>{{if .Item.Received}}{{.Item.Received}}{{else}}—{{end}}</dd><dt>Previous edit</dt><dd>{{if .Item.Edited}}{{.Item.Edited}}{{else}}—{{end}}</dd><dt>Model</dt><dd>{{.Item.Provider}} / {{.Item.Model}}{{if .Item.Profile}} / {{.Item.Profile}}{{end}}</dd></dl></details>
+    <label>Review notes <textarea name="review_notes" rows="2" maxlength="2000" placeholder="Optional reason, audio issue, or correction note">{{.Item.Notes}}</textarea></label>
+    <div class="review-actions"><button class="btn primary" type="submit" data-review-action="reviewed">Reviewed <kbd>Ctrl</kbd>+<kbd>Enter</kbd></button><button class="btn danger" type="submit" data-review-action="rejected">Rejected <kbd>Alt</kbd>+<kbd>R</kbd></button><button class="btn" type="submit" data-review-action="inaudible">Inaudible <kbd>Alt</kbd>+<kbd>I</kbd></button><button class="btn" type="submit" data-review-action="no_speech">No speech <kbd>Alt</kbd>+<kbd>N</kbd></button><a class="btn ghost" href="?status={{.Status}}&after={{.Item.ID}}">Skip <kbd>Alt</kbd>+<kbd>S</kbd></a></div>
+  </form>
+  <p class="muted small">Playback: <kbd>Ctrl</kbd>+<kbd>Space</kbd> play/pause · <kbd>Alt</kbd>+<kbd>P</kbd> replay · <kbd>Alt</kbd>+<kbd>[</kbd>/<kbd>]</kbd> speed</p>
+</section>{{else}}<section class="card"><p class="empty-state">No transcripts are currently in the {{.Status}} queue.</p></section>{{end}}
+{{template "bottom" .}}{{end}}

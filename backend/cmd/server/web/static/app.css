@@ -943,6 +943,21 @@ dialog.confirm .dialog-actions { display: flex; gap: 0.45rem; justify-content: f
 
 /* ---------- Print ---------- */
 
+.review-status-tabs, .review-player, .review-actions, .review-call-head { display:flex; gap:.65rem; align-items:center; flex-wrap:wrap; }
+.review-status-tabs { margin-bottom:1rem; }
+.review-call-head { justify-content:space-between; }
+.review-player audio { flex:1 1 30rem; max-width:100%; }
+.transcript-review form { display:grid; gap:1rem; margin-top:1rem; }
+.transcript-review textarea { width:100%; font-size:1rem; line-height:1.45; }
+.review-sources dd { max-width:70rem; white-space:pre-wrap; }
+kbd { border:1px solid var(--border-strong); border-radius:.25rem; padding:.05rem .28rem; background:var(--panel-2); font-size:.72em; }
+
+@media (max-width: 767px) {
+  .review-player { align-items:stretch; }
+  .review-player audio { flex-basis:100%; }
+  .review-actions .btn { flex:1 1 45%; }
+}
+
 @media print {
   :root { color-scheme: light; }
   body { background:#fff; color:#111; padding:0; font-size:10pt; }

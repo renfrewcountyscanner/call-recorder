@@ -291,6 +291,7 @@ func main() {
 		mux.HandleFunc("POST /admin/notifications/delivery/retry", s.adminRetryDelivery)
 		mux.HandleFunc("GET /admin/notifications/history", s.adminNotificationHistory)
 		mux.HandleFunc("GET /admin/transcription", s.adminTranscription)
+		mux.HandleFunc("GET /admin/transcription/review", s.adminTranscriptReview)
 		mux.HandleFunc("POST /admin/transcription/queue/", s.adminQueueTranscription)
 		mux.HandleFunc("POST /admin/transcription/retry", s.adminRetryTranscription)
 		mux.HandleFunc("POST /admin/transcription/config", s.adminSaveTranscriptionConfig)

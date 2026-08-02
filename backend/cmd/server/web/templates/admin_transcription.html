@@ -1,6 +1,6 @@
 {{define "admin_transcription.html"}}
 {{template "head" .}}{{template "top" .}}
-<div class="page-head"><div><p class="eyebrow">Administration</p><h1>Transcription</h1><p class="muted">Configure the provider, worker and jobs without editing deployment files. Generated text remains separate from received sender text and notes.</p></div><a class="btn" href="/admin/datasets">Training datasets</a></div>
+<div class="page-head"><div><p class="eyebrow">Administration</p><h1>Transcription</h1><p class="muted">Configure the provider, worker and jobs without editing deployment files. Generated text remains separate from received sender text and notes.</p></div><div class="inline-actions"><a class="btn primary" href="/admin/transcription/review">Review transcripts</a><a class="btn" href="/admin/datasets">Training datasets</a></div></div>
 {{if .Saved}}<div class="alert success" role="status">Transcription settings saved.</div>{{end}}{{if .Msg}}<div class="alert success" role="status">{{.Msg}}</div>{{end}}{{if .Removed}}<div class="alert success" role="status">The stored API key was removed.</div>{{end}}{{if .Tested}}<div class="alert success" role="status">Provider test completed.</div>{{end}}
 
 <section class="card"><h2>Provider</h2>
@@ -17,6 +17,7 @@
   <label>Provider label <input name="provider" value="{{.Provider}}" required></label>
   <label>Endpoint <input name="endpoint" type="url" value="{{.Endpoint}}" required></label>
   <label>Model <input name="model" value="{{.Model}}" required></label>
+  <label>Profile / model selector <input name="profile" value="{{.Profile}}" placeholder="optional provider profile"><span class="help">Saved with every transcript and dataset sample.</span></label>
   <label>Default language <input name="language" value="{{.Language}}" placeholder="en"></label>
   <label>Request timeout <span class="input-unit"><input name="request_timeout_seconds" type="number" min="1" max="600" value="{{.Timeout}}"><span>seconds</span></span></label>
   <label>Allowed endpoint CIDRs <input name="allowed_endpoint_cidrs" value="{{.AllowedCIDRs}}" placeholder="192.168.2.2/32"><span class="help">Private endpoints remain blocked unless explicitly listed.</span></label>
@@ -42,7 +43,7 @@
 </section>
 
 <section class="card"><h2>Audio processing</h2><form method="post" action="/admin/transcription/config" class="form-grid">
-  <input type="hidden" name="enabled" value="{{if .Enabled}}on{{end}}"><input type="hidden" name="processing_enabled" value="{{if .Processing}}on{{end}}"><input type="hidden" name="provider" value="{{.Provider}}"><input type="hidden" name="provider_type" value="{{.ProviderType}}"><input type="hidden" name="endpoint" value="{{.Endpoint}}"><input type="hidden" name="model" value="{{.Model}}"><input type="hidden" name="language" value="{{.Language}}"><input type="hidden" name="request_timeout_seconds" value="{{.Timeout}}"><input type="hidden" name="allowed_endpoint_cidrs" value="{{.AllowedCIDRs}}">
+  <input type="hidden" name="enabled" value="{{if .Enabled}}on{{end}}"><input type="hidden" name="processing_enabled" value="{{if .Processing}}on{{end}}"><input type="hidden" name="provider" value="{{.Provider}}"><input type="hidden" name="provider_type" value="{{.ProviderType}}"><input type="hidden" name="endpoint" value="{{.Endpoint}}"><input type="hidden" name="model" value="{{.Model}}"><input type="hidden" name="profile" value="{{.Profile}}"><input type="hidden" name="language" value="{{.Language}}"><input type="hidden" name="request_timeout_seconds" value="{{.Timeout}}"><input type="hidden" name="allowed_endpoint_cidrs" value="{{.AllowedCIDRs}}">
   <label>Minimum call duration <span class="input-unit"><input name="min_duration_seconds" type="number" min="0" step="0.1" value="{{.MinDurationSeconds}}"><span>seconds</span></span></label>
   <label>Maximum call duration <span class="input-unit"><input name="max_duration_minutes" type="number" min="0.1" step="0.1" value="{{.MaxDurationMinutes}}"><span>minutes</span></span></label>
   <label>Maximum file size <span class="input-unit"><input name="max_file_size_mb" type="number" min="1" step="0.1" value="{{.MaxFileSizeMB}}"><span>MB</span></span></label>

@@ -15,7 +15,7 @@ It is not an SDR application. It does not decode radio signals, select frequenci
 - Go backend serving the browser UI, ingestion APIs, exports, media, health endpoints, and administrative workflows.
 - PostgreSQL for calls, pending uploads, aliases, users, sessions, transcription, notifications, favourites, retention, and audit records.
 - Audio stored as files on a bind-mounted Linux filesystem; the database stores normalized relative paths, size, format, and SHA-256 digest.
-- Docker Compose services for the backend, PostgreSQL when used locally, transcription worker, and optional notification worker.
+- Docker Compose services for the backend, PostgreSQL when used locally, transcription worker, always-on notification worker, and dataset worker.
 - External PostgreSQL mode supported; migrations are applied explicitly with `deploy/migrate.sh`.
 - Interactive installer creates secrets, supports local or external PostgreSQL, prepares storage, and starts the stack.
 - Application version, source commit, and build timestamp exposed through health data and the UI.
@@ -203,4 +203,3 @@ It is not an SDR application. It does not decode radio signals, select frequenci
 - “Show All Rows” can return a large unbounded result and should be used carefully.
 - Some UI preferences are stored locally or per session, but not every search/playback control is persisted.
 - Legacy authenticated `/webadmin` features have not been audited because access was unavailable.
-

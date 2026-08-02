@@ -67,6 +67,13 @@ func notifications(pool *pgxpool.Pool, args []string) {
 func notificationRun(pool *pgxpool.Pool) {
 	ctx := context.Background()
 	_, _ = pool.Exec(ctx, `INSERT INTO notification_worker_heartbeat(id,worker_id,heartbeat_at,updated_at) VALUES(true,'notification-worker',now(),now()) ON CONFLICT(id) DO UPDATE SET worker_id=EXCLUDED.worker_id,heartbeat_at=now(),updated_at=now()`)
+	var maxAgeMinutes int
+	if err := pool.QueryRow(ctx, `SELECT coalesce((SELECT (setting_value #>> '{}')::int FROM application_settings WHERE setting_key='notification_max_age_minutes'),15)`).Scan(&maxAgeMinutes); err != nil || maxAgeMinutes < 1 {
+		maxAgeMinutes = 15
+	}
+	// A stopped worker must not release a storm of obsolete alerts when it
+	// returns. Expired rows remain visible in history for diagnosis.
+	_, _ = pool.Exec(ctx, `UPDATE notification_deliveries SET status='expired',error='Expired before delivery because the notification worker was unavailable',updated_at=now() WHERE status IN ('pending','failed') AND updated_at < now()-($1::int * interval '1 minute')`, maxAgeMinutes)
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		fatal(err)
@@ -77,7 +84,7 @@ func notificationRun(pool *pgxpool.Pool) {
 		fatal(errors.New("another notification worker is active"))
 	}
 	defer conn.Exec(ctx, `SELECT pg_advisory_unlock(81640001)`)
-	rows, err := conn.Query(ctx, `SELECT d.id,d.destination_id,r.template,c.id,c.sender_id,c.system_id,c.site_id,c.talkgroup_id,coalesce(c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(c.radio_name,''),c.start_time,c.duration_ms,coalesce(c.call_type,''),coalesce(c.notes,''),coalesce(NULLIF((SELECT coalesce(NULLIF(t.edited_text,''),t.text) FROM transcripts t WHERE t.call_id=c.id ORDER BY t.updated_at DESC LIMIT 1),''),c.transcript,'') FROM notification_deliveries d JOIN notification_rules r ON r.id=d.rule_id JOIN calls c ON c.id=d.call_id WHERE (d.status='pending' OR d.status='failed' AND d.attempt_count<5) AND d.next_attempt_at<=now() ORDER BY r.priority DESC,d.id LIMIT 100`)
+	rows, err := conn.Query(ctx, `SELECT d.id,d.destination_id,coalesce(r.template,''),c.id,coalesce(c.sender_id,''),coalesce(c.system_id,''),coalesce(c.site_id,''),coalesce(c.talkgroup_id,''),coalesce(c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(c.radio_name,''),c.start_time,c.duration_ms,coalesce(c.call_type,''),coalesce(c.notes,''),coalesce(NULLIF((SELECT coalesce(NULLIF(t.edited_text,''),t.text) FROM transcripts t WHERE t.call_id=c.id ORDER BY t.updated_at DESC LIMIT 1),''),c.transcript,'') FROM notification_deliveries d JOIN notification_rules r ON r.id=d.rule_id JOIN calls c ON c.id=d.call_id WHERE (d.status='pending' OR d.status='failed' AND d.attempt_count<5) AND d.next_attempt_at<=now() ORDER BY r.priority DESC,d.id LIMIT 100`)
 	if err != nil {
 		fatal(err)
 	}

@@ -54,10 +54,10 @@ Optional workers, after configuration and an isolated test, can be enabled indep
 
 ```bash
 cd /app/call-recorder/deploy
-docker-compose --profile notifications up -d notification-worker
+docker-compose up -d notification-worker
 docker-compose up -d transcription-worker
 # or enable both profiles together
-docker-compose --profile notifications up -d
+docker-compose up -d
 ```
 
 Notification destinations continue to use external secret references. Transcription settings are configured in the WebUI; API keys are encrypted under `runtime/secrets/master.key`. Back up both PostgreSQL and `runtime/secrets` before migration or restore, and never put secret values in Git.

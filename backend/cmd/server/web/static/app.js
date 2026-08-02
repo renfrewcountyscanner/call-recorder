@@ -91,6 +91,39 @@
   applyColumns();
   document.body.addEventListener('htmx:afterSwap', applyColumns);
 
+  /* ---------- Fast transcript review ---------- */
+  var reviewRoot = document.querySelector('[data-review-ui]');
+  if (reviewRoot) {
+    var reviewAudio = $('review-audio');
+    var reviewSpeed = $('review-speed');
+    var reviewForm = $('review-form');
+    var reviewAction = $('review-action');
+    function setReviewSpeed(value) {
+      var speed = Math.max(0.75, Math.min(2, value));
+      reviewAudio.playbackRate = speed;
+      reviewSpeed.value = String(speed);
+    }
+    on(reviewSpeed, 'change', function () { setReviewSpeed(Number(reviewSpeed.value)); });
+    on($('review-replay'), 'click', function () { reviewAudio.currentTime = 0; reviewAudio.play(); });
+    document.querySelectorAll('[data-review-action]').forEach(function (button) {
+      button.addEventListener('click', function () { reviewAction.value = button.getAttribute('data-review-action'); });
+    });
+    function submitReview(action) { reviewAction.value = action; if (reviewForm.requestSubmit) reviewForm.requestSubmit(); else reviewForm.submit(); }
+    document.addEventListener('keydown', function (event) {
+      if (event.ctrlKey && event.code === 'Space') { event.preventDefault(); if (reviewAudio.paused) reviewAudio.play(); else reviewAudio.pause(); }
+      if (event.ctrlKey && event.key === 'Enter') { event.preventDefault(); submitReview('reviewed'); }
+      if (!event.altKey) return;
+      var key = event.key.toLowerCase();
+      if (key === 'r') { event.preventDefault(); submitReview('rejected'); }
+      if (key === 'i') { event.preventDefault(); submitReview('inaudible'); }
+      if (key === 'n') { event.preventDefault(); submitReview('no_speech'); }
+      if (key === 's') { event.preventDefault(); window.location.href = '?status=' + encodeURIComponent(reviewRoot.dataset.reviewStatus) + '&after=' + encodeURIComponent(reviewRoot.dataset.reviewAfter); }
+      if (key === 'p') { event.preventDefault(); reviewAudio.currentTime = 0; reviewAudio.play(); }
+      if (event.key === '[') { event.preventDefault(); setReviewSpeed(reviewAudio.playbackRate - 0.25); }
+      if (event.key === ']') { event.preventDefault(); setReviewSpeed(reviewAudio.playbackRate + 0.25); }
+    });
+  }
+
   /* ---------- Backend status ---------- */
   var dot = $('status-dot');
   if (dot && window.fetch) {

@@ -301,9 +301,15 @@ func (s *server) adminNotifications(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	var notificationHeartbeat *time.Time
+	_ = s.db.QueryRow(r.Context(), `SELECT heartbeat_at FROM notification_worker_heartbeat WHERE id=true`).Scan(&notificationHeartbeat)
+	workerOnline := notificationHeartbeat != nil && time.Since(*notificationHeartbeat) < 2*time.Minute
+	var pendingDeliveries, failedDeliveries, expiredDeliveries int64
+	_ = s.db.QueryRow(r.Context(), `SELECT count(*) FILTER(WHERE status='pending'),count(*) FILTER(WHERE status='failed'),count(*) FILTER(WHERE status='expired') FROM notification_deliveries`).Scan(&pendingDeliveries, &failedDeliveries, &expiredDeliveries)
 	s.page(w, r, "admin_notifications.html", "Notifications", "notifications", map[string]any{
 		"Destinations": items, "Rules": ruleItems, "Deliveries": deliveryItems, "FavouriteGroups": groups,
 		"TestOK": r.URL.Query().Get("test") == "ok", "TestError": r.URL.Query().Get("error"),
+		"WorkerOnline": workerOnline, "WorkerHeartbeat": notificationHeartbeat, "PendingDeliveries": pendingDeliveries, "FailedDeliveries": failedDeliveries, "ExpiredDeliveries": expiredDeliveries,
 	})
 }
 
@@ -506,26 +512,26 @@ func (s *server) adminSaveNotificationRule(w http.ResponseWriter, r *http.Reques
 }
 
 type transcriptionStatus struct {
-	Enabled, Processing, SecretAvailable, EndpointAllowed, WorkerOnline bool
-	Provider, ProviderType, Endpoint, Model, Language, AllowedCIDRs     string
-	PhrasePrompt                                                        string
-	MinDurationMS, MaxAudioDurationMS, MaxFileSize                      int64
-	Temperature                                                         float64
-	VADEnabled, PhrasePromptsEnabled                                    bool
-	Timeout, Concurrency, RetryLimit                                    int
-	Pending, Failed, Completed                                          int64
-	Heartbeat                                                           *time.Time
-	LastTestAt                                                          *time.Time
-	LastTestOK                                                          *bool
-	LastTestError                                                       string
+	Enabled, Processing, SecretAvailable, EndpointAllowed, WorkerOnline      bool
+	Provider, ProviderType, Endpoint, Model, Profile, Language, AllowedCIDRs string
+	PhrasePrompt                                                             string
+	MinDurationMS, MaxAudioDurationMS, MaxFileSize                           int64
+	Temperature                                                              float64
+	VADEnabled, PhrasePromptsEnabled                                         bool
+	Timeout, Concurrency, RetryLimit                                         int
+	Pending, Failed, Completed                                               int64
+	Heartbeat                                                                *time.Time
+	LastTestAt                                                               *time.Time
+	LastTestOK                                                               *bool
+	LastTestError                                                            string
 }
 
 func (s *server) loadTranscriptionStatus(ctx context.Context) (transcriptionStatus, error) {
 	var st transcriptionStatus
 	var heartbeat, lastTestAt *time.Time
 	var lastTestOK *bool
-	err := s.db.QueryRow(ctx, `SELECT enabled,processing_enabled,provider,provider_type,coalesce(endpoint_url,''),coalesce(model,''),coalesce(default_language,''),min_duration_ms,max_audio_duration_ms,max_file_size,temperature,vad_enabled,phrase_prompts_enabled,coalesce(phrase_prompt,''),request_timeout_seconds,concurrency,retry_limit,allowed_endpoint_cidrs,heartbeat_at,last_test_at,last_test_ok,coalesce(last_test_error,'') FROM transcription_config LEFT JOIN transcription_worker_heartbeat ON true WHERE transcription_config.id=true`).Scan(
-		&st.Enabled, &st.Processing, &st.Provider, &st.ProviderType, &st.Endpoint, &st.Model, &st.Language,
+	err := s.db.QueryRow(ctx, `SELECT enabled,processing_enabled,provider,provider_type,coalesce(endpoint_url,''),coalesce(model,''),coalesce(profile,''),coalesce(default_language,''),min_duration_ms,max_audio_duration_ms,max_file_size,temperature,vad_enabled,phrase_prompts_enabled,coalesce(phrase_prompt,''),request_timeout_seconds,concurrency,retry_limit,allowed_endpoint_cidrs,heartbeat_at,last_test_at,last_test_ok,coalesce(last_test_error,'') FROM transcription_config LEFT JOIN transcription_worker_heartbeat ON true WHERE transcription_config.id=true`).Scan(
+		&st.Enabled, &st.Processing, &st.Provider, &st.ProviderType, &st.Endpoint, &st.Model, &st.Profile, &st.Language,
 		&st.MinDurationMS, &st.MaxAudioDurationMS, &st.MaxFileSize, &st.Temperature, &st.VADEnabled, &st.PhrasePromptsEnabled, &st.PhrasePrompt,
 		&st.Timeout, &st.Concurrency, &st.RetryLimit, &st.AllowedCIDRs,
 		&heartbeat, &lastTestAt, &lastTestOK, &st.LastTestError)
@@ -635,7 +641,7 @@ func (s *server) adminTranscription(w http.ResponseWriter, r *http.Request) {
 	msg := strings.TrimSpace(q.Get("msg"))
 	s.page(w, r, "admin_transcription.html", "Transcription", "transcription", map[string]any{
 		"Enabled": st.Enabled, "Processing": st.Processing, "Provider": st.Provider, "ProviderType": st.ProviderType,
-		"Endpoint": st.Endpoint, "Model": st.Model, "Language": st.Language,
+		"Endpoint": st.Endpoint, "Model": st.Model, "Profile": st.Profile, "Language": st.Language,
 		"MinDurationSeconds": float64(st.MinDurationMS) / 1000, "MaxDurationMinutes": float64(st.MaxAudioDurationMS) / 60000,
 		"MaxFileSizeMB": float64(st.MaxFileSize) / (1024 * 1024), "Temperature": st.Temperature,
 		"VAD": st.VADEnabled, "PhrasePrompts": st.PhrasePromptsEnabled, "PhrasePrompt": st.PhrasePrompt,
@@ -770,7 +776,7 @@ func (s *server) adminSaveTranscriptionConfig(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
-	_, err := s.db.Exec(r.Context(), `UPDATE transcription_config SET enabled=$1,processing_enabled=$2,provider=$3,provider_type=$4,default_language=NULLIF($5,''),endpoint_url=NULLIF($6,''),model=NULLIF($7,''),max_file_size=$8,max_audio_duration_ms=$9,min_duration_ms=$10,temperature=$11,vad_enabled=$12,phrase_prompts_enabled=$13,phrase_prompt=NULLIF($14,''),request_timeout_seconds=$15,concurrency=$16,retry_limit=$17,allowed_endpoint_cidrs=$18,updated_at=now() WHERE id=true`, r.FormValue("enabled") == "on", r.FormValue("processing_enabled") == "on", strings.TrimSpace(r.FormValue("provider")), providerType, strings.TrimSpace(r.FormValue("language")), strings.TrimSpace(r.FormValue("endpoint")), strings.TrimSpace(r.FormValue("model")), maxSize, maxDur, minDur, temperature, r.FormValue("vad_enabled") == "on", r.FormValue("phrase_prompts_enabled") == "on", r.FormValue("phrase_prompt"), timeout, concurrency, retries, allowedCIDRs)
+	_, err := s.db.Exec(r.Context(), `UPDATE transcription_config SET enabled=$1,processing_enabled=$2,provider=$3,provider_type=$4,default_language=NULLIF($5,''),endpoint_url=NULLIF($6,''),model=NULLIF($7,''),profile=NULLIF($8,''),max_file_size=$9,max_audio_duration_ms=$10,min_duration_ms=$11,temperature=$12,vad_enabled=$13,phrase_prompts_enabled=$14,phrase_prompt=NULLIF($15,''),request_timeout_seconds=$16,concurrency=$17,retry_limit=$18,allowed_endpoint_cidrs=$19,settings_version=settings_version+1,updated_at=now() WHERE id=true`, r.FormValue("enabled") == "on", r.FormValue("processing_enabled") == "on", strings.TrimSpace(r.FormValue("provider")), providerType, strings.TrimSpace(r.FormValue("language")), strings.TrimSpace(r.FormValue("endpoint")), strings.TrimSpace(r.FormValue("model")), strings.TrimSpace(r.FormValue("profile")), maxSize, maxDur, minDur, temperature, r.FormValue("vad_enabled") == "on", r.FormValue("phrase_prompts_enabled") == "on", r.FormValue("phrase_prompt"), timeout, concurrency, retries, allowedCIDRs)
 	if err != nil {
 		s.internal(w, err)
 		return
@@ -790,7 +796,7 @@ func (s *server) adminEditTranscript(w http.ResponseWriter, r *http.Request) {
 	}
 	identity := s.requestIdentity(r)
 	var callID string
-	err := s.db.QueryRow(r.Context(), `UPDATE transcripts SET edited_text=NULLIF($2,''),edited_at=now(),edited_by=$3,review_status='needs_review',reviewed_at=NULL,reviewed_by=NULL,updated_at=now() WHERE id=$1 RETURNING call_id`, id, text, identity).Scan(&callID)
+	err := s.db.QueryRow(r.Context(), `UPDATE transcripts SET edited_text=NULLIF($2,''),edited_at=now(),edited_by=$3,review_status='unreviewed',reviewed_at=NULL,reviewed_by=NULL,updated_at=now() WHERE id=$1 RETURNING call_id`, id, text, identity).Scan(&callID)
 	if err != nil {
 		s.internal(w, err)
 		return
@@ -799,18 +805,85 @@ func (s *server) adminEditTranscript(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin/transcription", 303)
 }
 
+type transcriptReviewItem struct {
+	ID                                                                   int64
+	CallID, Generated, Edited, Received, Effective, Notes                string
+	Status, Provider, Model, Profile, Language                           string
+	SystemID, SystemName, TalkgroupID, TalkgroupName, RadioID, RadioName string
+	StartTime                                                            time.Time
+	DurationMS                                                           int64
+}
+
+func (s *server) adminTranscriptReview(w http.ResponseWriter, r *http.Request) {
+	if !s.editorAuthorized(w, r) {
+		return
+	}
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	if status == "" {
+		status = "unreviewed"
+	}
+	valid := map[string]bool{"unreviewed": true, "reviewed": true, "rejected": true, "inaudible": true, "no_speech": true}
+	if !valid[status] {
+		http.Error(w, "invalid review status", http.StatusBadRequest)
+		return
+	}
+	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+	var item transcriptReviewItem
+	err := s.db.QueryRow(r.Context(), `SELECT t.id,t.call_id,coalesce(t.text,''),coalesce(t.edited_text,''),coalesce(c.transcript,''),coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,''),NULLIF(c.transcript,''),''),coalesce(t.review_notes,''),t.review_status,coalesce(t.provider,''),coalesce(t.model,''),coalesce(t.profile,''),coalesce(t.language,''),c.system_id,coalesce(c.system_name,''),c.talkgroup_id,coalesce(c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(c.radio_name,''),c.start_time,c.duration_ms
+		FROM transcripts t JOIN calls c ON c.id=t.call_id WHERE t.review_status=$1 AND t.id>$2 ORDER BY t.id LIMIT 1`, status, after).Scan(
+		&item.ID, &item.CallID, &item.Generated, &item.Edited, &item.Received, &item.Effective, &item.Notes, &item.Status, &item.Provider, &item.Model, &item.Profile, &item.Language, &item.SystemID, &item.SystemName, &item.TalkgroupID, &item.TalkgroupName, &item.RadioID, &item.RadioName, &item.StartTime, &item.DurationMS)
+	if errors.Is(err, pgx.ErrNoRows) && after > 0 {
+		http.Redirect(w, r, "/admin/transcription/review?status="+url.QueryEscape(status), http.StatusSeeOther)
+		return
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		s.internal(w, err)
+		return
+	}
+	counts := map[string]int64{}
+	rows, countErr := s.db.Query(r.Context(), `SELECT review_status,count(*) FROM transcripts GROUP BY review_status`)
+	if countErr == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			var count int64
+			if rows.Scan(&name, &count) == nil {
+				counts[name] = count
+			}
+		}
+	}
+	s.page(w, r, "admin_transcription_review.html", "Transcript review", "transcription", map[string]any{"Item": item, "HasItem": err == nil, "Status": status, "Counts": counts})
+}
+
 func (s *server) adminReviewTranscript(w http.ResponseWriter, r *http.Request) {
 	if !s.editorAuthorized(w, r) {
 		return
 	}
 	id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
 	status := strings.TrimSpace(r.FormValue("status"))
-	if id < 1 || (status != "reviewed" && status != "rejected" && status != "unreviewed") {
+	if id < 1 || (status != "reviewed" && status != "rejected" && status != "inaudible" && status != "no_speech" && status != "unreviewed") {
 		http.Error(w, "invalid transcript review", http.StatusBadRequest)
 		return
 	}
+	text := strings.TrimSpace(r.FormValue("text"))
+	notes := strings.TrimSpace(r.FormValue("review_notes"))
+	if len(text) > 10000 || len(notes) > 2000 {
+		http.Error(w, "transcript or review notes are too long", http.StatusBadRequest)
+		return
+	}
+	if status == "reviewed" && r.Form.Has("text") && text == "" {
+		http.Error(w, "reviewed transcripts require text", http.StatusBadRequest)
+		return
+	}
+	saveText := r.Form.Has("text") && (status == "reviewed" || status == "rejected")
 	var callID string
-	err := s.db.QueryRow(r.Context(), `UPDATE transcripts SET review_status=$2,reviewed_at=CASE WHEN $2='unreviewed' THEN NULL ELSE now() END,reviewed_by=CASE WHEN $2='unreviewed' THEN NULL ELSE $3 END,updated_at=now() WHERE id=$1 RETURNING call_id`, id, status, s.requestIdentity(r)).Scan(&callID)
+	err := s.db.QueryRow(r.Context(), `UPDATE transcripts SET
+		edited_text=CASE WHEN $4 THEN NULLIF(NULLIF($5,''),coalesce(NULLIF(text,''),(SELECT NULLIF(c.transcript,'') FROM calls c WHERE c.id=transcripts.call_id))) ELSE edited_text END,
+		edited_at=CASE WHEN $4 AND NULLIF(NULLIF($5,''),coalesce(NULLIF(text,''),(SELECT NULLIF(c.transcript,'') FROM calls c WHERE c.id=transcripts.call_id))) IS DISTINCT FROM edited_text THEN now() ELSE edited_at END,
+		edited_by=CASE WHEN $4 AND NULLIF(NULLIF($5,''),coalesce(NULLIF(text,''),(SELECT NULLIF(c.transcript,'') FROM calls c WHERE c.id=transcripts.call_id))) IS DISTINCT FROM edited_text THEN $3 ELSE edited_by END,
+		review_notes=CASE WHEN $4 THEN NULLIF($6,'') ELSE review_notes END,
+		review_status=$2,reviewed_at=CASE WHEN $2='unreviewed' THEN NULL ELSE now() END,reviewed_by=CASE WHEN $2='unreviewed' THEN NULL ELSE $3 END,updated_at=now()
+		WHERE id=$1 RETURNING call_id`, id, status, s.requestIdentity(r), saveText, text, notes).Scan(&callID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		http.Error(w, "transcript not found", http.StatusNotFound)
 		return
@@ -820,6 +893,10 @@ func (s *server) adminReviewTranscript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordAudit(r.Context(), r, "transcript.review", "transcript", strconv.FormatInt(id, 10), map[string]any{"call_id": callID, "status": status})
+	if r.FormValue("review_ui") == "1" {
+		http.Redirect(w, r, "/admin/transcription/review?status=unreviewed", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, safeAdminReturn(r.FormValue("return"), "/admin/transcription"), http.StatusSeeOther)
 }
 

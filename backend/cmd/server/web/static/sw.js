@@ -1,7 +1,7 @@
-const CACHE = 'call-recorder-shell-v1';
+const CACHE = 'call-recorder-shell-v2';
 const SHELL = [
-  '/static/app.css?v=20260802a',
-  '/static/app.js?v=20260802a',
+  '/static/app.css?v=20260802b',
+  '/static/app.js?v=20260802b',
   '/static/theme.js?v=20260731j',
   '/static/favicon.svg',
   '/static/manifest.webmanifest'

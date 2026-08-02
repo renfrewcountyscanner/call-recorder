@@ -90,6 +90,8 @@ type transcriptionConfig struct {
 	ProviderType          string
 	Endpoint              string
 	Model                 string
+	Profile               string
+	SettingsVersion       int64
 	SecretRef             string
 	DefaultLanguage       *string
 	MinDurationMS         int64
@@ -108,8 +110,8 @@ type transcriptionConfig struct {
 func loadTranscriptionConfig(ctx context.Context, pool *pgxpool.Pool) (transcriptionConfig, error) {
 	var cfg transcriptionConfig
 	var lang *string
-	err := pool.QueryRow(ctx, `SELECT enabled,processing_enabled,provider,provider_type,coalesce(endpoint_url,''),coalesce(model,''),coalesce(secret_ref,''),default_language,min_duration_ms,max_audio_duration_ms,max_file_size,temperature,vad_enabled,phrase_prompts_enabled,coalesce(phrase_prompt,''),request_timeout_seconds,concurrency,retry_limit,allowed_endpoint_cidrs FROM transcription_config WHERE id=true`).Scan(
-		&cfg.Enabled, &cfg.ProcessingEnabled, &cfg.Provider, &cfg.ProviderType, &cfg.Endpoint, &cfg.Model, &cfg.SecretRef, &lang,
+	err := pool.QueryRow(ctx, `SELECT enabled,processing_enabled,provider,provider_type,coalesce(endpoint_url,''),coalesce(model,''),coalesce(profile,''),settings_version,coalesce(secret_ref,''),default_language,min_duration_ms,max_audio_duration_ms,max_file_size,temperature,vad_enabled,phrase_prompts_enabled,coalesce(phrase_prompt,''),request_timeout_seconds,concurrency,retry_limit,allowed_endpoint_cidrs FROM transcription_config WHERE id=true`).Scan(
+		&cfg.Enabled, &cfg.ProcessingEnabled, &cfg.Provider, &cfg.ProviderType, &cfg.Endpoint, &cfg.Model, &cfg.Profile, &cfg.SettingsVersion, &cfg.SecretRef, &lang,
 		&cfg.MinDurationMS, &cfg.MaxAudioDurationMS, &cfg.MaxFileSize, &cfg.Temperature, &cfg.VADEnabled, &cfg.PhrasePromptsEnabled, &cfg.PhrasePrompt,
 		&cfg.RequestTimeoutSeconds, &cfg.Concurrency, &cfg.RetryLimit, &cfg.AllowedEndpointCIDRs)
 	if err != nil {
@@ -291,7 +293,7 @@ func transcriptionWorker(ctx context.Context, pool *pgxpool.Pool, cfg transcript
 		if language == "" && cfg.DefaultLanguage != nil {
 			language = *cfg.DefaultLanguage
 		}
-		text, err := transcribeFile(client, cfg, apiKey, filepath.Join(os.Getenv("CALL_RECORDER_AUDIO_ROOT"), job.audioPath), job.durationMS, language)
+		result, err := transcribeFile(client, cfg, apiKey, filepath.Join(os.Getenv("CALL_RECORDER_AUDIO_ROOT"), job.audioPath), job.durationMS, language)
 		if err != nil {
 			safe := sanitizeTranscriptionError(err)
 			backoffSec := int64(math.Min(math.Pow(2, float64(job.attemptCount)), 3600))
@@ -304,7 +306,8 @@ func transcriptionWorker(ctx context.Context, pool *pgxpool.Pool, cfg transcript
 				WHERE id=$4`, cfg.RetryLimit, safe, backoffSec, job.id)
 			continue
 		}
-		_, err = pool.Exec(ctx, `INSERT INTO transcripts(call_id,provider,language,model,text,original_text) VALUES($1,$2,NULLIF($3,''),NULLIF($4,''),$5,$5) ON CONFLICT(call_id,provider) DO UPDATE SET text=EXCLUDED.text,language=EXCLUDED.language,model=EXCLUDED.model,review_status=CASE WHEN transcripts.edited_text IS NOT NULL THEN 'needs_review' ELSE 'unreviewed' END,updated_at=now()`, job.callID, cfg.Provider, language, cfg.Model, text)
+		segments, _ := json.Marshal(result.Segments)
+		_, err = pool.Exec(ctx, `INSERT INTO transcripts(call_id,provider,language,model,profile,settings_version,text,original_text,timed_segments) VALUES($1,$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$7,$8) ON CONFLICT(call_id,provider) DO UPDATE SET text=EXCLUDED.text,language=EXCLUDED.language,model=EXCLUDED.model,profile=EXCLUDED.profile,settings_version=EXCLUDED.settings_version,timed_segments=EXCLUDED.timed_segments,review_status='unreviewed',reviewed_at=NULL,reviewed_by=NULL,updated_at=now()`, job.callID, cfg.Provider, language, cfg.Model, cfg.Profile, cfg.SettingsVersion, result.Text, segments)
 		if err == nil {
 			_, _ = pool.Exec(ctx, `UPDATE transcription_jobs SET status='completed',completed_at=now(),error=NULL,updated_at=now() WHERE id=$1`, job.id)
 			// Keyword rules are evaluated again after generated text becomes
@@ -322,35 +325,48 @@ func transcriptionWorker(ctx context.Context, pool *pgxpool.Pool, cfg transcript
 	return nil
 }
 
-func transcribeFile(client *http.Client, cfg transcriptionConfig, key, path string, durationMS int64, language string) (string, error) {
+type timedTranscriptSegment struct {
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+	Text  string  `json:"text"`
+}
+
+type transcriptionResult struct {
+	Text     string                   `json:"text"`
+	Segments []timedTranscriptSegment `json:"segments,omitempty"`
+}
+
+func transcribeFile(client *http.Client, cfg transcriptionConfig, key, path string, durationMS int64, language string) (transcriptionResult, error) {
+	var empty transcriptionResult
 	st, err := os.Stat(path)
 	if err != nil {
-		return "", err
+		return empty, err
 	}
 	if st.Size() > cfg.MaxFileSize {
-		return "", fmt.Errorf("audio file size %d exceeds transcription limit %d", st.Size(), cfg.MaxFileSize)
+		return empty, fmt.Errorf("audio file size %d exceeds transcription limit %d", st.Size(), cfg.MaxFileSize)
 	}
 	if err := checkDurationLimits(durationMS, cfg.MinDurationMS, cfg.MaxAudioDurationMS); err != nil {
-		return "", err
+		return empty, err
 	}
 
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	part, err := mw.CreateFormFile("file", filepath.Base(path))
 	if err != nil {
-		return "", err
+		return empty, err
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return empty, err
 	}
 	if _, err = io.Copy(part, f); err != nil {
 		f.Close()
-		return "", err
+		return empty, err
 	}
 	f.Close()
 
 	_ = mw.WriteField("model", cfg.Model)
+	_ = mw.WriteField("response_format", "verbose_json")
 	if language != "" {
 		_ = mw.WriteField("language", language)
 	}
@@ -364,12 +380,12 @@ func transcribeFile(client *http.Client, cfg transcriptionConfig, key, path stri
 		_ = mw.WriteField("vad_filter", "true")
 	}
 	if err = mw.Close(); err != nil {
-		return "", err
+		return empty, err
 	}
 
 	req, err := http.NewRequest(http.MethodPost, cfg.Endpoint, &body)
 	if err != nil {
-		return "", err
+		return empty, err
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	if key != "" {
@@ -377,23 +393,25 @@ func transcribeFile(client *http.Client, cfg transcriptionConfig, key, path stri
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return empty, err
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return "", err
+		return empty, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("provider returned HTTP %d", resp.StatusCode)
+		return empty, fmt.Errorf("provider returned HTTP %d", resp.StatusCode)
 	}
-	var out struct {
-		Text string `json:"text"`
-	}
+	var out transcriptionResult
 	if json.Unmarshal(raw, &out) != nil {
-		return "", errors.New("provider response is not valid JSON with a text field")
+		return empty, errors.New("provider response is not valid JSON with a text field")
 	}
-	return strings.TrimSpace(out.Text), nil
+	out.Text = strings.TrimSpace(out.Text)
+	for i := range out.Segments {
+		out.Segments[i].Text = strings.TrimSpace(out.Segments[i].Text)
+	}
+	return out, nil
 }
 
 func sanitizeTranscriptionError(err error) string {

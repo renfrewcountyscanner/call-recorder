@@ -159,14 +159,15 @@ func (s *server) adminDatasets(w http.ResponseWriter, r *http.Request) {
 }
 
 type datasetFilters struct {
-	From      string `json:"from,omitempty"`
-	To        string `json:"to,omitempty"`
-	Sender    string `json:"sender,omitempty"`
-	System    string `json:"system,omitempty"`
-	Talkgroup string `json:"talkgroup,omitempty"`
-	Language  string `json:"language,omitempty"`
-	Provider  string `json:"provider,omitempty"`
-	Review    string `json:"review_status,omitempty"`
+	ExportType string `json:"export_type"`
+	From       string `json:"from,omitempty"`
+	To         string `json:"to,omitempty"`
+	Sender     string `json:"sender,omitempty"`
+	System     string `json:"system,omitempty"`
+	Talkgroup  string `json:"talkgroup,omitempty"`
+	Language   string `json:"language,omitempty"`
+	Provider   string `json:"provider,omitempty"`
+	Review     string `json:"review_status,omitempty"`
 }
 
 func (s *server) adminCreateDataset(w http.ResponseWriter, r *http.Request) {
@@ -178,10 +179,18 @@ func (s *server) adminCreateDataset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f := datasetFilters{
-		From: strings.TrimSpace(r.FormValue("from")), To: strings.TrimSpace(r.FormValue("to")),
+		ExportType: strings.TrimSpace(r.FormValue("export_type")),
+		From:       strings.TrimSpace(r.FormValue("from")), To: strings.TrimSpace(r.FormValue("to")),
 		Sender: strings.TrimSpace(r.FormValue("sender")), System: strings.TrimSpace(r.FormValue("system")),
 		Talkgroup: strings.TrimSpace(r.FormValue("talkgroup")), Language: strings.TrimSpace(r.FormValue("language")),
 		Provider: strings.TrimSpace(r.FormValue("provider")), Review: strings.TrimSpace(r.FormValue("review_status")),
+	}
+	if f.ExportType == "" {
+		f.ExportType = "asr_finetune"
+	}
+	if f.ExportType != "asr_finetune" && f.ExportType != "hallucination_evaluation" {
+		http.Error(w, "invalid export type", http.StatusBadRequest)
+		return
 	}
 	for _, date := range []string{f.From, f.To} {
 		if date != "" {
@@ -191,7 +200,7 @@ func (s *server) adminCreateDataset(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if f.Review != "" && f.Review != "unreviewed" && f.Review != "reviewed" && f.Review != "rejected" && f.Review != "needs_review" {
+	if f.Review != "" && f.Review != "reviewed" && f.Review != "rejected" && f.Review != "inaudible" && f.Review != "no_speech" {
 		http.Error(w, "invalid review status", http.StatusBadRequest)
 		return
 	}
@@ -207,17 +216,31 @@ func (s *server) adminCreateDataset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	_, err = tx.Exec(r.Context(), `INSERT INTO dataset_exports(id,requested_by,filters) VALUES($1,$2,$3)`, id, s.requestIdentity(r), rawFilters)
+	_, err = tx.Exec(r.Context(), `INSERT INTO dataset_exports(id,requested_by,filters,export_type,schema_version) VALUES($1,$2,$3,$4,2)`, id, s.requestIdentity(r), rawFilters, f.ExportType)
 	if err == nil {
-		_, err = tx.Exec(r.Context(), `INSERT INTO dataset_export_items(export_id,call_id,transcript_id,effective_text,received_text,generated_text,edited_text,review_status,language,provider,model,split)
-			SELECT $1,c.id,t.id,coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,''),NULLIF(c.transcript,'')),NULLIF(c.transcript,''),NULLIF(t.text,''),NULLIF(t.edited_text,''),coalesce(t.review_status,'unreviewed'),t.language,t.provider,t.model,
-			CASE WHEN mod(abs(hashtext(c.id)::bigint),100)<90 THEN 'train' WHEN mod(abs(hashtext(c.id)::bigint),100)<95 THEN 'validation' ELSE 'test' END
+		_, err = tx.Exec(r.Context(), `WITH selected AS (
+			SELECT c.*,t.id transcript_id,t.text generated_text,t.edited_text,t.review_status,t.reviewed_at,t.reviewed_by,t.review_notes,t.language,t.provider,t.model,t.profile,t.settings_version,t.timed_segments,
+				CASE WHEN NULLIF(t.edited_text,'') IS NOT NULL THEN 'human_edited' WHEN NULLIF(t.text,'') IS NOT NULL THEN 'generated' ELSE 'received' END label_source,
+				CASE WHEN t.review_status='no_speech' THEN '' ELSE coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,''),NULLIF(c.transcript,''),'') END effective_text,
+				lag(c.start_time) OVER (PARTITION BY c.system_id,c.talkgroup_id,coalesce(c.radio_id,'') ORDER BY c.start_time,c.id) previous_time
 			FROM calls c LEFT JOIN LATERAL (SELECT * FROM transcripts x WHERE x.call_id=c.id ORDER BY x.updated_at DESC LIMIT 1) t ON true
-			WHERE coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,''),NULLIF(c.transcript,'')) IS NOT NULL
-			AND ($2='' OR c.start_time::date >= $2::date) AND ($3='' OR c.start_time::date <= $3::date)
+			WHERE ($2='' OR c.start_time::date >= $2::date) AND ($3='' OR c.start_time::date <= $3::date)
 			AND ($4='' OR c.sender_id=$4) AND ($5='' OR c.system_id=$5) AND ($6='' OR c.talkgroup_id=$6)
-			AND ($7='' OR coalesce(t.language,'')=$7) AND ($8='' OR coalesce(t.provider,'')=$8) AND ($9='' OR coalesce(t.review_status,'unreviewed')=$9)`,
-			id, f.From, f.To, f.Sender, f.System, f.Talkgroup, f.Language, f.Provider, f.Review)
+		), grouped AS (
+			SELECT selected.*,sum(CASE WHEN previous_time IS NULL OR start_time-previous_time > interval '5 minutes' THEN 1 ELSE 0 END)
+				OVER (PARTITION BY system_id,talkgroup_id,coalesce(radio_id,'') ORDER BY start_time,id) group_number FROM selected
+		), identified AS (
+			SELECT grouped.*,md5(system_id||E'\x1f'||talkgroup_id||E'\x1f'||coalesce(radio_id,'')||E'\x1f'||min(start_time) OVER (PARTITION BY system_id,talkgroup_id,coalesce(radio_id,''),group_number)::text) conversation_id FROM grouped
+		)
+		INSERT INTO dataset_export_items(export_id,call_id,transcript_id,effective_text,received_text,generated_text,edited_text,review_status,language,provider,model,split,label_source,reviewed_at,reviewer,review_notes,conversation_group_id,profile,settings_version,timed_segments)
+		SELECT $1,id,transcript_id,effective_text,NULLIF(transcript,''),NULLIF(generated_text,''),NULLIF(edited_text,''),review_status,language,provider,model,
+			CASE WHEN mod(abs(hashtext(conversation_id)::bigint),100)<90 THEN 'train' WHEN mod(abs(hashtext(conversation_id)::bigint),100)<95 THEN 'validation' ELSE 'test' END,
+			label_source,reviewed_at,reviewed_by,review_notes,conversation_id,profile,settings_version,timed_segments FROM identified
+		WHERE ($7='' OR coalesce(language,'')=$7) AND ($8='' OR coalesce(provider,'')=$8)
+		AND (($10='asr_finetune' AND review_status='reviewed' AND NULLIF(effective_text,'') IS NOT NULL)
+		  OR ($10='hallucination_evaluation' AND review_status IN ('rejected','no_speech')))
+		AND ($9='' OR review_status=$9)`,
+			id, f.From, f.To, f.Sender, f.System, f.Talkgroup, f.Language, f.Provider, f.Review, f.ExportType)
 	}
 	if err == nil {
 		_, err = tx.Exec(r.Context(), `UPDATE dataset_exports e SET total_items=x.n,estimated_bytes=x.bytes,updated_at=now()

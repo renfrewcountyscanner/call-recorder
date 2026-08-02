@@ -70,7 +70,7 @@ control SDR hardware.
 - Jobs are durable, use skip-locked claiming, recover abandoned running work,
   use exponential backoff, and leave terminal failures for explicit retry.
 - Received text remains distinct from generated, original and edited text.
-  Edits become `needs_review`; administrators can approve or reject them.
+  Edits become `unreviewed`; reviewers can mark them reviewed, rejected, inaudible, or no-speech.
 - Dataset export takes a transactional snapshot filtered by dates, sender,
   system, talkgroup, language, provider and review status.
 - A background worker builds a ZIP containing original audio, `manifest.jsonl`,
