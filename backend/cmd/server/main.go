@@ -2845,16 +2845,31 @@ func formatDuration(ms int64) string {
 	return fmt.Sprintf("%d:%02d", m, s)
 }
 
-func formatBytes(value uint64) string {
+func formatBytes(value any) string {
+	var byteCount uint64
+	switch typed := value.(type) {
+	case uint64:
+		byteCount = typed
+	case int64:
+		if typed > 0 {
+			byteCount = uint64(typed)
+		}
+	case uint:
+		byteCount = uint64(typed)
+	case int:
+		if typed > 0 {
+			byteCount = uint64(typed)
+		}
+	}
 	units := []string{"B", "KiB", "MiB", "GiB", "TiB"}
-	n := float64(value)
+	n := float64(byteCount)
 	i := 0
 	for n >= 1024 && i < len(units)-1 {
 		n /= 1024
 		i++
 	}
 	if i == 0 {
-		return fmt.Sprintf("%d %s", value, units[i])
+		return fmt.Sprintf("%d %s", byteCount, units[i])
 	}
 	return fmt.Sprintf("%.1f %s", n, units[i])
 }

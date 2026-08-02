@@ -172,6 +172,9 @@ func TestFormatBytesIsHumanReadable(t *testing.T) {
 			t.Fatalf("formatBytes(%d) = %q, want %q", value, got, want)
 		}
 	}
+	if got := formatBytes(int64(722337157)); got != "688.9 MiB" {
+		t.Fatalf("formatBytes accepts PostgreSQL bigint values: got %q", got)
+	}
 }
 
 func TestCloudflareIdentityMapsAdminAndViewer(t *testing.T) {
