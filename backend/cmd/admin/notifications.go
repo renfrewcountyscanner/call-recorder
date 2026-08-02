@@ -238,7 +238,7 @@ func sendSMTPNotification(config map[string]any, secret *string, body string) er
 	if err != nil {
 		return err
 	}
-	headers := "From: " + from + "\r\nTo: " + to + "\r\nSubject: Call Recorder notification\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n"
+	headers := "From: " + from + "\r\nTo: " + to + "\r\nSubject: Call Logger v1.0.0 notification\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n"
 	if _, err = io.WriteString(writer, headers+"<p>"+html.EscapeString(body)+"</p>"); err != nil {
 		_ = writer.Close()
 		return err
@@ -297,7 +297,7 @@ func sendTestNotification(pool *pgxpool.Pool, id int64) {
 	}
 	var config map[string]any
 	_ = json.Unmarshal(cfg, &config)
-	body := fmt.Sprintf("Test notification from Call Recorder — %s", time.Now().UTC().Format(time.RFC3339))
+	body := fmt.Sprintf("Test notification from Call Logger v1.0.0 — %s", time.Now().UTC().Format(time.RFC3339))
 	if typ == "smtp" {
 		if err := sendSMTPNotification(config, secret, body); err != nil {
 			fatal(fmt.Errorf("test send failed: %w", err))

@@ -1,6 +1,6 @@
 {
-  "name": "Call Recorder",
-  "short_name": "Calls",
+  "name": "Call Logger v1.0.0",
+  "short_name": "Call Logger",
   "description": "Live scanner call playback, search and receiver status",
   "start_url": "/",
   "scope": "/",

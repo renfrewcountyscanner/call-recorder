@@ -342,7 +342,7 @@ func (s *server) adminDestinationAction(w http.ResponseWriter, r *http.Request) 
 		}
 		var config map[string]any
 		_ = json.Unmarshal(cfg, &config)
-		body := fmt.Sprintf("Test notification from Call Recorder — %s", time.Now().UTC().Format(time.RFC3339))
+		body := fmt.Sprintf("Test notification from Call Logger v1.0.0 — %s", time.Now().UTC().Format(time.RFC3339))
 		testErr := s.sendTestNotificationDirect(r.Context(), typ, config, secret, body)
 		if testErr != nil {
 			http.Redirect(w, r, "/admin/notifications?test=fail&error="+url.QueryEscape(testErr.Error()), 303)
@@ -1345,7 +1345,7 @@ func (s *server) sendTestNotificationDirect(ctx context.Context, typ string, con
 		if err != nil {
 			return err
 		}
-		headers := "From: " + from + "\r\nTo: " + to + "\r\nSubject: Call Recorder test notification\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n"
+		headers := "From: " + from + "\r\nTo: " + to + "\r\nSubject: Call Logger v1.0.0 test notification\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n"
 		if _, err = io.WriteString(writer, headers+"<p>"+html.EscapeString(body)+"</p>"); err != nil {
 			_ = writer.Close()
 			return err

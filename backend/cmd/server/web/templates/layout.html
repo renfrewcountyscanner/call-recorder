@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{if .Nav.Title}}{{.Nav.Title}}{{else}}Call Recorder{{end}}</title>
+<title>{{if .Nav.Title}}{{.Nav.Title}} · {{end}}Call Logger v1.0.0</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <link rel="manifest" href="/static/manifest.webmanifest">
 <meta name="theme-color" content="#131a25">
@@ -31,7 +31,7 @@
   <div class="wrap header-row">
     <a class="brand" href="/">
       <svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="12" fill="none"/><path d="M14 40c8-14 12-21 18-21s10 7 18 21" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round"/><circle cx="32" cy="19" r="5" fill="currentColor"/><rect x="12" y="44" width="40" height="5" rx="2.5" fill="currentColor" opacity=".35"/></svg>
-      <span>Call Recorder <span class="version">{{.Nav.Version}}</span></span>
+      <span>Call Logger <span class="version">{{.Nav.Version}}</span></span>
     </a>
     <button class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="main-nav" aria-label="Toggle navigation"><svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg></button>
     <nav id="main-nav" aria-label="Main navigation">

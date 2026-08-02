@@ -334,7 +334,7 @@
       titleEl.textContent = item.title;
       if (metaEl) metaEl.textContent = item.meta;
 	  if ('mediaSession' in navigator) {
-		navigator.mediaSession.metadata = new MediaMetadata({title: item.title, artist: item.meta, album: 'Call Recorder'});
+		navigator.mediaSession.metadata = new MediaMetadata({title: item.title, artist: item.meta, album: 'Call Logger v1.0.0'});
 	  }
       showBar();
       var promise = audio.play();
