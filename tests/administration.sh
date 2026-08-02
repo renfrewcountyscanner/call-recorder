@@ -55,6 +55,11 @@ test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_te
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select octet_length(key_hash)>32 from remote_senders where sender_id='web-test-sender'")" = t
 curl -fsS -b "$work/cookie" -d 'sender_id=web-test-sender' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/senders/disable | grep -q 303
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select enabled from remote_senders where sender_id='web-test-sender'")" = f
+# Delete must archive a credential even when historical upload rows reference it.
+$compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -c "insert into pending_uploads(id,token_hash,sender_id,metadata,audio_format,status,expires_at) values('sender-delete-ref',decode('01','hex'),'web-test-sender','{}','wav','expired',now())" >/dev/null
+curl -fsS -b "$work/cookie" -d 'sender_id=web-test-sender' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/senders/delete | grep -q 303
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select (not enabled) and deleted_at is not null from remote_senders where sender_id='web-test-sender'")" = t
+if curl -fsS -b "$work/cookie" http://127.0.0.1:18080/admin/senders | grep -q 'web-test-sender'; then echo 'archived sender still listed'; exit 1; fi
 # Transcription: provider type and CIDR validation.
 curl -fsS -b "$work/cookie" -d 'enabled=on&processing_enabled=on&provider=openai&provider_type=openai-compatible&endpoint=http%3A%2F%2Fexample.invalid%2Fv1%2Faudio%2Ftranscriptions&model=whisper-v3&language=en&min_duration_seconds=0.5&max_duration_minutes=15&max_file_size_mb=50&temperature=0&request_timeout_seconds=60&concurrency=1&retry_limit=3' http://127.0.0.1:18080/admin/transcription/config >/dev/null
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select provider_type from transcription_config where id=true")" = 'openai-compatible'

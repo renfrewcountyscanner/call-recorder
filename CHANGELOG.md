@@ -5,6 +5,7 @@
 - Fixed newly discovered talkgroups so transcription defaults on at both the database and ingestion layers while preserving administrator opt-outs.
 - Made Calls-page sender/system/site/receiver/talkgroup/radio choices refresh from current call data when opened, with server-side option search and recent-first suggestions.
 - Made filter labels show identifiers plus names, raised the option capacity, and use sender identity when FleetNet omits `receiver_id`.
+- Fixed sender deletion to revoke and archive credentials referenced by historical calls instead of returning a foreign-key error; archived senders no longer appear in active filter choices.
 - Changed compact call-detail values to yellow while keeping transcript text in the normal foreground colour.
 - Added a verified legacy comparison and a self-contained logger feature inventory.
 - Added an optional site-wide browser authentication gate with local admin/viewer sessions and trusted Cloudflare Access identity mapping.

@@ -771,18 +771,18 @@ type filterOption struct {
 // passed only as a query parameter.
 func (s *server) filterOptions(ctx context.Context, field, search string, selected map[string]struct{}) ([]filterOption, error) {
 	queries := map[string]string{
-		"sender": `SELECT sender_id, sender_id, max(start_time) FROM calls
-			WHERE coalesce(sender_id,'')<>'' AND ($1='' OR sender_id ILIKE '%'||$1||'%')
-			GROUP BY sender_id ORDER BY max(start_time) DESC, sender_id LIMIT 2000`,
+		"sender": `SELECT c.sender_id,c.sender_id,max(c.start_time) FROM calls c JOIN remote_senders r ON r.sender_id=c.sender_id AND r.enabled AND r.deleted_at IS NULL
+			WHERE coalesce(c.sender_id,'')<>'' AND ($1='' OR c.sender_id ILIKE '%'||$1||'%')
+			GROUP BY c.sender_id ORDER BY max(c.start_time) DESC,c.sender_id LIMIT 2000`,
 		"system": `SELECT system_id, CASE WHEN coalesce(max(NULLIF(system_name,'')),'')='' OR max(NULLIF(system_name,''))=system_id THEN system_id ELSE system_id||' — '||max(NULLIF(system_name,'')) END, max(start_time) FROM calls
 			WHERE coalesce(system_id,'')<>'' AND ($1='' OR system_id ILIKE '%'||$1||'%' OR coalesce(system_name,'') ILIKE '%'||$1||'%')
 			GROUP BY system_id ORDER BY max(start_time) DESC, system_id LIMIT 2000`,
 		"site": `SELECT site_id, CASE WHEN coalesce(max(NULLIF(site_name,'')),'')='' OR max(NULLIF(site_name,''))=site_id THEN site_id ELSE site_id||' — '||max(NULLIF(site_name,'')) END, max(start_time) FROM calls
 			WHERE coalesce(site_id,'')<>'' AND ($1='' OR site_id ILIKE '%'||$1||'%' OR coalesce(site_name,'') ILIKE '%'||$1||'%')
 			GROUP BY site_id ORDER BY max(start_time) DESC, site_id LIMIT 2000`,
-		"receiver": `SELECT coalesce(NULLIF(receiver_id,''),sender_id),coalesce(NULLIF(receiver_id,''),sender_id),max(start_time) FROM calls
-			WHERE coalesce(NULLIF(receiver_id,''),sender_id)<>'' AND ($1='' OR coalesce(NULLIF(receiver_id,''),sender_id) ILIKE '%'||$1||'%')
-			GROUP BY coalesce(NULLIF(receiver_id,''),sender_id) ORDER BY max(start_time) DESC,coalesce(NULLIF(receiver_id,''),sender_id) LIMIT 2000`,
+		"receiver": `SELECT coalesce(NULLIF(c.receiver_id,''),c.sender_id),coalesce(NULLIF(c.receiver_id,''),c.sender_id),max(c.start_time) FROM calls c JOIN remote_senders r ON r.sender_id=c.sender_id AND r.enabled AND r.deleted_at IS NULL
+			WHERE coalesce(NULLIF(c.receiver_id,''),c.sender_id)<>'' AND ($1='' OR coalesce(NULLIF(c.receiver_id,''),c.sender_id) ILIKE '%'||$1||'%')
+			GROUP BY coalesce(NULLIF(c.receiver_id,''),c.sender_id) ORDER BY max(c.start_time) DESC,coalesce(NULLIF(c.receiver_id,''),c.sender_id) LIMIT 2000`,
 		"talkgroup": `SELECT c.talkgroup_id, c.talkgroup_id||CASE WHEN coalesce(max(NULLIF(ta.alias,'')),max(NULLIF(c.talkgroup_name,'')),'')='' THEN '' ELSE ' — '||coalesce(max(NULLIF(ta.alias,'')),max(NULLIF(c.talkgroup_name,''))) END,max(c.start_time) FROM calls c
 			LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled
 			WHERE coalesce(c.talkgroup_id,'')<>'' AND ($1='' OR c.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(c.talkgroup_name,'') ILIKE '%'||$1||'%' OR coalesce(ta.alias,'') ILIKE '%'||$1||'%')
@@ -1882,7 +1882,7 @@ func (s *server) adminSendersPage(w http.ResponseWriter, r *http.Request, oneTim
 	if !s.adminOnly(w, r) {
 		return
 	}
-	rows, err := s.db.Query(r.Context(), `SELECT sender_id,enabled,created_at FROM remote_senders ORDER BY sender_id`)
+	rows, err := s.db.Query(r.Context(), `SELECT sender_id,enabled,created_at FROM remote_senders WHERE deleted_at IS NULL ORDER BY sender_id`)
 	if err != nil {
 		s.internal(w, err)
 		return
@@ -1925,7 +1925,7 @@ func (s *server) adminSenderWrite(w http.ResponseWriter, r *http.Request, replac
 		return "", "", err
 	}
 	if replace {
-		_, err = s.db.Exec(r.Context(), `INSERT INTO remote_senders(sender_id,key_hash,enabled) VALUES($1,$2,true) ON CONFLICT(sender_id) DO UPDATE SET key_hash=EXCLUDED.key_hash,enabled=true`, id, []byte(hash))
+		_, err = s.db.Exec(r.Context(), `INSERT INTO remote_senders(sender_id,key_hash,enabled,deleted_at) VALUES($1,$2,true,NULL) ON CONFLICT(sender_id) DO UPDATE SET key_hash=EXCLUDED.key_hash,enabled=true,deleted_at=NULL`, id, []byte(hash))
 	} else {
 		_, err = s.db.Exec(r.Context(), `INSERT INTO remote_senders(sender_id,key_hash,enabled) VALUES($1,$2,true)`, id, []byte(hash))
 	}
@@ -1991,7 +1991,12 @@ func (s *server) adminDeleteSender(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sender ID is required", http.StatusBadRequest)
 		return
 	}
-	tag, err := s.db.Exec(r.Context(), `DELETE FROM remote_senders WHERE sender_id=$1`, id)
+	revoked := make([]byte, 32)
+	if _, err := rand.Read(revoked); err != nil {
+		s.internal(w, err)
+		return
+	}
+	tag, err := s.db.Exec(r.Context(), `UPDATE remote_senders SET enabled=false,key_hash=$2,deleted_at=now() WHERE sender_id=$1 AND deleted_at IS NULL`, id, revoked)
 	if err != nil {
 		s.internal(w, err)
 		return

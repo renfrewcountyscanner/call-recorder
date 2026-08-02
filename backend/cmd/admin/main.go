@@ -84,7 +84,7 @@ func createOrReplace(pool *pgxpool.Pool, replace bool, args []string) {
 	}
 	ctx := context.Background()
 	if replace {
-		_, err = pool.Exec(ctx, `INSERT INTO remote_senders (sender_id,key_hash,enabled) VALUES ($1,$2,true) ON CONFLICT (sender_id) DO UPDATE SET key_hash=EXCLUDED.key_hash, enabled=true`, name, []byte(hash))
+		_, err = pool.Exec(ctx, `INSERT INTO remote_senders (sender_id,key_hash,enabled,deleted_at) VALUES ($1,$2,true,NULL) ON CONFLICT (sender_id) DO UPDATE SET key_hash=EXCLUDED.key_hash,enabled=true,deleted_at=NULL`, name, []byte(hash))
 	} else {
 		_, err = pool.Exec(ctx, `INSERT INTO remote_senders (sender_id,key_hash,enabled) VALUES ($1,$2,true)`, name, []byte(hash))
 	}
