@@ -57,8 +57,17 @@ if ($LASTEXITCODE -ne 0) { throw "Could not secure $dataDirectory" }
 if ($LASTEXITCODE -ne 0) { throw "Could not secure $programDirectory" }
 
 Invoke-Uploader -UploaderArguments @('check', '--config', $installedConfiguration)
-& $installedExecutable service --config $installedConfiguration stop 2>$null | Out-Null
-& $installedExecutable service --config $installedConfiguration uninstall 2>$null | Out-Null
+$savedErrorActionPreference = $ErrorActionPreference
+try {
+    # Upgrades may have an existing service; first installs legitimately do not.
+    # The service command reports a non-zero exit code when there is nothing to stop.
+    $ErrorActionPreference = 'Continue'
+    & $installedExecutable service --config $installedConfiguration stop 2>$null | Out-Null
+    & $installedExecutable service --config $installedConfiguration uninstall 2>$null | Out-Null
+}
+finally {
+    $ErrorActionPreference = $savedErrorActionPreference
+}
 Invoke-Uploader -UploaderArguments @('service', '--config', $installedConfiguration, 'install')
 Invoke-Uploader -UploaderArguments @('service', '--config', $installedConfiguration, 'start')
 Write-Host "Installed and started Call Logger ProScan Uploader."
