@@ -95,6 +95,8 @@ type loginFailure struct {
 }
 
 type callMetadata struct {
+	// Imported marks historical/backfill audio so it never delays live traffic.
+	Imported      bool            `json:"imported"`
 	SourceCallID  string          `json:"source_call_id"`
 	StartTime     time.Time       `json:"start_time"`
 	DurationMS    int64           `json:"duration_ms"`
@@ -439,6 +441,7 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 		AuthID       string `json:"apiAuthID"`
 		APIKey       string `json:"apiKey"`
 		AudioFormat  string `json:"callAudioFormat"`
+		Imported     bool   `json:"imported"`
 		RecordedCall struct {
 			StartTime     string  `json:"startTime"`
 			Duration      float64 `json:"callDuration"`
@@ -501,7 +504,7 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	target := request.RecordedCall.TalkGroupInfo.CallTargets[0]
 	info := request.RecordedCall.TalkGroupInfo
-	call := callMetadata{StartTime: start, DurationMS: int64(request.RecordedCall.Duration * 1000), ReceiverID: info.Receiver, SystemID: fmt.Sprint(info.SystemID), SystemName: info.SystemLabel, SiteID: fmt.Sprint(info.SiteID), SiteName: info.SiteLabel, TalkgroupID: target.ID.String(), TalkgroupName: target.Label, TalkgroupTag: target.Tag, RadioID: fmt.Sprint(info.SourceID), RadioName: info.SourceLabel, RadioTag: info.SourceTag, Frequency: fmt.Sprint(info.Frequency), LCN: fmt.Sprint(info.LCN), VoiceService: info.VoiceService, CallType: fmt.Sprint(info.CallType)}
+	call := callMetadata{Imported: request.Imported, StartTime: start, DurationMS: int64(request.RecordedCall.Duration * 1000), ReceiverID: info.Receiver, SystemID: fmt.Sprint(info.SystemID), SystemName: info.SystemLabel, SiteID: fmt.Sprint(info.SiteID), SiteName: info.SiteLabel, TalkgroupID: target.ID.String(), TalkgroupName: target.Label, TalkgroupTag: target.Tag, RadioID: fmt.Sprint(info.SourceID), RadioName: info.SourceLabel, RadioTag: info.SourceTag, Frequency: fmt.Sprint(info.Frequency), LCN: fmt.Sprint(info.LCN), VoiceService: info.VoiceService, CallType: fmt.Sprint(info.CallType)}
 	body, _ := json.Marshal(createUploadRequest{SenderID: canonicalSender, IdempotencyKey: "legacy-" + request.RecordedCall.StartTime + "-" + target.ID.String(), AudioFormat: strings.ToLower(request.AudioFormat), Call: call})
 	forward := r.Clone(r.Context())
 	forward.Body = io.NopCloser(bytes.NewReader(body))
@@ -795,7 +798,11 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 	}
 	finished = true
 	s.enqueueNotifications(r.Context(), callID)
-	if _, e := s.db.Exec(r.Context(), `INSERT INTO transcription_jobs(call_id,provider) SELECT $1,c.provider FROM transcription_config c JOIN talkgroup_aliases a ON a.system_id=(SELECT system_id FROM calls WHERE id=$1) AND a.talkgroup_id=(SELECT talkgroup_id FROM calls WHERE id=$1) WHERE c.id=true AND c.enabled AND c.processing_enabled AND (a.transcription_mode IN ('inherit','enabled')) AND EXISTS (SELECT 1 FROM application_secrets s WHERE s.purpose='transcription_api_key') AND (SELECT audio_format FROM calls WHERE id=$1) IN ('mp3','wav') AND (SELECT duration_ms FROM calls WHERE id=$1) BETWEEN c.min_duration_ms AND CASE WHEN c.max_audio_duration_ms>0 THEN c.max_audio_duration_ms ELSE 2147483647 END AND (SELECT audio_size FROM calls WHERE id=$1) BETWEEN 1 AND c.max_file_size AND NOT EXISTS (SELECT 1 FROM transcription_jobs j2 WHERE j2.call_id=$1 AND j2.status IN ('pending','running')) ON CONFLICT(call_id,provider) DO NOTHING`, callID); e != nil {
+	priority := 0
+	if call.Imported {
+		priority = -100
+	}
+	if _, e := s.db.Exec(r.Context(), `INSERT INTO transcription_jobs(call_id,provider,priority) SELECT $1,c.provider,$2 FROM transcription_config c JOIN talkgroup_aliases a ON a.system_id=(SELECT system_id FROM calls WHERE id=$1) AND a.talkgroup_id=(SELECT talkgroup_id FROM calls WHERE id=$1) WHERE c.id=true AND c.enabled AND c.processing_enabled AND (a.transcription_mode IN ('inherit','enabled')) AND EXISTS (SELECT 1 FROM application_secrets s WHERE s.purpose='transcription_api_key') AND (SELECT audio_format FROM calls WHERE id=$1) IN ('mp3','wav') AND (SELECT duration_ms FROM calls WHERE id=$1) BETWEEN c.min_duration_ms AND CASE WHEN c.max_audio_duration_ms>0 THEN c.max_audio_duration_ms ELSE 2147483647 END AND (SELECT audio_size FROM calls WHERE id=$1) BETWEEN 1 AND c.max_file_size AND NOT EXISTS (SELECT 1 FROM transcription_jobs j2 WHERE j2.call_id=$1 AND j2.status IN ('pending','running')) ON CONFLICT(call_id,provider) DO NOTHING`, callID, priority); e != nil {
 		s.logger.Error("transcription auto-enqueue failed", "call_id", callID, "error", e)
 	}
 	writeJSON(w, 201, map[string]string{"call_id": callID, "audio_path": rel, "status": "completed"})

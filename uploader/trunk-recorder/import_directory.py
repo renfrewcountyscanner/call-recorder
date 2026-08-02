@@ -96,7 +96,7 @@ def upload(audio, call, cfg):
     target = {"targetid": call.get("talkgroup", ""), "targetlabel": call.get("talkgroup_description", ""), "targettag": call.get("talkgroup_tag", "")}
     info = {"callTargets": [target], "receiver": receiver, "frequency": call.get("freq", ""), "sourceid": call.get("source", ""), "sourcelabel": call.get("source_description", ""), "sourcetag": "", "lcn": call.get("lcn", ""), "voiceservice": call.get("voice_service", ""), "systemid": system, "systemlabel": system, "systemtype": "", "siteid": call.get("site", ""), "sitelabel": call.get("site_description", ""), "calltype": "1"}
     duration = float(call.get("call_length") or 0) or audio_duration_seconds(audio)
-    metadata = {"apiAuthID": cfg["UPLOAD_ID"], "apiKey": cfg["UPLOAD_KEY"], "callAudioFormat": audio.suffix.lstrip(".").lower(), "recordedCall": {"talkGroupInfo": info, "startTime": started, "callDuration": duration, "startPositionSec": "00:00:00"}}
+    metadata = {"apiAuthID": cfg["UPLOAD_ID"], "apiKey": cfg["UPLOAD_KEY"], "imported": True, "callAudioFormat": audio.suffix.lstrip(".").lower(), "recordedCall": {"talkGroupInfo": info, "startTime": started, "callDuration": duration, "startPositionSec": "00:00:00"}}
     base = cfg["DESTINATION_URL"].rstrip("/"); timeout = int(cfg.get("TIMEOUT_SECONDS", "30"))
     status, body = post(base + "/api/callupload", json.dumps(metadata).encode(), {"Content-Type": "application/json"}, timeout); result = response(status, body, "metadata")
     if result.get("Duplicate"): return
