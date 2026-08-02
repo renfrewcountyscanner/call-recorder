@@ -773,27 +773,27 @@ func (s *server) filterOptions(ctx context.Context, field, search string, select
 	queries := map[string]string{
 		"sender": `SELECT sender_id, sender_id, max(start_time) FROM calls
 			WHERE coalesce(sender_id,'')<>'' AND ($1='' OR sender_id ILIKE '%'||$1||'%')
-			GROUP BY sender_id ORDER BY max(start_time) DESC, sender_id LIMIT 250`,
-		"system": `SELECT system_id, coalesce(max(NULLIF(system_name,'')),system_id), max(start_time) FROM calls
+			GROUP BY sender_id ORDER BY max(start_time) DESC, sender_id LIMIT 2000`,
+		"system": `SELECT system_id, CASE WHEN coalesce(max(NULLIF(system_name,'')),'')='' OR max(NULLIF(system_name,''))=system_id THEN system_id ELSE system_id||' — '||max(NULLIF(system_name,'')) END, max(start_time) FROM calls
 			WHERE coalesce(system_id,'')<>'' AND ($1='' OR system_id ILIKE '%'||$1||'%' OR coalesce(system_name,'') ILIKE '%'||$1||'%')
-			GROUP BY system_id ORDER BY max(start_time) DESC, system_id LIMIT 250`,
-		"site": `SELECT site_id, coalesce(max(NULLIF(site_name,'')),site_id), max(start_time) FROM calls
+			GROUP BY system_id ORDER BY max(start_time) DESC, system_id LIMIT 2000`,
+		"site": `SELECT site_id, CASE WHEN coalesce(max(NULLIF(site_name,'')),'')='' OR max(NULLIF(site_name,''))=site_id THEN site_id ELSE site_id||' — '||max(NULLIF(site_name,'')) END, max(start_time) FROM calls
 			WHERE coalesce(site_id,'')<>'' AND ($1='' OR site_id ILIKE '%'||$1||'%' OR coalesce(site_name,'') ILIKE '%'||$1||'%')
-			GROUP BY site_id ORDER BY max(start_time) DESC, site_id LIMIT 250`,
-		"receiver": `SELECT receiver_id, receiver_id, max(start_time) FROM calls
-			WHERE coalesce(receiver_id,'')<>'' AND ($1='' OR receiver_id ILIKE '%'||$1||'%')
-			GROUP BY receiver_id ORDER BY max(start_time) DESC, receiver_id LIMIT 250`,
-		"talkgroup": `SELECT c.talkgroup_id, coalesce(max(NULLIF(ta.alias,'')),max(NULLIF(c.talkgroup_name,'')),c.talkgroup_id),max(c.start_time) FROM calls c
+			GROUP BY site_id ORDER BY max(start_time) DESC, site_id LIMIT 2000`,
+		"receiver": `SELECT coalesce(NULLIF(receiver_id,''),sender_id),coalesce(NULLIF(receiver_id,''),sender_id),max(start_time) FROM calls
+			WHERE coalesce(NULLIF(receiver_id,''),sender_id)<>'' AND ($1='' OR coalesce(NULLIF(receiver_id,''),sender_id) ILIKE '%'||$1||'%')
+			GROUP BY coalesce(NULLIF(receiver_id,''),sender_id) ORDER BY max(start_time) DESC,coalesce(NULLIF(receiver_id,''),sender_id) LIMIT 2000`,
+		"talkgroup": `SELECT c.talkgroup_id, c.talkgroup_id||CASE WHEN coalesce(max(NULLIF(ta.alias,'')),max(NULLIF(c.talkgroup_name,'')),'')='' THEN '' ELSE ' — '||coalesce(max(NULLIF(ta.alias,'')),max(NULLIF(c.talkgroup_name,''))) END,max(c.start_time) FROM calls c
 			LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled
 			WHERE coalesce(c.talkgroup_id,'')<>'' AND ($1='' OR c.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(c.talkgroup_name,'') ILIKE '%'||$1||'%' OR coalesce(ta.alias,'') ILIKE '%'||$1||'%')
-			GROUP BY c.talkgroup_id ORDER BY max(c.start_time) DESC,c.talkgroup_id LIMIT 250`,
-		"radio": `SELECT c.radio_id, coalesce(max(NULLIF(ra.alias,'')),max(NULLIF(c.radio_name,'')),c.radio_id),max(c.start_time) FROM calls c
+			GROUP BY c.talkgroup_id ORDER BY max(c.start_time) DESC,c.talkgroup_id LIMIT 2000`,
+		"radio": `SELECT c.radio_id, c.radio_id||CASE WHEN coalesce(max(NULLIF(ra.alias,'')),max(NULLIF(c.radio_name,'')),'')='' OR coalesce(max(NULLIF(ra.alias,'')),max(NULLIF(c.radio_name,'')))=c.radio_id THEN '' ELSE ' — '||coalesce(max(NULLIF(ra.alias,'')),max(NULLIF(c.radio_name,''))) END,max(c.start_time) FROM calls c
 			LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled
 			WHERE coalesce(c.radio_id,'')<>'' AND ($1='' OR c.radio_id ILIKE '%'||$1||'%' OR coalesce(c.radio_name,'') ILIKE '%'||$1||'%' OR coalesce(ra.alias,'') ILIKE '%'||$1||'%')
-			GROUP BY c.radio_id ORDER BY max(c.start_time) DESC,c.radio_id LIMIT 250`,
+			GROUP BY c.radio_id ORDER BY max(c.start_time) DESC,c.radio_id LIMIT 2000`,
 		"call_type": `SELECT call_type,call_type,max(start_time) FROM calls
 			WHERE coalesce(call_type,'')<>'' AND ($1='' OR call_type ILIKE '%'||$1||'%')
-			GROUP BY call_type ORDER BY max(start_time) DESC,call_type LIMIT 250`,
+			GROUP BY call_type ORDER BY max(start_time) DESC,call_type LIMIT 2000`,
 	}
 	query, ok := queries[field]
 	if !ok {
@@ -2394,7 +2394,7 @@ func filterFromQuery(q url.Values) (callFilter, error) {
 }
 
 const callsFrom = ` FROM calls c LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled`
-const callsWhere = ` WHERE ($1='' OR c.search_document @@ plainto_tsquery('simple',$1) OR c.search_document::text ILIKE '%'||lower($1)||'%') AND ($2='' OR c.sender_id=ANY(string_to_array($2,','))) AND ($3='' OR c.system_id=ANY(string_to_array($3,','))) AND ($4='' OR c.site_id=ANY(string_to_array($4,','))) AND ($5='' OR c.receiver_id=ANY(string_to_array($5,','))) AND ($6='' OR c.talkgroup_id=ANY(string_to_array($6,','))) AND ($7='' OR c.radio_id=ANY(string_to_array($7,','))) AND ($8='' OR c.call_type=ANY(string_to_array($8,','))) AND ($9='' OR ($9='group' AND c.group_call=true) OR ($9='private' AND c.group_call=false)) AND ($10='' OR c.frequency ILIKE '%'||$10||'%') AND ($11='' OR c.duration_ms >= ($11::double precision*1000)) AND ($12='' OR c.duration_ms <= ($12::double precision*1000)) AND ($13='' OR c.start_time::date=$13::date) AND ($14='' OR c.start_time::date>=$14::date) AND ($15='' OR c.start_time::date<=$15::date) AND (NOT $16 OR EXISTS (SELECT 1 FROM call_targets ct WHERE ct.call_id=c.id)) AND ($17='' OR EXISTS (SELECT 1 FROM favourite_members fm WHERE fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id AND fm.group_id=$17::bigint))`
+const callsWhere = ` WHERE ($1='' OR c.search_document @@ plainto_tsquery('simple',$1) OR c.search_document::text ILIKE '%'||lower($1)||'%') AND ($2='' OR c.sender_id=ANY(string_to_array($2,','))) AND ($3='' OR c.system_id=ANY(string_to_array($3,','))) AND ($4='' OR c.site_id=ANY(string_to_array($4,','))) AND ($5='' OR coalesce(NULLIF(c.receiver_id,''),c.sender_id)=ANY(string_to_array($5,','))) AND ($6='' OR c.talkgroup_id=ANY(string_to_array($6,','))) AND ($7='' OR c.radio_id=ANY(string_to_array($7,','))) AND ($8='' OR c.call_type=ANY(string_to_array($8,','))) AND ($9='' OR ($9='group' AND c.group_call=true) OR ($9='private' AND c.group_call=false)) AND ($10='' OR c.frequency ILIKE '%'||$10||'%') AND ($11='' OR c.duration_ms >= ($11::double precision*1000)) AND ($12='' OR c.duration_ms <= ($12::double precision*1000)) AND ($13='' OR c.start_time::date=$13::date) AND ($14='' OR c.start_time::date>=$14::date) AND ($15='' OR c.start_time::date<=$15::date) AND (NOT $16 OR EXISTS (SELECT 1 FROM call_targets ct WHERE ct.call_id=c.id)) AND ($17='' OR EXISTS (SELECT 1 FROM favourite_members fm WHERE fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id AND fm.group_id=$17::bigint))`
 
 func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall, int, error) {
 	args := []any{f.Q, f.Sender, f.System, f.Site, f.Receiver, f.Talkgroup, f.Radio, f.CallType, f.Group, f.Frequency, f.MinDuration, f.MaxDuration, f.Date, f.From, f.To, f.Patched, f.Favourite}
@@ -2426,7 +2426,7 @@ func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall,
 	case "lcn":
 		orderBy = "c.lcn,c.start_time DESC"
 	case "receiver":
-		orderBy = "c.receiver_id,c.start_time DESC"
+		orderBy = "coalesce(NULLIF(c.receiver_id,''),c.sender_id),c.start_time DESC"
 	case "talkgroup_label":
 		orderBy = "coalesce(ta.alias,c.talkgroup_name,''),c.start_time DESC"
 	case "radio_label":

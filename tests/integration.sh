@@ -42,7 +42,10 @@ test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_te
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT alias FROM radio_aliases WHERE system_id='system-a' AND radio_id='200'")" = 'Unit 200'
 # Filter suggestions come from current call data and support remote searching.
 curl -fsS 'http://127.0.0.1:18080/filter-options?field=system' | grep -q '"value":"system-a"'
-curl -fsS 'http://127.0.0.1:18080/filter-options?field=talkgroup&q=Dispatch' | grep -q '"label":"Dispatch"'
+curl -fsS 'http://127.0.0.1:18080/filter-options?field=system' | grep -q 'system-a — System A'
+curl -fsS 'http://127.0.0.1:18080/filter-options?field=talkgroup&q=Dispatch' | grep -q '100 — Dispatch'
+curl -fsS 'http://127.0.0.1:18080/filter-options?field=receiver' | grep -q '"value":"integration-sender"'
+curl -fsS 'http://127.0.0.1:18080/calls?receiver=integration-sender' | grep -q 'Dispatch'
 curl -fsS 'http://127.0.0.1:18080/filter-options?field=receiver&selected=receiver-not-yet-seen' | grep -q '"value":"receiver-not-yet-seen","label":"receiver-not-yet-seen","selected":true'
 test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:18080/filter-options?field=not-a-field')" = 400
 id=$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc 'SELECT id FROM calls LIMIT 1')
