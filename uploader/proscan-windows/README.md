@@ -60,6 +60,9 @@ proscan-uploader.exe inspect --directory E:\BCD996 --system-id SCANNER-DIGITAL
 # Service controls (elevated PowerShell)
 proscan-uploader.exe service --config C:\ProgramData\CallLogger\proscan-uploader.yaml status
 proscan-uploader.exe service --config C:\ProgramData\CallLogger\proscan-uploader.yaml restart
+
+# Follow service status and new log entries
+.\monitor.ps1
 ```
 
 The default log is `C:\ProgramData\CallLogger\proscan-uploader.log`; pending audio and manifests are under `C:\ProgramData\CallLogger\spool`. Never place the spool inside a watched ProScan directory.
