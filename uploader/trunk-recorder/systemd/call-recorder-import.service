@@ -1,7 +1,0 @@
-[Unit]
-Description=Import legacy logger recordings
-
-[Service]
-Type=oneshot
-EnvironmentFile=/etc/call-recorder-import.env
-ExecStart=/usr/bin/python3 /usr/local/lib/call-recorder/import_directory.py --root /logger-import

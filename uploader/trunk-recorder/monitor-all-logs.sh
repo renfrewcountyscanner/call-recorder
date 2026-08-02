@@ -43,11 +43,12 @@ if [ "$compose_usable" = false ]; then
     done
 fi
 
-if command -v systemctl >/dev/null 2>&1 && systemctl cat call-recorder-import.service >/dev/null 2>&1; then
-    (journalctl -fu call-recorder-import.service -o cat 2>&1 | sed 's/^/[importer] /') &
+import_log=${CALL_RECORDER_IMPORT_LOG:-/var/log/call-recorder-import.log}
+if [ -f "$import_log" ]; then
+    (tail -n 100 -f "$import_log" 2>&1 | sed 's/^/[importer] /') &
     children="$children $!"
 else
-    echo "Importer service not installed; Docker logs only." >&2
+    echo "Importer log not created yet; it will appear after the first manual import." >&2
 fi
 
 wait
