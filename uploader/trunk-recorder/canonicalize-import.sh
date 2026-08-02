@@ -14,6 +14,9 @@ if [[ -z "${CALL_RECORDER_DATABASE_URL:-}" ]]; then
 fi
 
 sql="BEGIN;
+UPDATE transcription_jobs j SET priority=-100,updated_at=now()
+FROM pending_uploads p
+WHERE p.sender_id='legacy-import' AND p.status='completed' AND p.completed_call_id=j.call_id AND j.priority<>-100;
 WITH mapping(old_receiver,sender,receiver,system_id,system_name) AS (VALUES
  ('Pembroke Twr','SCANNER-DIGITAL','BCD996P2','SCANNER-DIGITAL','Scanner Digital'),
  ('Services','SCANNER-ANALOG','BCT15X','SCANNER-ANALOG','Scanner Analog'),

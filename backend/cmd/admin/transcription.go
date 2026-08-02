@@ -266,7 +266,7 @@ func claimNextJob(ctx context.Context, pool *pgxpool.Pool, cfg transcriptionConf
 		WHERE j.id = (
 			SELECT j2.id FROM transcription_jobs j2 JOIN calls c2 ON c2.id=j2.call_id
 			WHERE j2.status='pending' AND j2.next_attempt_at<=now()
-			ORDER BY j2.id FOR UPDATE SKIP LOCKED LIMIT 1
+			ORDER BY j2.priority DESC,j2.next_attempt_at,j2.id FOR UPDATE SKIP LOCKED LIMIT 1
 		)
 		AND j.call_id = c.id
 		RETURNING j.id, j.call_id, c.audio_path, c.audio_format, c.duration_ms, j.attempt_count,
