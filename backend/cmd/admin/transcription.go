@@ -310,6 +310,13 @@ func transcriptionWorker(ctx context.Context, pool *pgxpool.Pool, cfg transcript
 		_, err = pool.Exec(ctx, `INSERT INTO transcripts(call_id,provider,language,model,profile,settings_version,text,original_text,timed_segments) VALUES($1,$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$7,$8) ON CONFLICT(call_id,provider) DO UPDATE SET text=EXCLUDED.text,language=EXCLUDED.language,model=EXCLUDED.model,profile=EXCLUDED.profile,settings_version=EXCLUDED.settings_version,timed_segments=EXCLUDED.timed_segments,review_status='unreviewed',reviewed_at=NULL,reviewed_by=NULL,updated_at=now()`, job.callID, cfg.Provider, language, cfg.Model, cfg.Profile, cfg.SettingsVersion, result.Text, segments)
 		if err == nil {
 			_, _ = pool.Exec(ctx, `UPDATE transcription_jobs SET status='completed',completed_at=now(),error=NULL,updated_at=now() WHERE id=$1`, job.id)
+			// Reconcile deliveries that may have been queued before this call
+			// received its transcript. Keyword alerts are transcript-only.
+			_, _ = pool.Exec(ctx, `UPDATE notification_deliveries d SET status='expired',error='Transcript did not match notification keyword',updated_at=now()
+				FROM notification_rules r
+				WHERE d.rule_id=r.id AND d.call_id=$1 AND r.keyword IS NOT NULL
+				  AND d.status IN ('pending','failed')
+				  AND NOT EXISTS (SELECT 1 FROM transcripts t WHERE t.call_id=$1 AND coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,''),'') ILIKE '%'||r.keyword||'%')`, job.callID)
 			// Keyword rules are evaluated again after generated text becomes
 			// available. The uniqueness constraint prevents duplicate delivery.
 			_, _ = pool.Exec(ctx, `INSERT INTO notification_deliveries(rule_id,destination_id,call_id)
@@ -317,7 +324,8 @@ func transcriptionWorker(ctx context.Context, pool *pgxpool.Pool, cfg transcript
 				WHERE r.enabled AND d.enabled AND r.keyword IS NOT NULL
 				AND EXISTS (SELECT 1 FROM transcripts t WHERE t.call_id=c.id AND coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,''),'') ILIKE '%'||r.keyword||'%')
 				AND (r.sender_filter IS NULL OR r.sender_filter=c.sender_id) AND (r.system_filter IS NULL OR r.system_filter=c.system_id) AND (r.site_filter IS NULL OR r.site_filter=c.site_id) AND (r.talkgroup_filter IS NULL OR r.talkgroup_filter=c.talkgroup_id) AND (r.radio_filter IS NULL OR r.radio_filter=c.radio_id) AND (r.call_type_filter IS NULL OR r.call_type_filter=c.call_type)
-				ON CONFLICT(rule_id,call_id) DO NOTHING`, job.callID)
+				ON CONFLICT(rule_id,call_id) DO UPDATE SET status='pending',next_attempt_at=now(),error=NULL,updated_at=now()
+				WHERE notification_deliveries.status IN ('pending','failed','expired')`, job.callID)
 		} else {
 			_, _ = pool.Exec(ctx, `UPDATE transcription_jobs SET status='failed',error=$2,updated_at=now() WHERE id=$1`, job.id, sanitizeTranscriptionError(err))
 		}
