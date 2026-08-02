@@ -101,7 +101,9 @@ func (app *uploaderApplication) Run(ctx context.Context) error {
 	defer settleTicker.Stop()
 	rescanTicker := time.NewTicker(time.Duration(app.cfg.RescanSeconds) * time.Second)
 	defer rescanTicker.Stop()
-	statusTicker := time.NewTicker(5 * time.Minute)
+	// Keep a short heartbeat so an operator can distinguish an idle uploader
+	// from a stopped one without waiting several minutes for a log entry.
+	statusTicker := time.NewTicker(30 * time.Second)
 	defer statusTicker.Stop()
 	app.logger.Info("ProScan uploader started", "watches", len(app.cfg.WatchDirectories), "workers", app.cfg.UploadWorkers, "spool", app.cfg.SpoolDirectory)
 	for {
