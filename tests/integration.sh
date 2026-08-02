@@ -80,4 +80,30 @@ for n in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/healthz >/dev/null && 
 curl -fsS -H 'X-Call-Recorder-Sender: integration-sender' -H 'X-Call-Recorder-Key: synthetic-integration-key' -H 'Content-Type: audio/wav' --data-binary "@$work/call.wav" "http://127.0.0.1:18080/api/v1/uploads/$token" >/dev/null
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc 'SELECT count(*) FROM calls')" = 3
 test "$(find "$root/.test-runtime/audio" -type f | wc -l)" = $((before_audio + 1))
+
+# v1 receiver-status controls are reversible and audit their actions.
+CALL_RECORDER_ADMIN_OPEN=true $compose up -d --no-deps --force-recreate backend
+for n in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/healthz >/dev/null && break; sleep 1; done
+$compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -c "UPDATE receiver_status_entries SET last_call_at=now()-interval '2 hours' WHERE sender_id='integration-sender' AND system_id='system-a'" >/dev/null
+curl -fsS -X POST -d 'sender=integration-sender&receiver=&system=system-a&site=site-a' http://127.0.0.1:18080/admin/receiver-status/dismiss >/dev/null
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT count(*) FROM receiver_status_entries WHERE sender_id='integration-sender' AND system_id='system-a' AND dismissed_at IS NOT NULL")" = 1
+curl -fsS -X POST -d 'sender=integration-sender&receiver=&system=system-a&site=site-a' http://127.0.0.1:18080/admin/receiver-status/restore >/dev/null
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT count(*) FROM receiver_status_entries WHERE sender_id='integration-sender' AND system_id='system-a' AND dismissed_at IS NULL")" = 1
+
+# Dataset exports snapshot effective text and stream the original audio into a
+# private ZIP built by the dedicated worker.
+dataset_call=$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT id FROM calls ORDER BY start_time DESC LIMIT 1")
+$compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -c "INSERT INTO transcripts(call_id,provider,language,text,original_text,review_status) VALUES('$dataset_call','integration','en','corrected dispatch transcript','generated dispatch transcript','reviewed')" >/dev/null
+curl -fsS -X POST -d 'review_status=reviewed' http://127.0.0.1:18080/admin/datasets >/dev/null
+dataset_id=$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc 'SELECT id FROM dataset_exports ORDER BY created_at DESC LIMIT 1')
+test -n "$dataset_id"
+dataset_ready=0
+for n in $(seq 1 30); do
+  dataset_status=$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "SELECT status FROM dataset_exports WHERE id='$dataset_id'")
+  if [ "$dataset_status" = completed ] || [ "$dataset_status" = completed_with_warnings ]; then dataset_ready=1; break; fi
+  sleep 1
+done
+test "$dataset_ready" = 1
+curl -fsS "http://127.0.0.1:18080/admin/datasets/$dataset_id/download" -o "$work/dataset.zip"
+python3 -c 'import json,sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert "manifest.jsonl" in z.namelist(); rows=[json.loads(x) for x in z.read("manifest.jsonl").splitlines()]; assert rows and rows[0]["effective_text"]=="corrected dispatch transcript" and rows[0]["split"] in ("train","validation","test")' "$work/dataset.zip"
 echo 'integration tests passed'

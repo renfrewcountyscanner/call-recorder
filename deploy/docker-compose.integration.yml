@@ -7,6 +7,7 @@ services:
     volumes:
       - ../.test-runtime/audio:/var/lib/call-recorder/audio
       - ../.test-runtime/secrets:/var/lib/call-recorder/secrets
+      - ../.test-runtime/exports:/var/lib/call-recorder/exports
   backend:
     environment:
       CALL_RECORDER_TEST_FAIL_FINALIZE: ${CALL_RECORDER_TEST_FAIL_FINALIZE:-false}
@@ -15,10 +16,15 @@ services:
     volumes:
       - ../.test-runtime/audio:/var/lib/call-recorder/audio
       - ../.test-runtime/secrets:/var/lib/call-recorder/secrets
+      - ../.test-runtime/exports:/var/lib/call-recorder/exports
   transcription-worker:
     volumes:
       - ../.test-runtime/audio:/var/lib/call-recorder/audio:ro
       - ../.test-runtime/secrets:/var/lib/call-recorder/secrets:ro
+  dataset-worker:
+    volumes:
+      - ../.test-runtime/audio:/var/lib/call-recorder/audio:ro
+      - ../.test-runtime/exports:/var/lib/call-recorder/exports
   fake-transcriber:
     image: python:3.13-alpine
     command: ["python", "/tests/fake-transcriber.py", "8080"]

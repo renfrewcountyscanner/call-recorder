@@ -44,7 +44,7 @@ var staticFS embed.FS
 
 // version is reported by /healthz and shown in the interface header.
 // Build-time values are injected via -ldflags.
-var version = "v0.4.2"
+var version = "v1.0.0"
 var commit = ""
 var buildTime = ""
 
@@ -52,6 +52,7 @@ type config struct {
 	ListenAddr                string
 	DatabaseURL               string
 	AudioRoot                 string
+	ExportRoot                string
 	MaxAudioBytes             int64
 	PendingTTL                time.Duration
 	StartToleranceMS          int64
@@ -134,6 +135,8 @@ type createUploadResponse struct {
 	ExpiresAt   time.Time `json:"expires_at,omitempty"`
 	Duplicate   bool      `json:"duplicate"`
 	CallID      string    `json:"call_id,omitempty"`
+	Status      string    `json:"status,omitempty"`
+	Retryable   bool      `json:"retryable,omitempty"`
 	Error       string    `json:"error,omitempty"`
 }
 type errorResponse struct {
@@ -172,6 +175,10 @@ func main() {
 	}
 	if err := os.MkdirAll(cfg.AudioRoot, 0o750); err != nil {
 		slog.Error("create audio root", "error", err)
+		os.Exit(2)
+	}
+	if err := os.MkdirAll(cfg.ExportRoot, 0o750); err != nil {
+		slog.Error("create export root", "error", err)
 		os.Exit(2)
 	}
 	pool, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
@@ -235,6 +242,17 @@ func main() {
 	mux.HandleFunc("GET /events/calls", s.requireViewer(s.eventsCalls))
 	mux.HandleFunc("GET /api/transcripts", s.requireViewer(s.apiTranscripts))
 	mux.HandleFunc("GET /status", s.requireViewer(s.statusPage))
+	mux.HandleFunc("GET /sw.js", func(w http.ResponseWriter, r *http.Request) {
+		body, readErr := staticFS.ReadFile("web/static/sw.js")
+		if readErr != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Service-Worker-Allowed", "/")
+		_, _ = w.Write(body)
+	})
 	staticSub, err := fs.Sub(staticFS, "web/static")
 	if err != nil {
 		slog.Error("static assets", "error", err)
@@ -244,12 +262,12 @@ func main() {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 		http.FileServerFS(staticSub).ServeHTTP(w, r)
 	})))
-	if cfg.AdminEnabled || cfg.AuthRequired {
+	if cfg.AdminEnabled || cfg.AuthRequired || cfg.AdminOpen {
 		mux.HandleFunc("GET /login", s.loginPage)
 		mux.HandleFunc("POST /login", s.adminLogin)
 		mux.HandleFunc("GET /admin/login", s.adminLogin)
 		mux.HandleFunc("POST /admin/login", s.adminLogin)
-		mux.HandleFunc("GET /admin/logout", s.adminLogout)
+		mux.HandleFunc("POST /admin/logout", s.adminLogout)
 		mux.HandleFunc("GET /admin/talkgroups", s.adminTalkgroups)
 		mux.HandleFunc("GET /admin/senders", s.adminSenders)
 		mux.HandleFunc("POST /admin/senders/create", s.adminCreateSender)
@@ -279,6 +297,7 @@ func main() {
 		mux.HandleFunc("POST /admin/transcription/secret", s.adminSaveTranscriptionSecret)
 		mux.HandleFunc("POST /admin/transcription/secret/remove", s.adminRemoveTranscriptionSecret)
 		mux.HandleFunc("POST /admin/transcription/edit", s.adminEditTranscript)
+		mux.HandleFunc("POST /admin/transcription/review", s.adminReviewTranscript)
 		mux.HandleFunc("POST /admin/transcription/test", s.adminTestTranscription)
 		mux.HandleFunc("POST /admin/transcription/talkgroups/update", s.adminUpdateTalkgroupTranscription)
 		mux.HandleFunc("POST /admin/transcription/talkgroups/toggle", s.adminToggleSingleTalkgroupTranscription)
@@ -296,6 +315,14 @@ func main() {
 		mux.HandleFunc("POST /admin/users/password", s.adminChangePassword)
 		mux.HandleFunc("POST /admin/users/delete", s.adminDeleteUser)
 		mux.HandleFunc("GET /admin/storage", s.adminStorage)
+		mux.HandleFunc("POST /admin/receiver-status/dismiss", s.adminDismissReceiverStatus)
+		mux.HandleFunc("POST /admin/receiver-status/restore", s.adminRestoreReceiverStatus)
+		mux.HandleFunc("POST /admin/receiver-status/settings", s.adminReceiverStatusSettings)
+		mux.HandleFunc("GET /admin/datasets", s.adminDatasets)
+		mux.HandleFunc("POST /admin/datasets", s.adminCreateDataset)
+		mux.HandleFunc("POST /admin/datasets/{id}/cancel", s.adminCancelDataset)
+		mux.HandleFunc("POST /admin/datasets/{id}/delete", s.adminDeleteDataset)
+		mux.HandleFunc("GET /admin/datasets/{id}/download", s.adminDownloadDataset)
 	}
 	mux.HandleFunc("GET /media/", s.requireViewer(s.media))
 	mux.HandleFunc("POST /api/v1/uploads", s.createUpload)
@@ -313,7 +340,7 @@ func main() {
 }
 
 func loadConfig() config {
-	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), SecretsRoot: env("CALL_RECORDER_SECRETS_ROOT", "/var/lib/call-recorder/secrets"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyDebug: env("CALL_RECORDER_LEGACY_DEBUG", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminOpen: env("CALL_RECORDER_ADMIN_OPEN", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS")), SessionSecret: env("CALL_RECORDER_SESSION_SECRET", ""), AuthRequired: env("CALL_RECORDER_AUTH_REQUIRED", "true") == "true", LocalAuthEnabled: env("CALL_RECORDER_LOCAL_AUTH_ENABLED", "true") == "true", SessionCookieSecure: env("CALL_RECORDER_SESSION_COOKIE_SECURE", "true") == "true", SessionMaxAge: int(envInt64("CALL_RECORDER_SESSION_MAX_AGE_SECONDS", 2592000)), AuthLoginURL: strings.TrimSpace(os.Getenv("CALL_RECORDER_AUTH_LOGIN_URL"))}
+	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), ExportRoot: env("CALL_RECORDER_EXPORT_ROOT", "/var/lib/call-recorder/exports"), SecretsRoot: env("CALL_RECORDER_SECRETS_ROOT", "/var/lib/call-recorder/secrets"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyDebug: env("CALL_RECORDER_LEGACY_DEBUG", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminOpen: env("CALL_RECORDER_ADMIN_OPEN", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS")), SessionSecret: env("CALL_RECORDER_SESSION_SECRET", ""), AuthRequired: env("CALL_RECORDER_AUTH_REQUIRED", "true") == "true", LocalAuthEnabled: env("CALL_RECORDER_LOCAL_AUTH_ENABLED", "true") == "true", SessionCookieSecure: env("CALL_RECORDER_SESSION_COOKIE_SECURE", "true") == "true", SessionMaxAge: int(envInt64("CALL_RECORDER_SESSION_MAX_AGE_SECONDS", 2592000)), AuthLoginURL: strings.TrimSpace(os.Getenv("CALL_RECORDER_AUTH_LOGIN_URL"))}
 }
 func splitCSV(value string) []string {
 	var out []string
@@ -528,10 +555,14 @@ func (s *server) createUpload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	defer r.Body.Close()
 	var req createUploadRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONStrict(r.Body, &req); err != nil {
 		writeJSON(w, 400, errorResponse{"invalid JSON metadata"})
 		return
 	}
+	req.AudioFormat = strings.ToLower(strings.TrimSpace(req.AudioFormat))
+	req.SenderID = strings.TrimSpace(req.SenderID)
+	req.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
+	req.Call.Patches = uniquePatches(req.Call.Patches)
 	if err := validateMetadata(req); err != nil {
 		writeJSON(w, 400, errorResponse{err.Error()})
 		return
@@ -557,22 +588,48 @@ func (s *server) createUpload(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
+	expires := time.Now().UTC().Add(s.cfg.PendingTTL)
+	if req.IdempotencyKey != "" {
+		var existingID, status, callID string
+		var leaseExpires *time.Time
+		err = s.db.QueryRow(r.Context(), `SELECT id,status,coalesce(completed_call_id,''),lease_expires_at FROM pending_uploads WHERE sender_id=$1 AND idempotency_key=$2`, req.SenderID, req.IdempotencyKey).Scan(&existingID, &status, &callID, &leaseExpires)
+		if err == nil {
+			if status == "completed" || status == "duplicate" {
+				writeJSON(w, 200, createUploadResponse{Duplicate: true, CallID: callID, Status: status})
+				return
+			}
+			if status == "uploading" && leaseExpires != nil && leaseExpires.After(time.Now()) {
+				writeJSON(w, http.StatusConflict, createUploadResponse{Status: "uploading", Retryable: true, Error: "audio upload is already in progress"})
+				return
+			}
+			_, err = s.db.Exec(r.Context(), `UPDATE pending_uploads SET token_hash=$2,metadata=$3,audio_format=$4,expires_at=$5,status='pending',lease_owner=NULL,lease_expires_at=NULL,last_error=NULL,updated_at=now() WHERE id=$1`, existingID, tokenHash(token), metadata, req.AudioFormat, expires)
+			if err != nil {
+				s.internal(w, err)
+				return
+			}
+			writeJSON(w, 201, createUploadResponse{UploadToken: token, ExpiresAt: expires, Status: "pending", Retryable: true})
+			return
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			s.internal(w, err)
+			return
+		}
+	}
 	uploadID, err := randomToken()
 	if err != nil {
 		s.internal(w, err)
 		return
 	}
-	expires := time.Now().UTC().Add(s.cfg.PendingTTL)
 	_, err = s.db.Exec(r.Context(), `INSERT INTO pending_uploads (id,token_hash,sender_id,idempotency_key,metadata,audio_format,expires_at,status) VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,'pending')`, uploadID, tokenHash(token), req.SenderID, req.IdempotencyKey, metadata, strings.ToLower(req.AudioFormat), expires)
 	if err != nil {
 		if strings.Contains(err.Error(), "pending_uploads_sender_idempotency_key_key") {
-			writeJSON(w, 409, errorResponse{"idempotency key already pending"})
+			writeJSON(w, 409, createUploadResponse{Status: "pending", Retryable: true, Error: "idempotency key changed concurrently; retry metadata request"})
 			return
 		}
 		s.internal(w, err)
 		return
 	}
-	writeJSON(w, 201, createUploadResponse{UploadToken: token, ExpiresAt: expires})
+	writeJSON(w, 201, createUploadResponse{UploadToken: token, ExpiresAt: expires, Status: "pending", Retryable: true})
 }
 
 func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
@@ -586,13 +643,13 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var pending struct {
-		ID, SenderID, AudioFormat string
-		Metadata                  []byte
-		ExpiresAt                 time.Time
+		ID, SenderID, AudioFormat, Status, CompletedCallID string
+		Metadata                                           []byte
+		ExpiresAt                                          time.Time
 	}
-	err := s.db.QueryRow(r.Context(), `SELECT id,sender_id,audio_format,metadata,expires_at FROM pending_uploads WHERE token_hash=$1 AND status='pending'`, tokenHash(token)).Scan(&pending.ID, &pending.SenderID, &pending.AudioFormat, &pending.Metadata, &pending.ExpiresAt)
+	err := s.db.QueryRow(r.Context(), `SELECT id,sender_id,audio_format,metadata,expires_at,status,coalesce(completed_call_id,'') FROM pending_uploads WHERE token_hash=$1`, tokenHash(token)).Scan(&pending.ID, &pending.SenderID, &pending.AudioFormat, &pending.Metadata, &pending.ExpiresAt, &pending.Status, &pending.CompletedCallID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		writeJSON(w, 404, errorResponse{"upload not found or already completed"})
+		writeJSON(w, 404, errorResponse{"upload not found"})
 		return
 	}
 	if err != nil {
@@ -600,8 +657,12 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if time.Now().UTC().After(pending.ExpiresAt) {
-		_, _ = s.db.Exec(r.Context(), `UPDATE pending_uploads SET status='expired' WHERE id=$1`, pending.ID)
+		_, _ = s.db.Exec(r.Context(), `UPDATE pending_uploads SET status='expired',lease_owner=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND status NOT IN ('completed','duplicate')`, pending.ID)
 		writeJSON(w, 410, errorResponse{"upload token expired"})
+		return
+	}
+	if pending.Status == "completed" || pending.Status == "duplicate" {
+		writeJSON(w, 200, createUploadResponse{Duplicate: true, CallID: pending.CompletedCallID, Status: pending.Status})
 		return
 	}
 	legacyBearer := r.Header.Get("X-Call-Recorder-Legacy") == "1"
@@ -613,6 +674,22 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 415, errorResponse{"audio content type does not match declared format"})
 		return
 	}
+	claim, err := s.db.Exec(r.Context(), `UPDATE pending_uploads SET status='uploading',lease_owner='http',lease_expires_at=now()+interval '10 minutes',attempt_count=attempt_count+1,last_error=NULL,updated_at=now()
+		WHERE id=$1 AND (status IN ('pending','failed') OR (status='uploading' AND lease_expires_at<now()))`, pending.ID)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	if claim.RowsAffected() != 1 {
+		writeJSON(w, http.StatusConflict, createUploadResponse{Status: "uploading", Retryable: true, Error: "audio upload is already in progress"})
+		return
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			_, _ = s.db.Exec(context.Background(), `UPDATE pending_uploads SET status='pending',lease_owner=NULL,lease_expires_at=NULL,last_error='audio upload did not complete',updated_at=now() WHERE id=$1 AND status='uploading'`, pending.ID)
+		}
+	}()
 	tmp, err := os.CreateTemp(s.cfg.AudioRoot, "upload-*.tmp")
 	if err != nil {
 		s.internal(w, err)
@@ -644,8 +721,9 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	} else if found {
-		_, _ = s.db.Exec(r.Context(), `UPDATE pending_uploads SET status='duplicate',completed_at=now() WHERE id=$1`, pending.ID)
-		writeJSON(w, 200, createUploadResponse{Duplicate: true, CallID: id})
+		_, _ = s.db.Exec(r.Context(), `UPDATE pending_uploads SET status='duplicate',completed_at=now(),completed_call_id=$2,lease_owner=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1`, pending.ID, id)
+		finished = true
+		writeJSON(w, 200, createUploadResponse{Duplicate: true, CallID: id, Status: "duplicate"})
 		return
 	}
 	callID, err := randomToken()
@@ -685,13 +763,24 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err == nil {
-		_, err = tx.Exec(r.Context(), `INSERT INTO talkgroup_aliases (system_id,talkgroup_id,alias,source,transcription_enabled) VALUES ($1,$2,NULLIF($3,''),'received',true) ON CONFLICT (system_id,talkgroup_id) DO UPDATE SET alias=EXCLUDED.alias,updated_at=now() WHERE talkgroup_aliases.source='received' AND EXCLUDED.alias IS NOT NULL`, call.SystemID, call.TalkgroupID, call.TalkgroupName)
+		_, err = tx.Exec(r.Context(), `INSERT INTO talkgroup_aliases (system_id,talkgroup_id,alias,source,transcription_enabled,transcription_mode) VALUES ($1,$2,NULLIF($3,''),'received',true,'inherit') ON CONFLICT (system_id,talkgroup_id) DO UPDATE SET alias=EXCLUDED.alias,updated_at=now() WHERE talkgroup_aliases.source='received' AND EXCLUDED.alias IS NOT NULL`, call.SystemID, call.TalkgroupID, call.TalkgroupName)
 	}
-	if err == nil && call.RadioID != "" && call.RadioName != "" {
-		_, err = tx.Exec(r.Context(), `INSERT INTO radio_aliases (system_id,radio_id,alias,source) VALUES ($1,$2,$3,'received') ON CONFLICT (system_id,radio_id) DO UPDATE SET alias=EXCLUDED.alias,updated_at=now() WHERE radio_aliases.source='received'`, call.SystemID, call.RadioID, call.RadioName)
+	if err == nil && call.RadioID != "" {
+		_, err = tx.Exec(r.Context(), `INSERT INTO radio_aliases (system_id,radio_id,alias,source) VALUES ($1,$2,NULLIF($3,''),'received') ON CONFLICT (system_id,radio_id) DO UPDATE SET alias=EXCLUDED.alias,updated_at=now() WHERE radio_aliases.source='received' AND EXCLUDED.alias IS NOT NULL`, call.SystemID, call.RadioID, call.RadioName)
 	}
 	if err == nil {
-		_, err = tx.Exec(r.Context(), `UPDATE pending_uploads SET status='completed',completed_at=now(),completed_call_id=$2 WHERE id=$1`, pending.ID, callID)
+		_, err = tx.Exec(r.Context(), `UPDATE pending_uploads SET status='completed',completed_at=now(),completed_call_id=$2,lease_owner=NULL,lease_expires_at=NULL,last_error=NULL,updated_at=now() WHERE id=$1`, pending.ID, callID)
+	}
+	if err == nil {
+		_, err = tx.Exec(r.Context(), `INSERT INTO receiver_status_entries(sender_id,receiver_id,system_id,site_id,system_name,site_name,call_count,last_call_at,dismissed_at,dismissed_by,dismissed_last_call_at)
+			VALUES($1,coalesce($2,''),$3,coalesce($4,''),NULLIF($5,''),NULLIF($6,''),1,$7,NULL,NULL,NULL)
+			ON CONFLICT(sender_id,receiver_id,system_id,site_id) DO UPDATE SET
+			system_name=coalesce(EXCLUDED.system_name,receiver_status_entries.system_name),site_name=coalesce(EXCLUDED.site_name,receiver_status_entries.site_name),
+			call_count=receiver_status_entries.call_count+1,last_call_at=GREATEST(receiver_status_entries.last_call_at,EXCLUDED.last_call_at),
+			dismissed_at=NULL,dismissed_by=NULL,dismissed_last_call_at=NULL,updated_at=now()`, pending.SenderID, call.ReceiverID, call.SystemID, call.SiteID, call.SystemName, call.SiteName, call.StartTime.UTC())
+	}
+	if err == nil {
+		_, err = tx.Exec(r.Context(), `UPDATE remote_senders SET last_seen_at=now(),last_error_at=NULL,last_error=NULL WHERE sender_id=$1`, pending.SenderID)
 	}
 	if err != nil {
 		_ = os.Remove(final)
@@ -703,11 +792,12 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
+	finished = true
 	s.enqueueNotifications(r.Context(), callID)
-	if _, e := s.db.Exec(r.Context(), `INSERT INTO transcription_jobs(call_id,provider) SELECT $1,c.provider FROM transcription_config c JOIN talkgroup_aliases a ON a.system_id=(SELECT system_id FROM calls WHERE id=$1) AND a.talkgroup_id=(SELECT talkgroup_id FROM calls WHERE id=$1) WHERE c.id=true AND c.enabled AND c.processing_enabled AND a.transcription_enabled AND EXISTS (SELECT 1 FROM application_secrets s WHERE s.purpose='transcription_api_key') AND (SELECT audio_format FROM calls WHERE id=$1) IN ('mp3','wav') AND (SELECT duration_ms FROM calls WHERE id=$1) BETWEEN c.min_duration_ms AND CASE WHEN c.max_audio_duration_ms>0 THEN c.max_audio_duration_ms ELSE 2147483647 END AND (SELECT audio_size FROM calls WHERE id=$1) BETWEEN 1 AND c.max_file_size AND NOT EXISTS (SELECT 1 FROM transcription_jobs j2 WHERE j2.call_id=$1 AND j2.status IN ('pending','running')) ON CONFLICT(call_id,provider) DO NOTHING`, callID); e != nil {
+	if _, e := s.db.Exec(r.Context(), `INSERT INTO transcription_jobs(call_id,provider) SELECT $1,c.provider FROM transcription_config c JOIN talkgroup_aliases a ON a.system_id=(SELECT system_id FROM calls WHERE id=$1) AND a.talkgroup_id=(SELECT talkgroup_id FROM calls WHERE id=$1) WHERE c.id=true AND c.enabled AND c.processing_enabled AND (a.transcription_mode IN ('inherit','enabled')) AND EXISTS (SELECT 1 FROM application_secrets s WHERE s.purpose='transcription_api_key') AND (SELECT audio_format FROM calls WHERE id=$1) IN ('mp3','wav') AND (SELECT duration_ms FROM calls WHERE id=$1) BETWEEN c.min_duration_ms AND CASE WHEN c.max_audio_duration_ms>0 THEN c.max_audio_duration_ms ELSE 2147483647 END AND (SELECT audio_size FROM calls WHERE id=$1) BETWEEN 1 AND c.max_file_size AND NOT EXISTS (SELECT 1 FROM transcription_jobs j2 WHERE j2.call_id=$1 AND j2.status IN ('pending','running')) ON CONFLICT(call_id,provider) DO NOTHING`, callID); e != nil {
 		s.logger.Error("transcription auto-enqueue failed", "call_id", callID, "error", e)
 	}
-	writeJSON(w, 201, map[string]string{"call_id": callID, "audio_path": rel})
+	writeJSON(w, 201, map[string]string{"call_id": callID, "audio_path": rel, "status": "completed"})
 }
 
 func (s *server) callsPage(w http.ResponseWriter, r *http.Request) {
@@ -783,14 +873,14 @@ func (s *server) filterOptions(ctx context.Context, field, search string, select
 		"receiver": `SELECT coalesce(NULLIF(c.receiver_id,''),c.sender_id),coalesce(NULLIF(c.receiver_id,''),c.sender_id),max(c.start_time) FROM calls c JOIN remote_senders r ON r.sender_id=c.sender_id AND r.enabled AND r.deleted_at IS NULL
 			WHERE coalesce(NULLIF(c.receiver_id,''),c.sender_id)<>'' AND ($1='' OR coalesce(NULLIF(c.receiver_id,''),c.sender_id) ILIKE '%'||$1||'%')
 			GROUP BY coalesce(NULLIF(c.receiver_id,''),c.sender_id) ORDER BY max(c.start_time) DESC,coalesce(NULLIF(c.receiver_id,''),c.sender_id) LIMIT 2000`,
-		"talkgroup": `SELECT c.talkgroup_id, c.talkgroup_id||CASE WHEN coalesce(max(NULLIF(ta.alias,'')),max(NULLIF(c.talkgroup_name,'')),'')='' THEN '' ELSE ' — '||coalesce(max(NULLIF(ta.alias,'')),max(NULLIF(c.talkgroup_name,''))) END,max(c.start_time) FROM calls c
+		"talkgroup": `SELECT c.system_id||'::'||c.talkgroup_id, c.system_id||' · '||c.talkgroup_id||CASE WHEN coalesce(max(NULLIF(ta.alias,'')),max(NULLIF(c.talkgroup_name,'')),'')='' THEN '' ELSE ' — '||coalesce(max(NULLIF(ta.alias,'')),max(NULLIF(c.talkgroup_name,''))) END,max(c.start_time) FROM calls c
 			LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled
-			WHERE coalesce(c.talkgroup_id,'')<>'' AND ($1='' OR c.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(c.talkgroup_name,'') ILIKE '%'||$1||'%' OR coalesce(ta.alias,'') ILIKE '%'||$1||'%')
-			GROUP BY c.talkgroup_id ORDER BY max(c.start_time) DESC,c.talkgroup_id LIMIT 2000`,
-		"radio": `SELECT c.radio_id, c.radio_id||CASE WHEN coalesce(max(NULLIF(ra.alias,'')),max(NULLIF(c.radio_name,'')),'')='' OR coalesce(max(NULLIF(ra.alias,'')),max(NULLIF(c.radio_name,'')))=c.radio_id THEN '' ELSE ' — '||coalesce(max(NULLIF(ra.alias,'')),max(NULLIF(c.radio_name,''))) END,max(c.start_time) FROM calls c
+			WHERE coalesce(c.talkgroup_id,'')<>'' AND ($1='' OR c.system_id ILIKE '%'||$1||'%' OR c.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(c.talkgroup_name,'') ILIKE '%'||$1||'%' OR coalesce(ta.alias,'') ILIKE '%'||$1||'%')
+			GROUP BY c.system_id,c.talkgroup_id ORDER BY max(c.start_time) DESC,c.system_id,c.talkgroup_id LIMIT 2000`,
+		"radio": `SELECT c.system_id||'::'||c.radio_id, c.system_id||' · '||c.radio_id||CASE WHEN coalesce(max(NULLIF(ra.alias,'')),max(NULLIF(c.radio_name,'')),'')='' OR coalesce(max(NULLIF(ra.alias,'')),max(NULLIF(c.radio_name,'')))=c.radio_id THEN '' ELSE ' — '||coalesce(max(NULLIF(ra.alias,'')),max(NULLIF(c.radio_name,''))) END,max(c.start_time) FROM calls c
 			LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled
-			WHERE coalesce(c.radio_id,'')<>'' AND ($1='' OR c.radio_id ILIKE '%'||$1||'%' OR coalesce(c.radio_name,'') ILIKE '%'||$1||'%' OR coalesce(ra.alias,'') ILIKE '%'||$1||'%')
-			GROUP BY c.radio_id ORDER BY max(c.start_time) DESC,c.radio_id LIMIT 2000`,
+			WHERE coalesce(c.radio_id,'')<>'' AND ($1='' OR c.system_id ILIKE '%'||$1||'%' OR c.radio_id ILIKE '%'||$1||'%' OR coalesce(c.radio_name,'') ILIKE '%'||$1||'%' OR coalesce(ra.alias,'') ILIKE '%'||$1||'%')
+			GROUP BY c.system_id,c.radio_id ORDER BY max(c.start_time) DESC,c.system_id,c.radio_id LIMIT 2000`,
 		"call_type": `SELECT call_type,call_type,max(start_time) FROM calls
 			WHERE coalesce(call_type,'')<>'' AND ($1='' OR call_type ILIKE '%'||$1||'%')
 			GROUP BY call_type ORDER BY max(start_time) DESC,call_type LIMIT 2000`,
@@ -1326,26 +1416,39 @@ func (s *server) downloadCall(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) statusPage(w http.ResponseWriter, r *http.Request) {
 	type row struct {
-		Sender, System, Site string
-		Calls                int
-		Last                 time.Time
-		Active               bool
+		Sender, Receiver, System, SystemName, Site, SiteName string
+		DismissedBy                                          string
+		Calls                                                int64
+		Last, DismissedAt                                    time.Time
+		Active, Dismissed                                    bool
 	}
-	rows, err := s.db.Query(r.Context(), `SELECT sender_id,coalesce(system_id,''),coalesce(site_id,''),count(*),max(start_time) FROM calls GROUP BY sender_id,system_id,site_id ORDER BY max(start_time) DESC`)
+	staleMinutes := 15
+	_ = s.db.QueryRow(r.Context(), `SELECT (setting_value #>> '{}')::int FROM application_settings WHERE setting_key='receiver_stale_minutes'`).Scan(&staleMinutes)
+	if staleMinutes < 1 || staleMinutes > 1440 {
+		staleMinutes = 15
+	}
+	rows, err := s.db.Query(r.Context(), `SELECT sender_id,receiver_id,system_id,coalesce(system_name,''),site_id,coalesce(site_name,''),call_count,last_call_at,dismissed_at,coalesce(dismissed_by,'') FROM receiver_status_entries ORDER BY dismissed_at IS NOT NULL,last_call_at DESC`)
 	if err != nil {
 		s.internal(w, err)
 		return
 	}
 	defer rows.Close()
-	var items []row
+	var items, dismissed []row
 	for rows.Next() {
 		var x row
-		if rows.Scan(&x.Sender, &x.System, &x.Site, &x.Calls, &x.Last) == nil {
-			x.Active = time.Since(x.Last) <= 15*time.Minute
-			items = append(items, x)
+		var dismissedAt *time.Time
+		if rows.Scan(&x.Sender, &x.Receiver, &x.System, &x.SystemName, &x.Site, &x.SiteName, &x.Calls, &x.Last, &dismissedAt, &x.DismissedBy) == nil {
+			x.Active = time.Since(x.Last) <= time.Duration(staleMinutes)*time.Minute
+			if dismissedAt != nil {
+				x.Dismissed = true
+				x.DismissedAt = *dismissedAt
+				dismissed = append(dismissed, x)
+			} else {
+				items = append(items, x)
+			}
 		}
 	}
-	data := map[string]any{"Rows": items}
+	data := map[string]any{"Rows": items, "Dismissed": dismissed, "StaleMinutes": staleMinutes}
 	if s.isAdmin(r) {
 		data["Storage"], _ = s.storageStats()
 	}
@@ -1459,19 +1562,35 @@ func (s *server) adminOK(r *http.Request) bool {
 		return true
 	}
 	if s.cfg.AdminOpen && !s.cfg.AuthRequired {
+		r.Header.Set("X-Call-Recorder-User", "local-admin-open")
+		r.Header.Set("X-Call-Recorder-Role", "admin")
 		return true
 	}
 	// Check for username/password session cookie.
 	if c, err := r.Cookie("call_recorder_session"); err == nil && s.cfg.SessionSecret != "" {
+		if !strings.Contains(c.Value, ":") {
+			var username, role string
+			var enabled bool
+			err := s.db.QueryRow(r.Context(), `SELECT u.username,u.role,u.enabled FROM user_sessions ss JOIN users u ON u.username=ss.username WHERE ss.token_hash=$1 AND ss.revoked_at IS NULL AND ss.expires_at>now()`, tokenHash(c.Value)).Scan(&username, &role, &enabled)
+			if err == nil && enabled {
+				r.Header.Set("X-Call-Recorder-User", username)
+				r.Header.Set("X-Call-Recorder-Role", role)
+				_, _ = s.db.Exec(r.Context(), `UPDATE user_sessions SET last_seen_at=now() WHERE token_hash=$1 AND last_seen_at<now()-interval '5 minutes'`, tokenHash(c.Value))
+				return true
+			}
+		}
+		// Accept the previous signed cookie during an upgrade. The role is still
+		// read from PostgreSQL, and the next login creates an opaque session.
 		parts := strings.SplitN(c.Value, ":", 3)
 		if len(parts) == 3 {
-			username, role, hash := parts[0], parts[1], parts[2]
-			h := sha256.Sum256([]byte(username + ":" + role + ":" + s.cfg.SessionSecret))
+			username, signedRole, hash := parts[0], parts[1], parts[2]
+			h := sha256.Sum256([]byte(username + ":" + signedRole + ":" + s.cfg.SessionSecret))
 			expected := hex.EncodeToString(h[:])
 			if subtle.ConstantTimeCompare([]byte(hash), []byte(expected)) == 1 {
 				// Valid session. Check if user still exists and is enabled.
 				var enabled bool
-				err := s.db.QueryRow(r.Context(), `SELECT enabled FROM users WHERE username=$1`, username).Scan(&enabled)
+				var role string
+				err := s.db.QueryRow(r.Context(), `SELECT enabled,role FROM users WHERE username=$1`, username).Scan(&enabled, &role)
 				if err == nil && enabled {
 					r.Header.Set("X-Call-Recorder-User", username)
 					r.Header.Set("X-Call-Recorder-Role", role)
@@ -1524,10 +1643,7 @@ func (s *server) requireViewer(next http.HandlerFunc) http.HandlerFunc {
 }
 func (s *server) loginPage(w http.ResponseWriter, r *http.Request) {
 	if s.adminOK(r) {
-		returnURL := r.URL.Query().Get("return")
-		if returnURL == "" || !strings.HasPrefix(returnURL, "/") {
-			returnURL = "/"
-		}
+		returnURL := safeLocalReturn(r.URL.Query().Get("return"), "/")
 		http.Redirect(w, r, returnURL, http.StatusFound)
 		return
 	}
@@ -1591,16 +1707,27 @@ func (s *server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		s.renderStatus(w, r, http.StatusUnauthorized, "admin_login.html", "Administration sign-in", "", map[string]any{"Error": "Invalid username or password."})
 		return
 	}
+	s.clearLoginFailures(r, username)
 	// Create session cookie.
-	s.createSession(w, username, role, r.FormValue("remember") != "")
+	if err := s.createSession(r.Context(), w, username, r.FormValue("remember") != ""); err != nil {
+		s.internal(w, err)
+		return
+	}
 	returnURL := r.Form.Get("return")
-	if returnURL == "" || !strings.HasPrefix(returnURL, "/") {
+	if returnURL == "" || !strings.HasPrefix(returnURL, "/") || strings.HasPrefix(returnURL, "//") || strings.ContainsAny(returnURL, "\r\n") {
 		returnURL = "/"
 		if r.URL.Path == "/admin/login" {
 			returnURL = "/admin/talkgroups"
 		}
 	}
 	http.Redirect(w, r, returnURL, http.StatusSeeOther)
+}
+
+func safeLocalReturn(value, fallback string) string {
+	if strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "//") && !strings.ContainsAny(value, "\r\n") {
+		return value
+	}
+	return fallback
 }
 
 func (s *server) loginKey(r *http.Request, username string) string {
@@ -1641,15 +1768,36 @@ func (s *server) recordLoginFailure(r *http.Request, username string) {
 	s.loginFails[key] = item
 }
 
-func (s *server) createSession(w http.ResponseWriter, username, role string, remember bool) {
+func (s *server) clearLoginFailures(r *http.Request, username string) {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	delete(s.loginFails, s.loginKey(r, username))
+}
+
+func (s *server) createSession(ctx context.Context, w http.ResponseWriter, username string, remember bool) error {
 	if s.cfg.SessionSecret == "" {
-		return
+		return errors.New("session secret is not configured")
 	}
-	h := sha256.Sum256([]byte(username + ":" + role + ":" + s.cfg.SessionSecret))
-	value := username + ":" + role + ":" + hex.EncodeToString(h[:])
+	value, err := randomToken()
+	if err != nil {
+		return err
+	}
+	sessionID, err := randomToken()
+	if err != nil {
+		return err
+	}
+	csrfValue, err := randomToken()
+	if err != nil {
+		return err
+	}
 	maxAge := 0
+	expires := time.Now().UTC().Add(24 * time.Hour)
 	if remember {
 		maxAge = s.cfg.SessionMaxAge
+		expires = time.Now().UTC().Add(time.Duration(maxAge) * time.Second)
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO user_sessions(id,token_hash,username,csrf_token_hash,remember_me,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, sessionID, tokenHash(value), username, tokenHash(csrfValue), remember, expires); err != nil {
+		return err
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "call_recorder_session",
@@ -1660,9 +1808,13 @@ func (s *server) createSession(w http.ResponseWriter, username, role string, rem
 		Secure:   s.cfg.SessionCookieSecure,
 		MaxAge:   maxAge,
 	})
+	return nil
 }
 
 func (s *server) adminLogout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie("call_recorder_session"); err == nil && !strings.Contains(cookie.Value, ":") {
+		_, _ = s.db.Exec(r.Context(), `UPDATE user_sessions SET revoked_at=now() WHERE token_hash=$1`, tokenHash(cookie.Value))
+	}
 	http.SetCookie(w, &http.Cookie{Name: "call_recorder_session", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: s.cfg.SessionCookieSecure})
 	http.SetCookie(w, &http.Cookie{Name: "call_recorder_admin", Path: "/admin", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: true})
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -1749,8 +1901,8 @@ func (s *server) adminCreateUser(w http.ResponseWriter, r *http.Request) {
 	username := strings.TrimSpace(r.Form.Get("username"))
 	password := r.Form.Get("password")
 	role := r.Form.Get("role")
-	if username == "" || password == "" {
-		http.Error(w, "username and password are required", http.StatusBadRequest)
+	if username == "" || strings.Contains(username, ":") || len(username) > 100 || len(password) < 12 {
+		http.Error(w, "username must not contain a colon and password must be at least 12 characters", http.StatusBadRequest)
 		return
 	}
 	if role != "admin" && role != "editor" && role != "viewer" {
@@ -1783,6 +1935,29 @@ func (s *server) adminUserAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "username is required", http.StatusBadRequest)
 		return
 	}
+	if action == "disable" && strings.EqualFold(username, r.Header.Get("X-Call-Recorder-User")) {
+		http.Error(w, "you cannot disable the account currently in use", http.StatusBadRequest)
+		return
+	}
+	if action == "disable" {
+		var role string
+		var enabled bool
+		if err := s.db.QueryRow(r.Context(), `SELECT role,enabled FROM users WHERE username=$1`, username).Scan(&role, &enabled); err != nil {
+			http.Error(w, "user not found", http.StatusNotFound)
+			return
+		}
+		if role == "admin" && enabled {
+			var administrators int
+			if err := s.db.QueryRow(r.Context(), `SELECT count(*) FROM users WHERE role='admin' AND enabled`).Scan(&administrators); err != nil {
+				s.internal(w, err)
+				return
+			}
+			if administrators <= 1 {
+				http.Error(w, "cannot disable the last enabled administrator", http.StatusBadRequest)
+				return
+			}
+		}
+	}
 	switch action {
 	case "enable":
 		_, err := s.db.Exec(r.Context(), `UPDATE users SET enabled=true, updated_at=now() WHERE username=$1`, username)
@@ -1796,6 +1971,7 @@ func (s *server) adminUserAction(w http.ResponseWriter, r *http.Request) {
 			s.internal(w, err)
 			return
 		}
+		_, _ = s.db.Exec(r.Context(), `UPDATE user_sessions SET revoked_at=now() WHERE username=$1`, username)
 	default:
 		http.Error(w, "invalid action", http.StatusBadRequest)
 		return
@@ -1813,8 +1989,8 @@ func (s *server) adminChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	username := r.FormValue("username")
 	password := r.FormValue("password")
-	if username == "" || password == "" {
-		http.Error(w, "username and password are required", http.StatusBadRequest)
+	if username == "" || len(password) < 12 {
+		http.Error(w, "username is required and password must be at least 12 characters", http.StatusBadRequest)
 		return
 	}
 	hash, err := hashAPIKey(password)
@@ -1831,6 +2007,7 @@ func (s *server) adminChangePassword(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "user not found", http.StatusNotFound)
 		return
 	}
+	_, _ = s.db.Exec(r.Context(), `UPDATE user_sessions SET revoked_at=now() WHERE username=$1`, username)
 	http.Redirect(w, r, "/admin/users?updated=1", http.StatusSeeOther)
 }
 
@@ -2046,11 +2223,12 @@ func (s *server) adminSaveTalkgroup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	transcriptionEnabled := true
-	if v.Get("transcription_setting") == "explicit" {
-		transcriptionEnabled = v.Get("transcription_enabled") == "on"
+	mode := strings.TrimSpace(v.Get("transcription_setting"))
+	if mode != "enabled" && mode != "disabled" && mode != "inherit" {
+		mode = "inherit"
 	}
-	_, err = s.db.Exec(r.Context(), `INSERT INTO talkgroup_aliases(system_id,talkgroup_id,alias,description,category,priority,enabled,source,transcription_enabled,transcription_language,notification_eligible) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,''),$11) ON CONFLICT(system_id,talkgroup_id) DO UPDATE SET alias=EXCLUDED.alias,description=EXCLUDED.description,category=EXCLUDED.category,priority=EXCLUDED.priority,enabled=EXCLUDED.enabled,source=EXCLUDED.source,transcription_enabled=EXCLUDED.transcription_enabled,transcription_language=EXCLUDED.transcription_language,notification_eligible=EXCLUDED.notification_eligible,updated_at=now()`, system, id, alias, desc, category, priority, enabled, source, transcriptionEnabled, strings.TrimSpace(v.Get("transcription_language")), v.Get("notification_eligible") != "off")
+	transcriptionEnabled := mode != "disabled"
+	_, err = s.db.Exec(r.Context(), `INSERT INTO talkgroup_aliases(system_id,talkgroup_id,alias,description,category,priority,enabled,source,transcription_enabled,transcription_mode,transcription_language,notification_eligible) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULLIF($11,''),$12) ON CONFLICT(system_id,talkgroup_id) DO UPDATE SET alias=EXCLUDED.alias,description=EXCLUDED.description,category=EXCLUDED.category,priority=EXCLUDED.priority,enabled=EXCLUDED.enabled,source=EXCLUDED.source,transcription_enabled=EXCLUDED.transcription_enabled,transcription_mode=EXCLUDED.transcription_mode,transcription_language=EXCLUDED.transcription_language,notification_eligible=EXCLUDED.notification_eligible,updated_at=now()`, system, id, alias, desc, category, priority, enabled, source, transcriptionEnabled, mode, strings.TrimSpace(v.Get("transcription_language")), v.Get("notification_eligible") != "off")
 	if err != nil {
 		s.internal(w, err)
 		return
@@ -2083,23 +2261,23 @@ func (s *server) adminTalkgroups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query().Get("q")
-	rows, err := s.db.Query(r.Context(), `SELECT a.system_id,a.talkgroup_id,coalesce(a.alias,''),coalesce(a.description,''),coalesce(a.category,''),a.priority,a.enabled,a.source,a.transcription_enabled,coalesce(a.transcription_language,''),a.notification_eligible,count(c.id),max(c.start_time) FROM talkgroup_aliases a LEFT JOIN calls c ON c.system_id=a.system_id AND c.talkgroup_id=a.talkgroup_id WHERE $1='' OR a.system_id ILIKE '%'||$1||'%' OR a.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(a.alias,'') ILIKE '%'||$1||'%' GROUP BY a.system_id,a.talkgroup_id,a.alias,a.description,a.category,a.priority,a.enabled,a.source,a.transcription_enabled,a.transcription_language,a.notification_eligible ORDER BY a.system_id,a.talkgroup_id LIMIT 500`, q)
+	rows, err := s.db.Query(r.Context(), `SELECT a.system_id,a.talkgroup_id,coalesce(a.alias,''),coalesce(a.description,''),coalesce(a.category,''),a.priority,a.enabled,a.source,a.transcription_enabled,a.transcription_mode,coalesce(a.transcription_language,''),a.notification_eligible,count(c.id),max(c.start_time) FROM talkgroup_aliases a LEFT JOIN calls c ON c.system_id=a.system_id AND c.talkgroup_id=a.talkgroup_id WHERE $1='' OR a.system_id ILIKE '%'||$1||'%' OR a.talkgroup_id ILIKE '%'||$1||'%' OR coalesce(a.alias,'') ILIKE '%'||$1||'%' GROUP BY a.system_id,a.talkgroup_id,a.alias,a.description,a.category,a.priority,a.enabled,a.source,a.transcription_enabled,a.transcription_mode,a.transcription_language,a.notification_eligible ORDER BY a.system_id,a.talkgroup_id LIMIT 500`, q)
 	if err != nil {
 		s.internal(w, err)
 		return
 	}
 	defer rows.Close()
 	type row struct {
-		System, ID, Alias, Description, Category, Source, TranscriptionLanguage string
-		Priority                                                                int
-		Enabled, TranscriptionEnabled, NotificationEligible                     bool
-		Calls                                                                   int
-		Latest                                                                  *time.Time
+		System, ID, Alias, Description, Category, Source, TranscriptionMode, TranscriptionLanguage string
+		Priority                                                                                   int
+		Enabled, TranscriptionEnabled, NotificationEligible                                        bool
+		Calls                                                                                      int
+		Latest                                                                                     *time.Time
 	}
 	list := []row{}
 	for rows.Next() {
 		var x row
-		if err := rows.Scan(&x.System, &x.ID, &x.Alias, &x.Description, &x.Category, &x.Priority, &x.Enabled, &x.Source, &x.TranscriptionEnabled, &x.TranscriptionLanguage, &x.NotificationEligible, &x.Calls, &x.Latest); err != nil {
+		if err := rows.Scan(&x.System, &x.ID, &x.Alias, &x.Description, &x.Category, &x.Priority, &x.Enabled, &x.Source, &x.TranscriptionEnabled, &x.TranscriptionMode, &x.TranscriptionLanguage, &x.NotificationEligible, &x.Calls, &x.Latest); err != nil {
 			s.internal(w, err)
 			return
 		}
@@ -2312,7 +2490,7 @@ func (s *server) adminRunRetention(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "policy not found", 404)
 		return
 	}
-	q := `SELECT count(*) FROM calls WHERE start_time < now()-($1::int * interval '1 day') AND (NOT protected OR protection_expires_at IS NOT NULL AND protection_expires_at <= now())`
+	q := `SELECT count(*) FROM calls WHERE start_time < now()-($1::int * interval '1 day') AND (NOT protected OR protection_expires_at IS NOT NULL AND protection_expires_at <= now()) AND NOT EXISTS (SELECT 1 FROM dataset_export_items dei JOIN dataset_exports de ON de.id=dei.export_id WHERE dei.call_id=calls.id AND de.status IN ('pending','running'))`
 	a := []any{days}
 	for _, f := range []struct {
 		v *string
@@ -2399,7 +2577,7 @@ func filterFromQuery(q url.Values) (callFilter, error) {
 }
 
 const callsFrom = ` FROM calls c LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled`
-const callsWhere = ` WHERE ($1='' OR c.search_document @@ plainto_tsquery('simple',$1) OR c.search_document::text ILIKE '%'||lower($1)||'%') AND ($2='' OR c.sender_id=ANY(string_to_array($2,','))) AND ($3='' OR c.system_id=ANY(string_to_array($3,','))) AND ($4='' OR c.site_id=ANY(string_to_array($4,','))) AND ($5='' OR coalesce(NULLIF(c.receiver_id,''),c.sender_id)=ANY(string_to_array($5,','))) AND ($6='' OR c.talkgroup_id=ANY(string_to_array($6,','))) AND ($7='' OR c.radio_id=ANY(string_to_array($7,','))) AND ($8='' OR c.call_type=ANY(string_to_array($8,','))) AND ($9='' OR ($9='group' AND c.group_call=true) OR ($9='private' AND c.group_call=false)) AND ($10='' OR c.frequency ILIKE '%'||$10||'%') AND ($11='' OR c.duration_ms >= ($11::double precision*1000)) AND ($12='' OR c.duration_ms <= ($12::double precision*1000)) AND ($13='' OR c.start_time::date=$13::date) AND ($14='' OR c.start_time::date>=$14::date) AND ($15='' OR c.start_time::date<=$15::date) AND (NOT $16 OR EXISTS (SELECT 1 FROM call_targets ct WHERE ct.call_id=c.id)) AND ($17='' OR EXISTS (SELECT 1 FROM favourite_members fm WHERE fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id AND fm.group_id=$17::bigint))`
+const callsWhere = ` WHERE ($1='' OR c.search_document @@ plainto_tsquery('simple',$1) OR c.search_document::text ILIKE '%'||lower($1)||'%' OR EXISTS (SELECT 1 FROM transcripts st WHERE st.call_id=c.id AND coalesce(NULLIF(st.edited_text,''),st.text,'') ILIKE '%'||$1||'%')) AND ($2='' OR c.sender_id=ANY(string_to_array($2,','))) AND ($3='' OR c.system_id=ANY(string_to_array($3,','))) AND ($4='' OR c.site_id=ANY(string_to_array($4,','))) AND ($5='' OR coalesce(NULLIF(c.receiver_id,''),c.sender_id)=ANY(string_to_array($5,','))) AND ($6='' OR c.talkgroup_id=ANY(string_to_array($6,',')) OR c.system_id||'::'||c.talkgroup_id=ANY(string_to_array($6,','))) AND ($7='' OR c.radio_id=ANY(string_to_array($7,',')) OR c.system_id||'::'||c.radio_id=ANY(string_to_array($7,','))) AND ($8='' OR c.call_type=ANY(string_to_array($8,','))) AND ($9='' OR ($9='group' AND c.group_call=true) OR ($9='private' AND c.group_call=false)) AND ($10='' OR c.frequency ILIKE '%'||$10||'%') AND ($11='' OR c.duration_ms >= ($11::double precision*1000)) AND ($12='' OR c.duration_ms <= ($12::double precision*1000)) AND ($13='' OR c.start_time::date=$13::date) AND ($14='' OR c.start_time::date>=$14::date) AND ($15='' OR c.start_time::date<=$15::date) AND (NOT $16 OR EXISTS (SELECT 1 FROM call_targets ct WHERE ct.call_id=c.id)) AND ($17='' OR EXISTS (SELECT 1 FROM favourite_members fm WHERE fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id AND fm.group_id=$17::bigint))`
 
 func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall, int, error) {
 	args := []any{f.Q, f.Sender, f.System, f.Site, f.Receiver, f.Talkgroup, f.Radio, f.CallType, f.Group, f.Frequency, f.MinDuration, f.MaxDuration, f.Date, f.From, f.To, f.Patched, f.Favourite}
@@ -2437,9 +2615,9 @@ func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall,
 	case "radio_label":
 		orderBy = "coalesce(ra.alias,c.radio_name,''),c.start_time DESC"
 	}
-	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.talkgroup_tag,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.radio_tag,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.voice_service,''),c.start_time,c.duration_ms,coalesce(c.audio_offset_ms,0),c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.protected AND (c.protection_expires_at IS NULL OR c.protection_expires_at > now()),c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id),EXISTS(SELECT 1 FROM transcripts t WHERE t.call_id=c.id),coalesce((SELECT t.text FROM transcripts t WHERE t.call_id=c.id ORDER BY t.updated_at DESC LIMIT 1),''),coalesce((SELECT tj.status FROM transcription_jobs tj WHERE tj.call_id=c.id ORDER BY tj.updated_at DESC LIMIT 1),''),coalesce((SELECT string_agg(g.name, ', ') FROM favourite_members fm JOIN favourite_groups g ON g.id = fm.group_id WHERE fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id),'')` + callsFrom + callsWhere + ` ORDER BY ` + orderBy + ` LIMIT $18 OFFSET $19`
+	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.talkgroup_tag,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.radio_tag,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.voice_service,''),c.start_time,c.duration_ms,coalesce(c.audio_offset_ms,0),c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.protected AND (c.protection_expires_at IS NULL OR c.protection_expires_at > now()),c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id),EXISTS(SELECT 1 FROM transcripts t WHERE t.call_id=c.id),coalesce((SELECT coalesce(NULLIF(t.edited_text,''),t.text) FROM transcripts t WHERE t.call_id=c.id ORDER BY t.updated_at DESC LIMIT 1),''),coalesce((SELECT tj.status FROM transcription_jobs tj WHERE tj.call_id=c.id ORDER BY tj.updated_at DESC LIMIT 1),''),coalesce((SELECT string_agg(g.name, ', ') FROM favourite_members fm JOIN favourite_groups g ON g.id = fm.group_id WHERE fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id),'')` + callsFrom + callsWhere + ` ORDER BY ` + orderBy + ` LIMIT $18 OFFSET $19`
 	if f.PageSize == 0 {
-		query = `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.talkgroup_tag,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.radio_tag,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.voice_service,''),c.start_time,c.duration_ms,coalesce(c.audio_offset_ms,0),c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.protected AND (c.protection_expires_at IS NULL OR c.protection_expires_at > now()),c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id),EXISTS(SELECT 1 FROM transcripts t WHERE t.call_id=c.id),coalesce((SELECT t.text FROM transcripts t WHERE t.call_id=c.id ORDER BY t.updated_at DESC LIMIT 1),''),coalesce((SELECT tj.status FROM transcription_jobs tj WHERE tj.call_id=c.id ORDER BY tj.updated_at DESC LIMIT 1),''),coalesce((SELECT string_agg(g.name, ', ') FROM favourite_members fm JOIN favourite_groups g ON g.id = fm.group_id WHERE fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id),'')` + callsFrom + callsWhere + ` ORDER BY ` + orderBy
+		query = `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.talkgroup_tag,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.radio_tag,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.voice_service,''),c.start_time,c.duration_ms,coalesce(c.audio_offset_ms,0),c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.protected AND (c.protection_expires_at IS NULL OR c.protection_expires_at > now()),c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id),EXISTS(SELECT 1 FROM transcripts t WHERE t.call_id=c.id),coalesce((SELECT coalesce(NULLIF(t.edited_text,''),t.text) FROM transcripts t WHERE t.call_id=c.id ORDER BY t.updated_at DESC LIMIT 1),''),coalesce((SELECT tj.status FROM transcription_jobs tj WHERE tj.call_id=c.id ORDER BY tj.updated_at DESC LIMIT 1),''),coalesce((SELECT string_agg(g.name, ', ') FROM favourite_members fm JOIN favourite_groups g ON g.id = fm.group_id WHERE fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id),'')` + callsFrom + callsWhere + ` ORDER BY ` + orderBy
 	}
 	var result pgx.Rows
 	var err error
@@ -2531,7 +2709,55 @@ func validateMetadata(r createUploadRequest) error {
 	if c.SystemID == "" || c.TalkgroupID == "" {
 		return errors.New("system_id and talkgroup_id are required")
 	}
+	if len(r.IdempotencyKey) > 240 || len(c.SourceCallID) > 240 || len(c.ReceiverID) > 240 || len(c.SystemID) > 240 || len(c.SystemName) > 500 || len(c.SiteID) > 240 || len(c.SiteName) > 500 || len(c.TalkgroupID) > 240 || len(c.TalkgroupName) > 500 || len(c.TalkgroupTag) > 240 || len(c.RadioID) > 240 || len(c.RadioName) > 500 || len(c.RadioTag) > 240 || len(c.Frequency) > 120 || len(c.LCN) > 120 || len(c.VoiceService) > 120 || len(c.CallType) > 120 || len(c.Transcript) > 100000 || len(c.Notes) > 10000 {
+		return errors.New("metadata field exceeds its allowed length")
+	}
+	if len(c.Patches) > 64 {
+		return errors.New("patches are limited to 64 unique talkgroups")
+	}
+	for _, value := range []string{r.SenderID, c.SourceCallID, c.ReceiverID, c.SystemID, c.SiteID, c.TalkgroupID, c.RadioID, c.Frequency, c.LCN, c.CallType} {
+		if strings.ContainsAny(value, "\x00\r\n") {
+			return errors.New("identifiers cannot contain control characters")
+		}
+	}
+	if c.AudioOffsetMS != nil && (*c.AudioOffsetMS < 0 || *c.AudioOffsetMS > c.DurationMS) {
+		return errors.New("audio_offset_ms must be within the call duration")
+	}
+	if c.StartTime.After(time.Now().UTC().Add(24 * time.Hour)) {
+		return errors.New("start_time cannot be more than 24 hours in the future")
+	}
 	return nil
+}
+
+func decodeJSONStrict(r io.Reader, target any) error {
+	decoder := json.NewDecoder(r)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return errors.New("request must contain exactly one JSON document")
+	}
+	return nil
+}
+
+func uniquePatches(values []patchMetadata) []patchMetadata {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]patchMetadata, 0, len(values))
+	for _, value := range values {
+		value.TalkgroupID = strings.TrimSpace(value.TalkgroupID)
+		value.TalkgroupName = strings.TrimSpace(value.TalkgroupName)
+		if value.TalkgroupID == "" || len(value.TalkgroupID) > 240 || len(value.TalkgroupName) > 500 {
+			continue
+		}
+		if _, ok := seen[value.TalkgroupID]; ok {
+			continue
+		}
+		seen[value.TalkgroupID] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 func contentTypeMatches(format, ct string) bool {
 	ct = strings.ToLower(strings.Split(ct, ";")[0])

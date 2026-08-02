@@ -14,12 +14,23 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+  migrate:
+    image: postgres:17-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ../backend/migrations:/migrations:ro
+    command: ["sh", "-c", "for migration in /migrations/*.sql; do echo Applying $$migration; psql -v ON_ERROR_STOP=1 -h postgres -U ${POSTGRES_USER:-call_recorder} -d ${POSTGRES_DB:-call_recorder} -f $$migration; done"]
   audio-init:
     image: alpine:3.21
-    command: ["sh", "-c", "install -d -m 0750 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets && chown 10001:10001 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets && chmod 0750 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets"]
+    command: ["sh", "-c", "install -d -m 0750 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets /var/lib/call-recorder/exports && chown 10001:10001 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets /var/lib/call-recorder/exports && chmod 0750 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets /var/lib/call-recorder/exports"]
     volumes:
       - ../runtime/audio:/var/lib/call-recorder/audio
       - ../runtime/secrets:/var/lib/call-recorder/secrets
+      - ../runtime/exports:/var/lib/call-recorder/exports
   backend:
     build:
       context: ../backend
@@ -30,6 +41,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       audio-init:
         condition: service_completed_successfully
     environment:
@@ -38,6 +51,7 @@ services:
       CALL_RECORDER_DATABASE_URL: postgresql://${POSTGRES_USER:-call_recorder}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-call_recorder}?sslmode=disable
       CALL_RECORDER_AUDIO_ROOT: /var/lib/call-recorder/audio
       CALL_RECORDER_SECRETS_ROOT: /var/lib/call-recorder/secrets
+      CALL_RECORDER_EXPORT_ROOT: /var/lib/call-recorder/exports
       CALL_RECORDER_BOOTSTRAP_SENDER_ID: ${CALL_RECORDER_BOOTSTRAP_SENDER_ID:-example-sender}
       CALL_RECORDER_BOOTSTRAP_SENDER_KEY: ${CALL_RECORDER_BOOTSTRAP_SENDER_KEY:?set a non-example sender key in private .env}
       CALL_RECORDER_LEGACY_INGESTION_ENABLED: ${CALL_RECORDER_LEGACY_INGESTION_ENABLED:-false}
@@ -63,6 +77,7 @@ services:
     volumes:
       - ../runtime/audio:/var/lib/call-recorder/audio
       - ../runtime/secrets:/var/lib/call-recorder/secrets
+      - ../runtime/exports:/var/lib/call-recorder/exports
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz || exit 1"]
       interval: 10s
@@ -77,11 +92,13 @@ services:
         COMMIT: ${GIT_COMMIT:-unknown}
         BUILD_TIME: ${BUILD_TIME:-unknown}
     restart: unless-stopped
-    entrypoint: ["/usr/local/bin/call-recorder-admin"]
-    command: ["notifications", "run"]
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["while true; do /usr/local/bin/call-recorder-admin notifications run || true; sleep 15; done"]
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       CALL_RECORDER_DATABASE_URL: postgresql://${POSTGRES_USER:-call_recorder}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-call_recorder}?sslmode=disable
       TZ: ${TZ:-America/Toronto}
@@ -100,6 +117,8 @@ services:
         condition: service_healthy
       audio-init:
         condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
     environment:
       CALL_RECORDER_DATABASE_URL: postgresql://${POSTGRES_USER:-call_recorder}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-call_recorder}?sslmode=disable
       CALL_RECORDER_AUDIO_ROOT: /var/lib/call-recorder/audio
@@ -115,3 +134,28 @@ services:
       timeout: 10s
       retries: 3
     # No ports exposed. A disabled configuration is a healthy idle state.
+  dataset-worker:
+    build:
+      context: ../backend
+      args:
+        COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/call-recorder-admin"]
+    command: ["datasets", "run"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      audio-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      CALL_RECORDER_DATABASE_URL: postgresql://${POSTGRES_USER:-call_recorder}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-call_recorder}?sslmode=disable
+      CALL_RECORDER_AUDIO_ROOT: /var/lib/call-recorder/audio
+      CALL_RECORDER_EXPORT_ROOT: /var/lib/call-recorder/exports
+      TZ: ${TZ:-America/Toronto}
+    volumes:
+      - ../runtime/audio:/var/lib/call-recorder/audio:ro
+      - ../runtime/exports:/var/lib/call-recorder/exports
+    user: "10001:10001"

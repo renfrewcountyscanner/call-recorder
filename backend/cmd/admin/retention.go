@@ -103,7 +103,7 @@ func runRetention(pool *pgxpool.Pool, policyID int, forceDry bool) {
 		sender, system, tg, ctype, min, max := p.sender, p.system, p.tg, p.ctype, p.min, p.max
 		started := time.Now().UTC()
 		effectiveDry := dry || forceDry
-		query := `SELECT count(*) FROM calls WHERE start_time < now() - ($1::int * interval '1 day') AND (NOT protected OR protection_expires_at IS NOT NULL AND protection_expires_at <= now())`
+		query := `SELECT count(*),coalesce(sum(audio_size),0),coalesce(sum(duration_ms),0) FROM calls WHERE start_time < now() - ($1::int * interval '1 day') AND (NOT protected OR protection_expires_at IS NOT NULL AND protection_expires_at <= now()) AND NOT EXISTS (SELECT 1 FROM dataset_export_items dei JOIN dataset_exports de ON de.id=dei.export_id WHERE dei.call_id=calls.id AND de.status IN ('pending','running'))`
 		qargs := []any{days}
 		for _, f := range []struct {
 			v   *string
@@ -123,11 +123,12 @@ func runRetention(pool *pgxpool.Pool, policyID int, forceDry bool) {
 			query += fmt.Sprintf(" AND duration_ms <= $%d", len(qargs))
 		}
 		var matched int
-		if err := conn.QueryRow(ctx, query, qargs...).Scan(&matched); err != nil {
+		var matchedBytes, matchedDuration int64
+		if err := conn.QueryRow(ctx, query, qargs...).Scan(&matched, &matchedBytes, &matchedDuration); err != nil {
 			fatal(err)
 		}
 		if effectiveDry {
-			_, err = conn.Exec(ctx, `INSERT INTO retention_runs(policy_id,started_at,ended_at,dry_run,calls_matched,summary) VALUES($1,$2,now(),true,$3,$4)`, id, started, matched, `{"mode":"dry-run"}`)
+			_, err = conn.Exec(ctx, `INSERT INTO retention_runs(policy_id,started_at,ended_at,dry_run,calls_matched,audio_bytes_matched,audio_duration_ms_matched,summary) VALUES($1,$2,now(),true,$3,$4,$5,$6)`, id, started, matched, matchedBytes, matchedDuration, `{"mode":"dry-run"}`)
 			if err != nil {
 				fatal(err)
 			}
@@ -138,7 +139,7 @@ func runRetention(pool *pgxpool.Pool, policyID int, forceDry bool) {
 		if audioRoot == "" {
 			fatal(fmt.Errorf("CALL_RECORDER_AUDIO_ROOT is required for destructive retention"))
 		}
-		candidatesQuery := strings.Replace(query, "SELECT count(*)", "SELECT id,audio_path", 1)
+		candidatesQuery := strings.Replace(query, "SELECT count(*),coalesce(sum(audio_size),0),coalesce(sum(duration_ms),0)", "SELECT id,audio_path", 1)
 		candidateRows, err := conn.Query(ctx, candidatesQuery, qargs...)
 		if err != nil {
 			fatal(err)
@@ -159,6 +160,7 @@ func runRetention(pool *pgxpool.Pool, policyID int, forceDry bool) {
 			fatal(err)
 		}
 		moved := []candidate{}
+		missingFiles := 0
 		for _, c := range candidates {
 			src := filepath.Join(audioRoot, c.path)
 			if !strings.HasPrefix(filepath.Clean(src), filepath.Clean(audioRoot)+string(os.PathSeparator)) {
@@ -166,7 +168,15 @@ func runRetention(pool *pgxpool.Pool, policyID int, forceDry bool) {
 			}
 			dst := filepath.Join(trash, c.id+filepath.Ext(c.path))
 			if err := os.Rename(src, dst); err != nil {
+				if os.IsNotExist(err) {
+					missingFiles++
+					moved = append(moved, candidate{id: c.id})
+					continue
+				}
 				for _, m := range moved {
+					if m.path == "" {
+						continue
+					}
 					_ = os.MkdirAll(filepath.Dir(filepath.Join(audioRoot, m.path)), 0750)
 					_ = os.Rename(filepath.Join(trash, m.id+filepath.Ext(m.path)), filepath.Join(audioRoot, m.path))
 				}
@@ -178,7 +188,23 @@ func runRetention(pool *pgxpool.Pool, policyID int, forceDry bool) {
 		if err != nil {
 			fatal(err)
 		}
-		_, err = tx.Exec(ctx, strings.Replace(candidatesQuery, "SELECT id,audio_path", "DELETE", 1), qargs...)
+		ids := make([]string, 0, len(candidates))
+		for _, candidate := range candidates {
+			ids = append(ids, candidate.id)
+		}
+		deletedRows, deleteErr := tx.Query(ctx, `DELETE FROM calls WHERE id=ANY($1) AND (NOT protected OR protection_expires_at IS NOT NULL AND protection_expires_at<=now()) AND NOT EXISTS (SELECT 1 FROM dataset_export_items dei JOIN dataset_exports de ON de.id=dei.export_id WHERE dei.call_id=calls.id AND de.status IN ('pending','running')) RETURNING id`, ids)
+		deleted := map[string]bool{}
+		if deleteErr == nil {
+			for deletedRows.Next() {
+				var deletedID string
+				if deletedRows.Scan(&deletedID) == nil {
+					deleted[deletedID] = true
+				}
+			}
+			deleteErr = deletedRows.Err()
+			deletedRows.Close()
+		}
+		err = deleteErr
 		if err == nil {
 			err = tx.Commit(ctx)
 		} else {
@@ -186,6 +212,9 @@ func runRetention(pool *pgxpool.Pool, policyID int, forceDry bool) {
 		}
 		if err != nil {
 			for _, m := range moved {
+				if m.path == "" {
+					continue
+				}
 				_ = os.MkdirAll(filepath.Dir(filepath.Join(audioRoot, m.path)), 0750)
 				_ = os.Rename(filepath.Join(trash, m.id+filepath.Ext(m.path)), filepath.Join(audioRoot, m.path))
 			}
@@ -193,16 +222,24 @@ func runRetention(pool *pgxpool.Pool, policyID int, forceDry bool) {
 		}
 		failures := 0
 		for _, m := range moved {
-			if err := os.Remove(filepath.Join(trash, m.id+filepath.Ext(m.path))); err != nil {
-				failures++
+			if !deleted[m.id] && m.path != "" {
+				_ = os.MkdirAll(filepath.Dir(filepath.Join(audioRoot, m.path)), 0750)
+				_ = os.Rename(filepath.Join(trash, m.id+filepath.Ext(m.path)), filepath.Join(audioRoot, m.path))
+				continue
+			}
+			if m.path != "" {
+				if err := os.Remove(filepath.Join(trash, m.id+filepath.Ext(m.path))); err != nil {
+					failures++
+				}
 			}
 		}
+		failures += missingFiles
 		_ = os.Remove(trash)
-		_, err = conn.Exec(ctx, `INSERT INTO retention_runs(policy_id,started_at,ended_at,dry_run,calls_matched,calls_deleted,audio_files_deleted,failures,summary) VALUES($1,$2,now(),false,$3,$4,$5,$6,$7)`, id, started, matched, len(candidates), len(candidates)-failures, failures, `{"mode":"delete"}`)
+		_, err = conn.Exec(ctx, `INSERT INTO retention_runs(policy_id,started_at,ended_at,dry_run,calls_matched,calls_deleted,audio_files_deleted,failures,audio_bytes_matched,audio_duration_ms_matched,summary) VALUES($1,$2,now(),false,$3,$4,$5,$6,$7,$8,$9)`, id, started, matched, len(deleted), len(deleted)-missingFiles, failures, matchedBytes, matchedDuration, `{"mode":"delete"}`)
 		if err != nil {
 			fatal(err)
 		}
-		fmt.Printf("policy=%d dry_run=false matched=%d deleted=%d audio=%d failures=%d\n", id, matched, len(candidates), len(candidates)-failures, failures)
+		fmt.Printf("policy=%d dry_run=false matched=%d deleted=%d audio=%d failures=%d\n", id, matched, len(deleted), len(deleted)-missingFiles, failures)
 	}
 }
 func retentionUsage() {

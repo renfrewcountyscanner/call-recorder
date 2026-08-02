@@ -39,8 +39,8 @@ func userCreate(pool *pgxpool.Pool, args []string) {
 	password := f.String("password", "", "password")
 	role := f.String("role", "viewer", "role (admin, editor, or viewer)")
 	f.Parse(args)
-	if *username == "" || *password == "" {
-		fatal(errors.New("--username and --password are required"))
+	if *username == "" || strings.Contains(*username, ":") || len(*username) > 100 || len(*password) < 12 {
+		fatal(errors.New("username must not contain a colon and password must be at least 12 characters"))
 	}
 	if *role != "admin" && *role != "editor" && *role != "viewer" {
 		fatal(errors.New("--role must be admin, editor, or viewer"))
@@ -88,8 +88,8 @@ func userPassword(pool *pgxpool.Pool, args []string) {
 	username := f.String("username", "", "username")
 	password := f.String("password", "", "new password")
 	f.Parse(args)
-	if *username == "" || *password == "" {
-		fatal(errors.New("--username and --password are required"))
+	if *username == "" || len(*password) < 12 {
+		fatal(errors.New("--username is required and password must be at least 12 characters"))
 	}
 	hash, err := hashAPIKey(*password)
 	if err != nil {
@@ -103,6 +103,7 @@ func userPassword(pool *pgxpool.Pool, args []string) {
 	if tag.RowsAffected() == 0 {
 		fatal(errors.New("user not found"))
 	}
+	_, _ = pool.Exec(ctx, `UPDATE user_sessions SET revoked_at=now() WHERE username=$1`, *username)
 	fmt.Printf("user=%s password updated\n", *username)
 }
 
@@ -132,6 +133,20 @@ func userDisable(pool *pgxpool.Pool, args []string) {
 		fatal(errors.New("--username is required"))
 	}
 	ctx := context.Background()
+	var role string
+	var enabled bool
+	if err := pool.QueryRow(ctx, `SELECT role,enabled FROM users WHERE username=$1`, *username).Scan(&role, &enabled); err != nil {
+		fatal(errors.New("user not found"))
+	}
+	if role == "admin" && enabled {
+		var admins int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM users WHERE role='admin' AND enabled`).Scan(&admins); err != nil {
+			fatal(err)
+		}
+		if admins <= 1 {
+			fatal(errors.New("cannot disable the last enabled administrator"))
+		}
+	}
 	tag, err := pool.Exec(ctx, `UPDATE users SET enabled=false, updated_at=now() WHERE username=$1`, *username)
 	if err != nil {
 		fatal(err)
@@ -139,5 +154,6 @@ func userDisable(pool *pgxpool.Pool, args []string) {
 	if tag.RowsAffected() == 0 {
 		fatal(errors.New("user not found"))
 	}
+	_, _ = pool.Exec(ctx, `UPDATE user_sessions SET revoked_at=now() WHERE username=$1`, *username)
 	fmt.Printf("user=%s disabled\n", *username)
 }

@@ -1,10 +1,18 @@
 services:
+  migrate:
+    image: postgres:17-alpine
+    environment:
+      CALL_RECORDER_DATABASE_URL: ${CALL_RECORDER_DATABASE_URL:?set CALL_RECORDER_DATABASE_URL in your .env file}
+    volumes:
+      - ../backend/migrations:/migrations:ro
+    command: ["sh", "-c", "for migration in /migrations/*.sql; do echo Applying $$migration; psql $$CALL_RECORDER_DATABASE_URL -v ON_ERROR_STOP=1 -f $$migration; done"]
   audio-init:
     image: alpine:3.21
-    command: ["sh", "-c", "install -d -m 0750 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets && chown 10001:10001 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets && chmod 0750 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets"]
+    command: ["sh", "-c", "install -d -m 0750 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets /var/lib/call-recorder/exports && chown 10001:10001 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets /var/lib/call-recorder/exports && chmod 0750 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets /var/lib/call-recorder/exports"]
     volumes:
       - ${CALL_RECORDER_AUDIO_HOST_PATH:-../runtime/audio}:/var/lib/call-recorder/audio
       - ${CALL_RECORDER_SECRETS_HOST_PATH:-../runtime/secrets}:/var/lib/call-recorder/secrets
+      - ${CALL_RECORDER_EXPORTS_HOST_PATH:-../runtime/exports}:/var/lib/call-recorder/exports
   backend:
     build:
       context: ../backend
@@ -15,12 +23,15 @@ services:
     depends_on:
       audio-init:
         condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
     environment:
       CALL_RECORDER_LISTEN_ADDRESS: 0.0.0.0
       CALL_RECORDER_LISTEN_PORT: 8080
       CALL_RECORDER_DATABASE_URL: ${CALL_RECORDER_DATABASE_URL:?set CALL_RECORDER_DATABASE_URL in your .env file}
       CALL_RECORDER_AUDIO_ROOT: /var/lib/call-recorder/audio
       CALL_RECORDER_SECRETS_ROOT: /var/lib/call-recorder/secrets
+      CALL_RECORDER_EXPORT_ROOT: /var/lib/call-recorder/exports
       CALL_RECORDER_BOOTSTRAP_SENDER_ID: ${CALL_RECORDER_BOOTSTRAP_SENDER_ID:-example-sender}
       CALL_RECORDER_BOOTSTRAP_SENDER_KEY: ${CALL_RECORDER_BOOTSTRAP_SENDER_KEY:?set a non-example sender key in your .env file}
       CALL_RECORDER_LEGACY_INGESTION_ENABLED: ${CALL_RECORDER_LEGACY_INGESTION_ENABLED:-false}
@@ -46,6 +57,7 @@ services:
     volumes:
       - ${CALL_RECORDER_AUDIO_HOST_PATH:-../runtime/audio}:/var/lib/call-recorder/audio
       - ${CALL_RECORDER_SECRETS_HOST_PATH:-../runtime/secrets}:/var/lib/call-recorder/secrets
+      - ${CALL_RECORDER_EXPORTS_HOST_PATH:-../runtime/exports}:/var/lib/call-recorder/exports
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz || exit 1"]
       interval: 10s
@@ -60,8 +72,11 @@ services:
         COMMIT: ${GIT_COMMIT:-unknown}
         BUILD_TIME: ${BUILD_TIME:-unknown}
     restart: unless-stopped
-    entrypoint: ["/usr/local/bin/call-recorder-admin"]
-    command: ["notifications", "run"]
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["while true; do /usr/local/bin/call-recorder-admin notifications run || true; sleep 15; done"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     environment:
       CALL_RECORDER_DATABASE_URL: ${CALL_RECORDER_DATABASE_URL:?set CALL_RECORDER_DATABASE_URL in your .env file}
       TZ: ${TZ:-America/Toronto}
@@ -78,6 +93,8 @@ services:
     depends_on:
       audio-init:
         condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
     environment:
       CALL_RECORDER_DATABASE_URL: ${CALL_RECORDER_DATABASE_URL:?set CALL_RECORDER_DATABASE_URL in your .env file}
       CALL_RECORDER_AUDIO_ROOT: /var/lib/call-recorder/audio
@@ -93,3 +110,26 @@ services:
       timeout: 10s
       retries: 3
     # No ports exposed. A disabled configuration is a healthy idle state.
+  dataset-worker:
+    build:
+      context: ../backend
+      args:
+        COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/call-recorder-admin"]
+    command: ["datasets", "run"]
+    depends_on:
+      audio-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      CALL_RECORDER_DATABASE_URL: ${CALL_RECORDER_DATABASE_URL:?set CALL_RECORDER_DATABASE_URL in your .env file}
+      CALL_RECORDER_AUDIO_ROOT: /var/lib/call-recorder/audio
+      CALL_RECORDER_EXPORT_ROOT: /var/lib/call-recorder/exports
+      TZ: ${TZ:-America/Toronto}
+    volumes:
+      - ${CALL_RECORDER_AUDIO_HOST_PATH:-../runtime/audio}:/var/lib/call-recorder/audio:ro
+      - ${CALL_RECORDER_EXPORTS_HOST_PATH:-../runtime/exports}:/var/lib/call-recorder/exports
+    user: "10001:10001"

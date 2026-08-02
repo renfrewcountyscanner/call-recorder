@@ -48,7 +48,7 @@
               <input type="password" name="password" placeholder="New password" required style="width:120px;display:inline-block">
               <button class="btn small">Change password</button>
             </form>
-            <form class="inline" method="post" action="/admin/users/delete" style="display:inline" onsubmit="return confirm('Delete this user account? This cannot be undone.');">
+            <form class="inline" method="post" action="/admin/users/delete" style="display:inline" data-confirm="Delete this user account? This cannot be undone.">
               <input type="hidden" name="username" value="{{.Username}}">
               <button class="btn small danger" type="submit">Delete</button>
             </form>

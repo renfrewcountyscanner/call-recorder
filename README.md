@@ -1,8 +1,8 @@
 # Call Recorder
 
-## v0.4.2
+## v1.0.0
 
-This release adds real notification test delivery, storage diagnostics CLI, inline transcript display in the call list, and an interactive install script. It builds on v0.4.1 which added favourite groups, retention-protected calls, durable notification deliveries, and an optional OpenAI-compatible transcription queue.
+This release completes the first production-ready logger: resilient/idempotent ingestion, system-aware live search, transcription enabled by default for new talkgroups, transcript review and training-data exports, receiver-status dismissal, a mobile installable listener interface, durable workers, automatic database migrations, and stronger session security.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history and [known limitations](docs/known-limitations.md) for remaining work.
 
@@ -46,11 +46,18 @@ See [docs/linux-installation.md](docs/linux-installation.md) for detailed instal
 - Notifications (SMTP, webhook, Discord, Telegram)
 - End-to-end transcription with encrypted API key
 - Inline transcripts in the call list
+- Transcript correction/review and reproducible speech-to-text training ZIP exports
+- Receiver status with configurable stale detection and reversible dismissal
+- System-aware talkgroup/radio filters that refresh from received calls
+- Installable mobile PWA with a compact listener layout and lock-screen media controls
 - Site-wide browser authentication with local admin/editor/viewer accounts and 30-day remembered sessions
 - Administrator storage-capacity gauge for the audio filesystem
 - Backup and restore with checksums
 - Storage diagnostics CLI (missing/orphan audio reports)
 - Build commit and timestamp reporting in health endpoint
+- Automatic idempotent database migrations before service startup
+
+The project is licensed under AGPL-3.0-or-later. See [LICENSE](LICENSE). A detailed v1 inventory and future roadmap are in [docs/v1-release-and-roadmap.md](docs/v1-release-and-roadmap.md).
 
 ## Repository layout
 

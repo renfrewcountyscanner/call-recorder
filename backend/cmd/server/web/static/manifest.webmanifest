@@ -1,0 +1,13 @@
+{
+  "name": "Call Recorder",
+  "short_name": "Calls",
+  "description": "Live scanner call playback, search and receiver status",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b0e14",
+  "theme_color": "#131a25",
+  "icons": [
+    {"src": "/static/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
+  ]
+}

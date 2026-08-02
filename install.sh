@@ -58,6 +58,7 @@ fi
 
 require git
 require docker
+require curl
 COMPOSE="$(detect_compose)"
 
 echo "=== Call Recorder local installer ==="
@@ -103,6 +104,11 @@ DEFAULT_SECRETS="$PROJECT_ROOT/runtime/secrets"
 read -rp "Directory to store encrypted secrets [$DEFAULT_SECRETS]: " SECRETS_PATH
 SECRETS_PATH="$(resolve_path "${SECRETS_PATH:-$DEFAULT_SECRETS}")"
 
+# Temporary speech-to-text training exports.
+DEFAULT_EXPORTS="$PROJECT_ROOT/runtime/exports"
+read -rp "Directory to store training dataset exports [$DEFAULT_EXPORTS]: " EXPORTS_PATH
+EXPORTS_PATH="$(resolve_path "${EXPORTS_PATH:-$DEFAULT_EXPORTS}")"
+
 # External port.
 read -rp "External HTTP port for the web UI [8080]: " EXTERNAL_PORT
 EXTERNAL_PORT="${EXTERNAL_PORT:-8080}"
@@ -121,6 +127,7 @@ fi
 
 # Generate remaining secrets.
 SENDER_KEY="$(generate_secret)"
+SESSION_SECRET="$(generate_secret)"
 
 ENV_FILE="$DEPLOY_DIR/.env"
 LOCAL_COMPOSE="$DEPLOY_DIR/docker-compose.local.yml"
@@ -169,7 +176,8 @@ CALL_RECORDER_ADMIN_OPEN=false
 CALL_RECORDER_ADMIN_TOKEN=${ADMIN_TOKEN}
 CALL_RECORDER_AUTH_REQUIRED=true
 CALL_RECORDER_LOCAL_AUTH_ENABLED=true
-CALL_RECORDER_SESSION_COOKIE_SECURE=true
+CALL_RECORDER_SESSION_COOKIE_SECURE=false
+CALL_RECORDER_SESSION_SECRET=${SESSION_SECRET}
 CALL_RECORDER_AUTH_LOGIN_URL=
 
 CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED=false
@@ -188,16 +196,22 @@ services:
     volumes:
       - ${AUDIO_PATH}:/var/lib/call-recorder/audio
       - ${SECRETS_PATH}:/var/lib/call-recorder/secrets
+      - ${EXPORTS_PATH}:/var/lib/call-recorder/exports
   backend:
     ports:
       - "${EXTERNAL_PORT}:8080"
     volumes:
       - ${AUDIO_PATH}:/var/lib/call-recorder/audio
       - ${SECRETS_PATH}:/var/lib/call-recorder/secrets
+      - ${EXPORTS_PATH}:/var/lib/call-recorder/exports
   transcription-worker:
     volumes:
       - ${AUDIO_PATH}:/var/lib/call-recorder/audio:ro
       - ${SECRETS_PATH}:/var/lib/call-recorder/secrets:ro
+  dataset-worker:
+    volumes:
+      - ${AUDIO_PATH}:/var/lib/call-recorder/audio:ro
+      - ${EXPORTS_PATH}:/var/lib/call-recorder/exports
 EOF
 
   COMPOSE_FILES="-f $DEPLOY_DIR/docker-compose.yml -f $LOCAL_COMPOSE"
@@ -245,6 +259,10 @@ CALL_RECORDER_BOOTSTRAP_SENDER_KEY=${SENDER_KEY}
 CALL_RECORDER_ADMIN_ENABLED=${ADMIN_ENABLED}
 CALL_RECORDER_ADMIN_OPEN=false
 CALL_RECORDER_ADMIN_TOKEN=${ADMIN_TOKEN}
+CALL_RECORDER_AUTH_REQUIRED=true
+CALL_RECORDER_LOCAL_AUTH_ENABLED=true
+CALL_RECORDER_SESSION_COOKIE_SECURE=false
+CALL_RECORDER_SESSION_SECRET=${SESSION_SECRET}
 
 CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED=false
 CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL=
@@ -259,16 +277,22 @@ services:
     volumes:
       - ${AUDIO_PATH}:/var/lib/call-recorder/audio
       - ${SECRETS_PATH}:/var/lib/call-recorder/secrets
+      - ${EXPORTS_PATH}:/var/lib/call-recorder/exports
   backend:
     ports:
       - "${EXTERNAL_PORT}:8080"
     volumes:
       - ${AUDIO_PATH}:/var/lib/call-recorder/audio
       - ${SECRETS_PATH}:/var/lib/call-recorder/secrets
+      - ${EXPORTS_PATH}:/var/lib/call-recorder/exports
   transcription-worker:
     volumes:
       - ${AUDIO_PATH}:/var/lib/call-recorder/audio:ro
       - ${SECRETS_PATH}:/var/lib/call-recorder/secrets:ro
+  dataset-worker:
+    volumes:
+      - ${AUDIO_PATH}:/var/lib/call-recorder/audio:ro
+      - ${EXPORTS_PATH}:/var/lib/call-recorder/exports
 EOF
 
   COMPOSE_FILES="-f $DEPLOY_DIR/docker-compose.external-postgres.yml -f $LOCAL_COMPOSE"
@@ -287,6 +311,7 @@ echo "  .env file:              $ENV_FILE"
 echo "  Local compose override: $LOCAL_COMPOSE"
 echo "  Call recordings path:   $AUDIO_PATH"
 echo "  Secrets path:           $SECRETS_PATH"
+echo "  Dataset exports path:   $EXPORTS_PATH"
 echo "  External port:          $EXTERNAL_PORT"
 echo "  Admin enabled:          $ADMIN_ENABLED"
 if [ "$ADMIN_ENABLED" = "true" ]; then
@@ -329,10 +354,8 @@ echo "  Admin:      http://127.0.0.1:${EXTERNAL_PORT}/admin/login"
 echo
 echo "Next steps:"
 echo "  - Review $ENV_FILE and keep it secure."
-if [ "$DEPLOY_POSTGRES" != "true" ]; then
-  echo "  - Apply the migrations in backend/migrations/ to your external database."
-  echo "    Example: psql -h $PG_HOST -p $PG_PORT -U $PG_USER -d $PG_DB -f backend/migrations/001_initial.sql"
-fi
+echo "  - Database migrations are applied automatically before the backend starts."
+echo "  - When serving through HTTPS, set CALL_RECORDER_SESSION_COOKIE_SECURE=true in $ENV_FILE and restart."
 echo "  - Configure a sender with the bootstrap sender key above or create a new one via /admin/senders."
 echo "  - Backups: $PROJECT_ROOT/deploy/backup.sh DESTINATION_DIRECTORY"
 echo "  - Logs:    $COMPOSE $COMPOSE_FILES logs -f"

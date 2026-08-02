@@ -3,6 +3,10 @@
 (function () {
   'use strict';
 
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); });
+  }
+
   function $(id) { return document.getElementById(id); }
   function on(el, ev, fn) { if (el) el.addEventListener(ev, fn); }
 
@@ -34,6 +38,12 @@
   if (filters && window.matchMedia('(max-width: 767px)').matches && !window.location.search) {
     filters.removeAttribute('open');
   }
+  on($('mobile-filters'), 'click', function () {
+    var panel = document.querySelector('details.filters');
+    if (!panel) { window.location.href = '/'; return; }
+    panel.open = true;
+    panel.scrollIntoView({behavior: 'smooth', block: 'start'});
+  });
 
   /* All-dates toggle clears the date fields and refreshes the list. */
   var allDates = document.querySelector('input[name="all_dates"]');
@@ -126,6 +136,22 @@
     pendingForm = null;
   });
 
+  document.addEventListener('click', function (e) {
+    var button = e.target.closest ? e.target.closest('button[name="action"][value="delete"]') : null;
+    if (button && button.form && !button.form.getAttribute('data-confirm')) {
+      button.form.setAttribute('data-confirm', 'Delete this item and its associated history?');
+    }
+    var selectButton = e.target.closest ? e.target.closest('[data-tg-select]') : null;
+    if (!selectButton) return;
+    var checked = selectButton.getAttribute('data-tg-select') === 'all';
+    document.querySelectorAll('#tg-form .tg-checkbox').forEach(function (box) { box.checked = checked; });
+    var master = $('tg-select-all');
+    if (master) master.checked = checked;
+  });
+  on($('tg-select-all'), 'change', function (e) {
+    document.querySelectorAll('#tg-form .tg-checkbox').forEach(function (box) { box.checked = e.target.checked; });
+  });
+
   /* ---------- Admin alias edit fill ---------- */
   document.addEventListener('click', function (e) {
     var btn = e.target.closest ? e.target.closest('[data-edit]') : null;
@@ -140,8 +166,8 @@
     if (source && btn.dataset.source) source.value = btn.dataset.source;
     var enabled = form.elements['enabled'];
     if (enabled) enabled.checked = btn.dataset.enabled === 'true';
-    var transcriptionEnabled = form.elements['transcription_enabled'];
-    if (transcriptionEnabled) transcriptionEnabled.checked = btn.dataset.transcription_enabled === 'true';
+    var transcriptionSetting = form.elements['transcription_setting'];
+    if (transcriptionSetting && btn.dataset.transcription_setting) transcriptionSetting.value = btn.dataset.transcription_setting;
     var transcriptionLanguage = form.elements['transcription_language'];
     if (transcriptionLanguage && btn.dataset.transcription_language !== undefined) transcriptionLanguage.value = btn.dataset.transcription_language;
     var notificationEligible = form.elements['notification_eligible'];
@@ -274,6 +300,9 @@
       applyRate();
       titleEl.textContent = item.title;
       if (metaEl) metaEl.textContent = item.meta;
+	  if ('mediaSession' in navigator) {
+		navigator.mediaSession.metadata = new MediaMetadata({title: item.title, artist: item.meta, album: 'Call Recorder'});
+	  }
       showBar();
       var promise = audio.play();
       if (promise && promise.catch) promise.catch(function () { say('Playback could not start'); });
@@ -313,6 +342,12 @@
     on(btnPrev, 'click', function () { if (index > 0) playAt(index - 1, true); });
     on(btnNext, 'click', function () { if (index < queue.length - 1) playAt(index + 1, true); });
     on(btnStop, 'click', function () { stopPlayback(); bar.hidden = true; say('Stopped'); });
+	if ('mediaSession' in navigator) {
+	  navigator.mediaSession.setActionHandler('play', toggleCurrent);
+	  navigator.mediaSession.setActionHandler('pause', toggleCurrent);
+	  navigator.mediaSession.setActionHandler('previoustrack', function () { if (index > 0) playAt(index - 1, true); });
+	  navigator.mediaSession.setActionHandler('nexttrack', function () { if (index < queue.length - 1) playAt(index + 1, true); });
+	}
 
     on(seqBox, 'change', function () { store('cr-seq', seqBox.checked ? 'on' : 'off'); });
     on(speedSel, 'change', function () { applyRate(); store('cr-speed', speedSel.value); });

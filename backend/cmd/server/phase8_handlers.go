@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/renfrewcountyscanner/call-recorder/backend/internal/transcription"
 )
@@ -47,7 +49,7 @@ func (s *server) enqueueNotifications(ctx context.Context, callID string) {
 		  AND (r.min_duration_ms IS NULL OR c.duration_ms >= r.min_duration_ms)
 		  AND (r.max_duration_ms IS NULL OR c.duration_ms <= r.max_duration_ms)
 		  AND (NOT r.patched_only OR EXISTS (SELECT 1 FROM call_targets ct WHERE ct.call_id=c.id))
-		  AND (r.keyword IS NULL OR c.search_document::text ILIKE '%'||lower(r.keyword)||'%')
+		  AND (r.keyword IS NULL OR c.search_document::text ILIKE '%'||lower(r.keyword)||'%' OR EXISTS (SELECT 1 FROM transcripts t WHERE t.call_id=c.id AND coalesce(NULLIF(t.edited_text,''),t.text,'') ILIKE '%'||r.keyword||'%'))
 		  AND (r.favourite_group_id IS NULL OR EXISTS (SELECT 1 FROM favourite_members fm WHERE fm.group_id=r.favourite_group_id AND fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id))
 		ON CONFLICT(rule_id,call_id) DO NOTHING`, callID)
 }
@@ -585,10 +587,12 @@ func (s *server) adminTranscription(w http.ResponseWriter, r *http.Request) {
 	var total int
 	_ = s.db.QueryRow(ctx, `SELECT count(*) FROM transcription_jobs j WHERE `+clause, args...).Scan(&total)
 	args = append(args, perPage, (page-1)*perPage)
-	rows, _ := s.db.Query(ctx, `SELECT j.id,j.call_id,j.status,j.provider,j.attempt_count,coalesce(j.error,''),coalesce(j.created_at::text,''),coalesce(j.completed_at::text,'') FROM transcription_jobs j WHERE `+clause+fmt.Sprintf(` ORDER BY j.id DESC LIMIT $%d OFFSET $%d`, len(args)-1, len(args)), args...)
+	rows, _ := s.db.Query(ctx, `SELECT j.id,j.call_id,j.status,j.provider,j.attempt_count,coalesce(j.error,''),coalesce(j.created_at::text,''),coalesce(j.completed_at::text,''),coalesce(t.id,0),coalesce(t.review_status,''),coalesce(NULLIF(t.edited_text,''),t.text,'') FROM transcription_jobs j LEFT JOIN LATERAL (SELECT * FROM transcripts tx WHERE tx.call_id=j.call_id ORDER BY tx.updated_at DESC LIMIT 1) t ON true WHERE `+clause+fmt.Sprintf(` ORDER BY j.id DESC LIMIT $%d OFFSET $%d`, len(args)-1, len(args)), args...)
 	type job struct {
 		ID                                                int64
+		TranscriptID                                      int64
 		Call, Status, Provider, Error, Created, Completed string
+		ReviewStatus, Transcript                          string
 		Attempts                                          int
 	}
 	jobs := []job{}
@@ -596,7 +600,7 @@ func (s *server) adminTranscription(w http.ResponseWriter, r *http.Request) {
 		defer rows.Close()
 		for rows.Next() {
 			var j job
-			if rows.Scan(&j.ID, &j.Call, &j.Status, &j.Provider, &j.Attempts, &j.Error, &j.Created, &j.Completed) == nil {
+			if rows.Scan(&j.ID, &j.Call, &j.Status, &j.Provider, &j.Attempts, &j.Error, &j.Created, &j.Completed, &j.TranscriptID, &j.ReviewStatus, &j.Transcript) == nil {
 				jobs = append(jobs, j)
 			}
 		}
@@ -784,18 +788,39 @@ func (s *server) adminEditTranscript(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid transcript", 400)
 		return
 	}
-	identity := r.Header.Get("Cf-Access-Authenticated-User-Email")
-	if identity == "" {
-		identity = "admin-token"
-	}
+	identity := s.requestIdentity(r)
 	var callID string
-	err := s.db.QueryRow(r.Context(), `UPDATE transcripts SET edited_text=$2,edited_at=now(),edited_by=$3,updated_at=now() WHERE id=$1 RETURNING call_id`, id, text, identity).Scan(&callID)
+	err := s.db.QueryRow(r.Context(), `UPDATE transcripts SET edited_text=NULLIF($2,''),edited_at=now(),edited_by=$3,review_status='needs_review',reviewed_at=NULL,reviewed_by=NULL,updated_at=now() WHERE id=$1 RETURNING call_id`, id, text, identity).Scan(&callID)
 	if err != nil {
 		s.internal(w, err)
 		return
 	}
-	_, _ = s.db.Exec(r.Context(), `UPDATE calls SET search_document=to_tsvector('simple',coalesce(search_document::text,'')||' '||$2) WHERE id=$1`, callID, text)
+	s.recordAudit(r.Context(), r, "transcript.edit", "transcript", strconv.FormatInt(id, 10), map[string]any{"call_id": callID})
 	http.Redirect(w, r, "/admin/transcription", 303)
+}
+
+func (s *server) adminReviewTranscript(w http.ResponseWriter, r *http.Request) {
+	if !s.editorAuthorized(w, r) {
+		return
+	}
+	id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	status := strings.TrimSpace(r.FormValue("status"))
+	if id < 1 || (status != "reviewed" && status != "rejected" && status != "unreviewed") {
+		http.Error(w, "invalid transcript review", http.StatusBadRequest)
+		return
+	}
+	var callID string
+	err := s.db.QueryRow(r.Context(), `UPDATE transcripts SET review_status=$2,reviewed_at=CASE WHEN $2='unreviewed' THEN NULL ELSE now() END,reviewed_by=CASE WHEN $2='unreviewed' THEN NULL ELSE $3 END,updated_at=now() WHERE id=$1 RETURNING call_id`, id, status, s.requestIdentity(r)).Scan(&callID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.Error(w, "transcript not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	s.recordAudit(r.Context(), r, "transcript.review", "transcript", strconv.FormatInt(id, 10), map[string]any{"call_id": callID, "status": status})
+	http.Redirect(w, r, safeAdminReturn(r.FormValue("return"), "/admin/transcription"), http.StatusSeeOther)
 }
 
 type transcriptionEligibilityResult struct {
@@ -850,7 +875,7 @@ func (s *server) transcriptionEligibility(ctx context.Context, callID string) (t
 		return transcriptionEligibilityResult{Reason: fmt.Sprintf("Audio file size exceeds the maximum %d MB.", cfg.MaxFileSize/(1024*1024))}, nil
 	}
 	var tgEnabled bool
-	err = s.db.QueryRow(ctx, `SELECT coalesce(transcription_enabled,false) FROM talkgroup_aliases WHERE system_id=$1 AND talkgroup_id=$2`, c.System, c.Talkgroup).Scan(&tgEnabled)
+	err = s.db.QueryRow(ctx, `SELECT transcription_mode IN ('inherit','enabled') FROM talkgroup_aliases WHERE system_id=$1 AND talkgroup_id=$2`, c.System, c.Talkgroup).Scan(&tgEnabled)
 	if err != nil || !tgEnabled {
 		return transcriptionEligibilityResult{Reason: "Talkgroup is not enabled for transcription."}, nil
 	}
@@ -1059,11 +1084,11 @@ func (s *server) applyTranscriptionToggle(ctx context.Context, systems, talkgrou
 		var tag pgconn.CommandTag
 		var err error
 		if enable && language != "" {
-			tag, err = tx.Exec(ctx, `UPDATE talkgroup_aliases SET transcription_enabled=$1,transcription_language=NULLIF($2,''),updated_at=now() WHERE system_id=$3 AND talkgroup_id=$4 AND transcription_enabled IS DISTINCT FROM $1`, enable, language, systems[i], talkgroups[i])
+			tag, err = tx.Exec(ctx, `UPDATE talkgroup_aliases SET transcription_enabled=$1,transcription_mode=$2,transcription_language=NULLIF($3,''),updated_at=now() WHERE system_id=$4 AND talkgroup_id=$5 AND (transcription_enabled IS DISTINCT FROM $1 OR transcription_mode IS DISTINCT FROM $2)`, enable, map[bool]string{true: "enabled", false: "disabled"}[enable], language, systems[i], talkgroups[i])
 		} else if enable {
-			tag, err = tx.Exec(ctx, `UPDATE talkgroup_aliases SET transcription_enabled=$1,updated_at=now() WHERE system_id=$2 AND talkgroup_id=$3 AND transcription_enabled IS DISTINCT FROM $1`, enable, systems[i], talkgroups[i])
+			tag, err = tx.Exec(ctx, `UPDATE talkgroup_aliases SET transcription_enabled=true,transcription_mode='enabled',updated_at=now() WHERE system_id=$1 AND talkgroup_id=$2 AND (NOT transcription_enabled OR transcription_mode<>'enabled')`, systems[i], talkgroups[i])
 		} else {
-			tag, err = tx.Exec(ctx, `UPDATE talkgroup_aliases SET transcription_enabled=$1,updated_at=now() WHERE system_id=$2 AND talkgroup_id=$3 AND transcription_enabled IS DISTINCT FROM $1`, enable, systems[i], talkgroups[i])
+			tag, err = tx.Exec(ctx, `UPDATE talkgroup_aliases SET transcription_enabled=false,transcription_mode='disabled',updated_at=now() WHERE system_id=$1 AND talkgroup_id=$2 AND (transcription_enabled OR transcription_mode<>'disabled')`, systems[i], talkgroups[i])
 		}
 		if err != nil {
 			return 0, err
@@ -1169,7 +1194,7 @@ func (s *server) apiTranscripts(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(r.Context(), `
 		SELECT c.id,
 			coalesce((SELECT tj.status FROM transcription_jobs tj WHERE tj.call_id=c.id ORDER BY tj.updated_at DESC LIMIT 1),''),
-			coalesce((SELECT t.text FROM transcripts t WHERE t.call_id=c.id ORDER BY t.updated_at DESC LIMIT 1),''),
+			coalesce((SELECT coalesce(NULLIF(t.edited_text,''),t.text) FROM transcripts t WHERE t.call_id=c.id ORDER BY t.updated_at DESC LIMIT 1),''),
 			coalesce((SELECT tj.error FROM transcription_jobs tj WHERE tj.call_id=c.id AND tj.status='failed' ORDER BY tj.updated_at DESC LIMIT 1),'')
 		FROM calls c WHERE c.id = ANY($1)`,
 		ids)

@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.0.0 - 2026-08-02
+
+- Made new talkgroups inherit enabled transcription and added explicit inherit/on/off policies with per-talkgroup language overrides.
+- Made call filter menus live, system-aware, and safe for duplicate talkgroup/radio IDs across systems; search now includes corrected/generated transcripts.
+- Hardened modern ingestion with strict metadata validation, idempotent create/upload responses, atomic upload leases, retryable status fields, receiver heartbeat data, and safe automatic aliases.
+- Added reversible stale receiver dismissal, restore controls, audit entries, and an administrator-configurable stale threshold.
+- Added transcript edit/review states, provider/model/language provenance, abandoned-job recovery, bounded retries, and effective transcript display.
+- Added asynchronous, snapshot-based speech-to-text dataset ZIP exports with original audio, JSONL manifests, checksums, deterministic train/validation/test splits, warnings, cancellation, expiry, and administrator-only download.
+- Added a compact mobile call-card layout, bottom navigation, responsive player, PWA manifest/service worker, and Media Session controls.
+- Strengthened local authentication with opaque server-side sessions, live role/enable checks, revocation on password/disable, safer redirects, POST logout, login throttling reset, and last-administrator protection.
+- Added worker heartbeat/recovery improvements, terminal notification retry limits, effective transcript keyword delivery, and retention protection for active exports.
+- Made retention delete the exact selected call IDs, recheck protection/export state, tolerate missing files with recorded failures, and report matched bytes/duration.
+- Added automatic Compose migrations, export storage, dataset workers, installer support, and AGPL-3.0-or-later licensing.
+
 ## Unreleased
 
 - Fixed newly discovered talkgroups so transcription defaults on at both the database and ingestion layers while preserving administrator opt-outs.

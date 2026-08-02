@@ -5,11 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{if .Nav.Title}}{{.Nav.Title}}{{else}}Call Recorder{{end}}</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<meta name="theme-color" content="#131a25">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
 <script src="/static/theme.js?v=20260731j"></script>
-<link rel="stylesheet" href="/static/app.css?v=20260801b">
+<link rel="stylesheet" href="/static/app.css?v=20260802a">
 <script src="/static/htmx.min.js" defer></script>
-<script src="/static/app.js?v=20260801c" defer></script>
+<script src="/static/app.js?v=20260802a" defer></script>
 </head>
 {{end}}
 
@@ -35,7 +38,7 @@
       <ul>
         <li><a href="/" {{if eq .Nav.Active "calls"}}aria-current="page"{{end}}>Calls</a></li>
         {{if .Nav.Authorized}}
-        <li class="admin-nav"><details><summary class="admin-nav-toggle{{if or (eq .Nav.Active "talkgroups") (eq .Nav.Active "radios") (eq .Nav.Active "retention") (eq .Nav.Active "history") (eq .Nav.Active "senders") (eq .Nav.Active "favourites") (eq .Nav.Active "notifications") (eq .Nav.Active "transcription") (eq .Nav.Active "users") (eq .Nav.Active "storage")}} active{{end}}">{{if .Nav.Username}}{{.Nav.Username}} ({{.Nav.Role}}){{else}}Administration{{end}}</summary><div class="admin-nav-menu">{{if or .Nav.IsAdmin (eq .Nav.Role "editor")}}<strong>Call data</strong><a href="/admin/talkgroups" {{if eq .Nav.Active "talkgroups"}}aria-current="page"{{end}}>Talkgroups</a><a href="/admin/radios" {{if eq .Nav.Active "radios"}}aria-current="page"{{end}}>Radios</a><a href="/admin/favourites" {{if eq .Nav.Active "favourites"}}aria-current="page"{{end}}>Favourites</a><strong>Operations</strong><a href="/admin/retention" {{if eq .Nav.Active "retention"}}aria-current="page"{{end}}>Retention</a><a href="/admin/retention/history" {{if eq .Nav.Active "history"}}aria-current="page"{{end}}>Retention history</a><a href="/admin/notifications" {{if eq .Nav.Active "notifications"}}aria-current="page"{{end}}>Notifications</a><a href="/admin/transcription" {{if eq .Nav.Active "transcription"}}aria-current="page"{{end}}>Transcription</a>{{if .Nav.IsAdmin}}<strong>Diagnostics</strong><a href="/admin/storage" {{if eq .Nav.Active "storage"}}aria-current="page"{{end}}>Storage</a><strong>Access</strong><a href="/admin/senders" {{if eq .Nav.Active "senders"}}aria-current="page"{{end}}>Sender credentials</a><a href="/admin/users" {{if eq .Nav.Active "users"}}aria-current="page"{{end}}>Users</a>{{end}}{{end}}<hr style="margin:4px 0;border-color:var(--border)"><a href="/admin/logout">Sign out</a></div></details></li>
+        <li class="admin-nav"><details><summary class="admin-nav-toggle{{if or (eq .Nav.Active "talkgroups") (eq .Nav.Active "radios") (eq .Nav.Active "retention") (eq .Nav.Active "history") (eq .Nav.Active "senders") (eq .Nav.Active "favourites") (eq .Nav.Active "notifications") (eq .Nav.Active "transcription") (eq .Nav.Active "users") (eq .Nav.Active "storage")}} active{{end}}">{{if .Nav.Username}}{{.Nav.Username}} ({{.Nav.Role}}){{else}}Administration{{end}}</summary><div class="admin-nav-menu">{{if or .Nav.IsAdmin (eq .Nav.Role "editor")}}<strong>Call data</strong><a href="/admin/talkgroups" {{if eq .Nav.Active "talkgroups"}}aria-current="page"{{end}}>Talkgroups</a><a href="/admin/radios" {{if eq .Nav.Active "radios"}}aria-current="page"{{end}}>Radios</a><a href="/admin/favourites" {{if eq .Nav.Active "favourites"}}aria-current="page"{{end}}>Favourites</a><strong>Operations</strong><a href="/admin/retention" {{if eq .Nav.Active "retention"}}aria-current="page"{{end}}>Retention</a><a href="/admin/retention/history" {{if eq .Nav.Active "history"}}aria-current="page"{{end}}>Retention history</a><a href="/admin/notifications" {{if eq .Nav.Active "notifications"}}aria-current="page"{{end}}>Notifications</a><a href="/admin/transcription" {{if eq .Nav.Active "transcription"}}aria-current="page"{{end}}>Transcription</a>{{if .Nav.IsAdmin}}<strong>Diagnostics</strong><a href="/admin/storage" {{if eq .Nav.Active "storage"}}aria-current="page"{{end}}>Storage</a><strong>Access</strong><a href="/admin/senders" {{if eq .Nav.Active "senders"}}aria-current="page"{{end}}>Sender credentials</a><a href="/admin/users" {{if eq .Nav.Active "users"}}aria-current="page"{{end}}>Users</a>{{end}}{{end}}<hr style="margin:4px 0;border-color:var(--border)"><form method="post" action="/admin/logout" class="nav-logout"><button type="submit">Sign out</button></form></div></details></li>
         {{else if or .Nav.AdminEnabled .Nav.AuthRequired}}
         <li><a href="/admin/login">Sign in</a></li>
         {{end}}
@@ -53,6 +56,12 @@
 
 {{define "bottom"}}
 </main>
+<nav class="mobile-bottom-nav" aria-label="Mobile navigation">
+  <a href="/">Calls</a>
+  <button type="button" id="mobile-filters">Filters</button>
+  <a href="/status">Receivers</a>
+  {{if .Nav.Authorized}}<a href="/admin/talkgroups">Admin</a>{{else}}<a href="/login">Sign in</a>{{end}}
+</nav>
 </body></html>
 {{end}}
 

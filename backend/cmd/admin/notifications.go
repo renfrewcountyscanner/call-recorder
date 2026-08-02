@@ -66,6 +66,7 @@ func notifications(pool *pgxpool.Pool, args []string) {
 
 func notificationRun(pool *pgxpool.Pool) {
 	ctx := context.Background()
+	_, _ = pool.Exec(ctx, `INSERT INTO notification_worker_heartbeat(id,worker_id,heartbeat_at,updated_at) VALUES(true,'notification-worker',now(),now()) ON CONFLICT(id) DO UPDATE SET worker_id=EXCLUDED.worker_id,heartbeat_at=now(),updated_at=now()`)
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		fatal(err)
@@ -76,7 +77,7 @@ func notificationRun(pool *pgxpool.Pool) {
 		fatal(errors.New("another notification worker is active"))
 	}
 	defer conn.Exec(ctx, `SELECT pg_advisory_unlock(81640001)`)
-	rows, err := conn.Query(ctx, `SELECT d.id,d.destination_id,r.template,c.id,c.sender_id,c.system_id,c.site_id,c.talkgroup_id,coalesce(c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(c.radio_name,''),c.start_time,c.duration_ms,coalesce(c.call_type,''),coalesce(c.notes,''),coalesce(c.transcript,'') FROM notification_deliveries d JOIN notification_rules r ON r.id=d.rule_id JOIN calls c ON c.id=d.call_id WHERE d.status IN ('pending','failed') AND d.next_attempt_at<=now() ORDER BY r.priority DESC,d.id LIMIT 100`)
+	rows, err := conn.Query(ctx, `SELECT d.id,d.destination_id,r.template,c.id,c.sender_id,c.system_id,c.site_id,c.talkgroup_id,coalesce(c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(c.radio_name,''),c.start_time,c.duration_ms,coalesce(c.call_type,''),coalesce(c.notes,''),coalesce(NULLIF((SELECT coalesce(NULLIF(t.edited_text,''),t.text) FROM transcripts t WHERE t.call_id=c.id ORDER BY t.updated_at DESC LIMIT 1),''),c.transcript,'') FROM notification_deliveries d JOIN notification_rules r ON r.id=d.rule_id JOIN calls c ON c.id=d.call_id WHERE (d.status='pending' OR d.status='failed' AND d.attempt_count<5) AND d.next_attempt_at<=now() ORDER BY r.priority DESC,d.id LIMIT 100`)
 	if err != nil {
 		fatal(err)
 	}
@@ -96,7 +97,7 @@ func notificationRun(pool *pgxpool.Pool) {
 		jobs = append(jobs, j)
 	}
 	for _, j := range jobs {
-		result, _ := conn.Exec(ctx, `UPDATE notification_deliveries SET status='sending',attempt_count=attempt_count+1,last_attempt_at=now(),updated_at=now() WHERE id=$1 AND status IN ('pending','failed')`, j.id)
+		result, _ := conn.Exec(ctx, `UPDATE notification_deliveries SET status='sending',attempt_count=attempt_count+1,last_attempt_at=now(),updated_at=now() WHERE id=$1 AND (status='pending' OR status='failed' AND attempt_count<5)`, j.id)
 		if result.RowsAffected() != 1 {
 			continue
 		}

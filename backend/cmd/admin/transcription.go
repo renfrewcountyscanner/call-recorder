@@ -191,6 +191,10 @@ func runTranscription(pool *pgxpool.Pool) {
 		fatal(errors.New("another transcription worker is active"))
 	}
 	defer conn.Exec(ctx, `SELECT pg_advisory_unlock($1)`, transcriptionAdvisoryLock)
+	// A worker can be killed after claiming a job. Return abandoned work to the
+	// queue before claiming new jobs; explicit failures remain terminal until an
+	// operator retries them.
+	_, _ = pool.Exec(ctx, `UPDATE transcription_jobs SET status='pending',next_attempt_at=now(),error='Recovered after worker interruption',updated_at=now() WHERE status='running' AND updated_at < now()-interval '15 minutes'`)
 
 	var wg sync.WaitGroup
 	jobs := make(chan transcriptionJob, cfg.Concurrency*2)
@@ -239,6 +243,7 @@ type transcriptionJob struct {
 	audioFormat  string
 	durationMS   int64
 	attemptCount int64
+	language     string
 }
 
 func checkDurationLimits(durationMS, minMS, maxMS int64) error {
@@ -258,12 +263,13 @@ func claimNextJob(ctx context.Context, pool *pgxpool.Pool, cfg transcriptionConf
 		FROM calls c
 		WHERE j.id = (
 			SELECT j2.id FROM transcription_jobs j2 JOIN calls c2 ON c2.id=j2.call_id
-			WHERE j2.status IN ('pending','failed') AND j2.next_attempt_at<=now()
+			WHERE j2.status='pending' AND j2.next_attempt_at<=now()
 			ORDER BY j2.id FOR UPDATE SKIP LOCKED LIMIT 1
 		)
 		AND j.call_id = c.id
-		RETURNING j.id, j.call_id, c.audio_path, c.audio_format, c.duration_ms, j.attempt_count`,
-	).Scan(&job.id, &job.callID, &job.audioPath, &job.audioFormat, &job.durationMS, &job.attemptCount)
+		RETURNING j.id, j.call_id, c.audio_path, c.audio_format, c.duration_ms, j.attempt_count,
+		coalesce((SELECT a.transcription_language FROM talkgroup_aliases a WHERE a.system_id=c.system_id AND a.talkgroup_id=c.talkgroup_id),'')`,
+	).Scan(&job.id, &job.callID, &job.audioPath, &job.audioFormat, &job.durationMS, &job.attemptCount, &job.language)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return job, false, nil
 	}
@@ -281,7 +287,11 @@ func transcriptionWorker(ctx context.Context, pool *pgxpool.Pool, cfg transcript
 	client.Timeout = time.Duration(cfg.RequestTimeoutSeconds) * time.Second
 
 	for job := range jobs {
-		text, err := transcribeFile(client, cfg, apiKey, filepath.Join(os.Getenv("CALL_RECORDER_AUDIO_ROOT"), job.audioPath), job.durationMS)
+		language := job.language
+		if language == "" && cfg.DefaultLanguage != nil {
+			language = *cfg.DefaultLanguage
+		}
+		text, err := transcribeFile(client, cfg, apiKey, filepath.Join(os.Getenv("CALL_RECORDER_AUDIO_ROOT"), job.audioPath), job.durationMS, language)
 		if err != nil {
 			safe := sanitizeTranscriptionError(err)
 			backoffSec := int64(math.Min(math.Pow(2, float64(job.attemptCount)), 3600))
@@ -294,16 +304,17 @@ func transcriptionWorker(ctx context.Context, pool *pgxpool.Pool, cfg transcript
 				WHERE id=$4`, cfg.RetryLimit, safe, backoffSec, job.id)
 			continue
 		}
-		language := ""
-		if cfg.DefaultLanguage != nil {
-			language = *cfg.DefaultLanguage
-		}
-		_, err = pool.Exec(ctx, `INSERT INTO transcripts(call_id,provider,language,text,original_text) VALUES($1,$2,NULLIF($3,''),$4,$4) ON CONFLICT(call_id,provider) DO UPDATE SET text=EXCLUDED.text,updated_at=now()`, job.callID, cfg.Provider, language, text)
-		if err == nil {
-			_, err = pool.Exec(ctx, `UPDATE calls SET search_document=to_tsvector('simple',coalesce(search_document::text,'')||' '||$2) WHERE id=$1`, job.callID, text)
-		}
+		_, err = pool.Exec(ctx, `INSERT INTO transcripts(call_id,provider,language,model,text,original_text) VALUES($1,$2,NULLIF($3,''),NULLIF($4,''),$5,$5) ON CONFLICT(call_id,provider) DO UPDATE SET text=EXCLUDED.text,language=EXCLUDED.language,model=EXCLUDED.model,review_status=CASE WHEN transcripts.edited_text IS NOT NULL THEN 'needs_review' ELSE 'unreviewed' END,updated_at=now()`, job.callID, cfg.Provider, language, cfg.Model, text)
 		if err == nil {
 			_, _ = pool.Exec(ctx, `UPDATE transcription_jobs SET status='completed',completed_at=now(),error=NULL,updated_at=now() WHERE id=$1`, job.id)
+			// Keyword rules are evaluated again after generated text becomes
+			// available. The uniqueness constraint prevents duplicate delivery.
+			_, _ = pool.Exec(ctx, `INSERT INTO notification_deliveries(rule_id,destination_id,call_id)
+				SELECT r.id,r.destination_id,c.id FROM notification_rules r JOIN notification_destinations d ON d.id=r.destination_id JOIN calls c ON c.id=$1
+				WHERE r.enabled AND d.enabled AND r.keyword IS NOT NULL
+				AND coalesce(NULLIF((SELECT coalesce(NULLIF(t.edited_text,''),t.text) FROM transcripts t WHERE t.call_id=c.id ORDER BY t.updated_at DESC LIMIT 1),''),c.transcript,'') ILIKE '%'||r.keyword||'%'
+				AND (r.sender_filter IS NULL OR r.sender_filter=c.sender_id) AND (r.system_filter IS NULL OR r.system_filter=c.system_id) AND (r.site_filter IS NULL OR r.site_filter=c.site_id) AND (r.talkgroup_filter IS NULL OR r.talkgroup_filter=c.talkgroup_id) AND (r.radio_filter IS NULL OR r.radio_filter=c.radio_id) AND (r.call_type_filter IS NULL OR r.call_type_filter=c.call_type)
+				ON CONFLICT(rule_id,call_id) DO NOTHING`, job.callID)
 		} else {
 			_, _ = pool.Exec(ctx, `UPDATE transcription_jobs SET status='failed',error=$2,updated_at=now() WHERE id=$1`, job.id, sanitizeTranscriptionError(err))
 		}
@@ -311,7 +322,7 @@ func transcriptionWorker(ctx context.Context, pool *pgxpool.Pool, cfg transcript
 	return nil
 }
 
-func transcribeFile(client *http.Client, cfg transcriptionConfig, key, path string, durationMS int64) (string, error) {
+func transcribeFile(client *http.Client, cfg transcriptionConfig, key, path string, durationMS int64, language string) (string, error) {
 	st, err := os.Stat(path)
 	if err != nil {
 		return "", err
@@ -340,8 +351,8 @@ func transcribeFile(client *http.Client, cfg transcriptionConfig, key, path stri
 	f.Close()
 
 	_ = mw.WriteField("model", cfg.Model)
-	if cfg.DefaultLanguage != nil && *cfg.DefaultLanguage != "" {
-		_ = mw.WriteField("language", *cfg.DefaultLanguage)
+	if language != "" {
+		_ = mw.WriteField("language", language)
 	}
 	if cfg.Temperature > 0 {
 		_ = mw.WriteField("temperature", strconv.FormatFloat(cfg.Temperature, 'f', -1, 64))
