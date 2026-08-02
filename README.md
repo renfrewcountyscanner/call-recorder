@@ -33,6 +33,7 @@ See [docs/linux-installation.md](docs/linux-installation.md) for detailed instal
 ## What's included
 
 - Direct Linux Trunk Recorder ingestion
+- Standalone Windows ProScan directory uploader with native file-lock checks, multi-system mappings, durable retry, and service installation
 - Modern and legacy-compatible upload APIs
 - Multiple authenticated senders with durable retry
 - MP3/WAV validation and storage
@@ -63,6 +64,7 @@ The project is licensed under AGPL-3.0-or-later. See [LICENSE](LICENSE). A detai
 
 - `backend/` — Go server and Linux administration command
 - `uploader/` — Trunk Recorder sender components
+- `uploader/proscan-windows/` — Windows ProScan watcher/uploader and preconfigured Renfrew installation files
 - `deploy/` — deployment templates without secrets
 - `tests/` — integration, browser, accessibility, and retention tests
 - `docs/` — design documentation and readiness matrix

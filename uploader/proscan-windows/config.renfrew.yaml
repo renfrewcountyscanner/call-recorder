@@ -1,0 +1,35 @@
+version: 1
+
+logger:
+  url: https://logger.renfrewcountyscanner.com
+  sender_id: windows-proscan
+  api_key_file: 'C:\ProgramData\CallLogger\sender.key'
+  request_timeout_seconds: 60
+
+spool_directory: 'C:\ProgramData\CallLogger\spool'
+log_file: 'C:\ProgramData\CallLogger\proscan-uploader.log'
+timezone: America/Toronto
+settle_seconds: 3
+rescan_seconds: 30
+upload_workers: 2
+max_audio_bytes: 104857600
+include_existing: true
+
+watch_directories:
+  - path: 'E:\BCD996'
+    system_id: SCANNER-DIGITAL
+    system_name: Scanner Digital
+    receiver_id: BCD996P2
+    recursive: true
+    use_tpe2_radio_id: true
+    proscan_system_as_site: true
+    conventional_id_prefix: CONV
+
+  - path: 'E:\BCT15X'
+    system_id: SCANNER-ANALOG
+    system_name: Scanner Analog
+    receiver_id: BCT15X
+    recursive: true
+    use_tpe2_radio_id: false
+    proscan_system_as_site: true
+    conventional_id_prefix: CONV
