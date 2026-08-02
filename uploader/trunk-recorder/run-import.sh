@@ -35,5 +35,10 @@ fi
 mkdir -p "$(dirname -- "$log_file")"
 touch "$log_file"
 echo "$(date -Is) manual import started" | tee -a "$log_file"
+set +e
 python3 "$script_dir/import_directory.py" --root "${IMPORT_ROOT:-/logger-import}" "$@" 2>&1 | tee -a "$log_file"
+import_result=${PIPESTATUS[0]}
+set -e
+"$script_dir/canonicalize-import.sh" 2>&1 | tee -a "$log_file"
 echo "$(date -Is) manual import finished" | tee -a "$log_file"
+exit "$import_result"
