@@ -315,7 +315,7 @@ func transcriptionWorker(ctx context.Context, pool *pgxpool.Pool, cfg transcript
 			_, _ = pool.Exec(ctx, `INSERT INTO notification_deliveries(rule_id,destination_id,call_id)
 				SELECT r.id,r.destination_id,c.id FROM notification_rules r JOIN notification_destinations d ON d.id=r.destination_id JOIN calls c ON c.id=$1
 				WHERE r.enabled AND d.enabled AND r.keyword IS NOT NULL
-				AND coalesce(NULLIF((SELECT coalesce(NULLIF(t.edited_text,''),t.text) FROM transcripts t WHERE t.call_id=c.id ORDER BY t.updated_at DESC LIMIT 1),''),c.transcript,'') ILIKE '%'||r.keyword||'%'
+				AND EXISTS (SELECT 1 FROM transcripts t WHERE t.call_id=c.id AND coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,''),'') ILIKE '%'||r.keyword||'%')
 				AND (r.sender_filter IS NULL OR r.sender_filter=c.sender_id) AND (r.system_filter IS NULL OR r.system_filter=c.system_id) AND (r.site_filter IS NULL OR r.site_filter=c.site_id) AND (r.talkgroup_filter IS NULL OR r.talkgroup_filter=c.talkgroup_id) AND (r.radio_filter IS NULL OR r.radio_filter=c.radio_id) AND (r.call_type_filter IS NULL OR r.call_type_filter=c.call_type)
 				ON CONFLICT(rule_id,call_id) DO NOTHING`, job.callID)
 		} else {

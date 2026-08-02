@@ -49,7 +49,9 @@ func (s *server) enqueueNotifications(ctx context.Context, callID string) {
 		  AND (r.min_duration_ms IS NULL OR c.duration_ms >= r.min_duration_ms)
 		  AND (r.max_duration_ms IS NULL OR c.duration_ms <= r.max_duration_ms)
 		  AND (NOT r.patched_only OR EXISTS (SELECT 1 FROM call_targets ct WHERE ct.call_id=c.id))
-		  AND (r.keyword IS NULL OR c.search_document::text ILIKE '%'||lower(r.keyword)||'%' OR EXISTS (SELECT 1 FROM transcripts t WHERE t.call_id=c.id AND coalesce(NULLIF(t.edited_text,''),t.text,'') ILIKE '%'||r.keyword||'%'))
+		  -- Keyword rules are transcript-only. A call with no transcript must
+		  -- wait for the transcription worker to enqueue it after transcription.
+		  AND (r.keyword IS NULL OR EXISTS (SELECT 1 FROM transcripts t WHERE t.call_id=c.id AND coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,''),'') ILIKE '%'||r.keyword||'%'))
 		  AND (r.favourite_group_id IS NULL OR EXISTS (SELECT 1 FROM favourite_members fm WHERE fm.group_id=r.favourite_group_id AND fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id))
 		ON CONFLICT(rule_id,call_id) DO NOTHING`, callID)
 }

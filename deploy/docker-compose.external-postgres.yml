@@ -78,6 +78,7 @@ services:
         condition: service_completed_successfully
     environment:
       CALL_RECORDER_DATABASE_URL: ${CALL_RECORDER_DATABASE_URL:?set CALL_RECORDER_DATABASE_URL in your .env file}
+      CALL_RECORDER_PUBLIC_URL: ${CALL_RECORDER_PUBLIC_URL:-https://logger.renfrewcountyscanner.com}
       TZ: ${TZ:-America/Toronto}
     user: "10001:10001"
   transcription-worker:

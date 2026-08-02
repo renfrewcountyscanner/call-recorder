@@ -84,7 +84,7 @@ func notificationRun(pool *pgxpool.Pool) {
 		fatal(errors.New("another notification worker is active"))
 	}
 	defer conn.Exec(ctx, `SELECT pg_advisory_unlock(81640001)`)
-	rows, err := conn.Query(ctx, `SELECT d.id,d.destination_id,coalesce(r.template,''),c.id,coalesce(c.sender_id,''),coalesce(c.system_id,''),coalesce(c.site_id,''),coalesce(c.talkgroup_id,''),coalesce(c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(c.radio_name,''),c.start_time,c.duration_ms,coalesce(c.call_type,''),coalesce(c.notes,''),coalesce(NULLIF((SELECT coalesce(NULLIF(t.edited_text,''),t.text) FROM transcripts t WHERE t.call_id=c.id ORDER BY t.updated_at DESC LIMIT 1),''),c.transcript,'') FROM notification_deliveries d JOIN notification_rules r ON r.id=d.rule_id JOIN calls c ON c.id=d.call_id WHERE (d.status='pending' OR d.status='failed' AND d.attempt_count<5) AND d.next_attempt_at<=now() ORDER BY r.priority DESC,d.id LIMIT 100`)
+	rows, err := conn.Query(ctx, `SELECT d.id,d.destination_id,coalesce(r.template,''),c.id,coalesce(c.sender_id,''),coalesce(c.system_id,''),coalesce(c.site_id,''),coalesce(c.talkgroup_id,''),coalesce(c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(c.radio_name,''),c.start_time,c.duration_ms,coalesce(c.call_type,''),coalesce(c.notes,''),coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,''),'') FROM notification_deliveries d JOIN notification_rules r ON r.id=d.rule_id JOIN calls c ON c.id=d.call_id LEFT JOIN LATERAL (SELECT edited_text,text FROM transcripts WHERE call_id=c.id ORDER BY updated_at DESC LIMIT 1) t ON true WHERE (d.status='pending' OR d.status='failed' AND d.attempt_count<5) AND d.next_attempt_at<=now() ORDER BY r.priority DESC,d.id LIMIT 100`)
 	if err != nil {
 		fatal(err)
 	}
@@ -138,15 +138,18 @@ func deliverNotification(ctx context.Context, conn *pgxpool.Conn, destID int64, 
 	}
 	var config map[string]any
 	_ = json.Unmarshal(cfg, &config)
-	body := fmt.Sprintf("%s %s | %s | %s | %s | %dms", j.start.UTC().Format(time.RFC3339), j.system, j.site, j.tgName, j.tg, j.dur)
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("CALL_RECORDER_PUBLIC_URL")), "/")
+	if baseURL == "" {
+		baseURL = "http://localhost:8080"
+	}
+	audioURL := baseURL + "/download/" + url.PathEscape(j.call)
+	body := fmt.Sprintf("Call: %s\nSystem: %s\nSite: %s\nTalkgroup: %s (%s)\nTime: %s\nDuration: %dms\nAudio: %s", j.call, j.system, j.site, j.tgName, j.tg, j.start.UTC().Format(time.RFC3339), j.dur, audioURL)
 	if j.notes != "" {
-		body += " | " + j.notes
+		body += "\nNotes: " + j.notes
 	}
-	if j.transcript != "" {
-		body += " | " + j.transcript
-	}
-	if len(body) > 4000 {
-		body = body[:4000]
+	body += "\n\nTranscript:\n" + j.transcript
+	if j.transcript == "" {
+		body += "(no transcript available)"
 	}
 	if typ == "smtp" {
 		return sendSMTPNotification(config, secret, body)
@@ -168,7 +171,7 @@ func deliverNotification(ctx context.Context, conn *pgxpool.Conn, destID int64, 
 	case "telegram":
 		payload = map[string]any{"text": body, "chat_id": config["chat_id"]}
 	default:
-		payload = map[string]any{"call_id": j.call, "text": body}
+		payload = map[string]any{"call_id": j.call, "text": body, "transcript": j.transcript, "audio_url": audioURL}
 	}
 	b, _ := json.Marshal(payload)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(b)))

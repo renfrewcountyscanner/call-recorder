@@ -100,6 +100,7 @@ services:
         condition: service_completed_successfully
     environment:
       CALL_RECORDER_DATABASE_URL: postgresql://${POSTGRES_USER:-call_recorder}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-call_recorder}?sslmode=disable
+      CALL_RECORDER_PUBLIC_URL: ${CALL_RECORDER_PUBLIC_URL:-https://logger.renfrewcountyscanner.com}
       TZ: ${TZ:-America/Toronto}
     user: "10001:10001"
   transcription-worker:
