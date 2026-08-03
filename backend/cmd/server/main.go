@@ -2118,7 +2118,13 @@ func (s *server) adminSenderWrite(w http.ResponseWriter, r *http.Request, replac
 	if replace {
 		_, err = s.db.Exec(r.Context(), `INSERT INTO remote_senders(sender_id,key_hash,enabled,deleted_at) VALUES($1,$2,true,NULL) ON CONFLICT(sender_id) DO UPDATE SET key_hash=EXCLUDED.key_hash,enabled=true,deleted_at=NULL`, id, []byte(hash))
 	} else {
-		_, err = s.db.Exec(r.Context(), `INSERT INTO remote_senders(sender_id,key_hash,enabled) VALUES($1,$2,true)`, id, []byte(hash))
+		tag, execErr := s.db.Exec(r.Context(), `INSERT INTO remote_senders(sender_id,key_hash,enabled,deleted_at) VALUES($1,$2,true,NULL)
+			ON CONFLICT(sender_id) DO UPDATE SET key_hash=EXCLUDED.key_hash,enabled=true,deleted_at=NULL
+			WHERE remote_senders.deleted_at IS NOT NULL`, id, []byte(hash))
+		err = execErr
+		if err == nil && tag.RowsAffected() == 0 {
+			return "", "", errors.New("sender ID already exists; use Replace key to change its credential")
+		}
 	}
 	if err != nil {
 		return "", "", err
