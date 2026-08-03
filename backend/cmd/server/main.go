@@ -2101,9 +2101,15 @@ func (s *server) adminSenderWrite(w http.ResponseWriter, r *http.Request, replac
 	if id == "" || len(id) > 100 || strings.ContainsAny(id, " \t\r\n") {
 		return "", "", errors.New("sender ID must be 1-100 characters without whitespace")
 	}
-	key, err := generateKey()
-	if err != nil {
-		return "", "", err
+	key := strings.TrimSpace(v.Get("api_key"))
+	generated := key == ""
+	if generated {
+		key, err = generateKey()
+		if err != nil {
+			return "", "", err
+		}
+	} else if len(key) < 16 || len(key) > 512 || strings.ContainsAny(key, " \t\r\n") {
+		return "", "", errors.New("API key must be 16-512 characters and contain no whitespace")
 	}
 	hash, err := hashAPIKey(key)
 	if err != nil {
@@ -2117,7 +2123,12 @@ func (s *server) adminSenderWrite(w http.ResponseWriter, r *http.Request, replac
 	if err != nil {
 		return "", "", err
 	}
-	return id, key, nil
+	// Only show generated keys. A supplied legacy key must not be echoed back
+	// into the browser response or logs.
+	if generated {
+		return id, key, nil
+	}
+	return id, "", nil
 }
 func (s *server) adminCreateSender(w http.ResponseWriter, r *http.Request) {
 	id, key, err := s.adminSenderWrite(w, r, false)
