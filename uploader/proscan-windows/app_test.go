@@ -39,7 +39,7 @@ func TestApplicationDiscoversSettlesSpoolsAndUploads(t *testing.T) {
 	}
 	cfg := config{
 		Logger:         loggerConfig{URL: server.URL, SenderID: "watch-sender", APIKey: "watch-key", RequestTimeoutSeconds: 5},
-		SpoolDirectory: filepath.Join(root, "spool"), Timezone: "America/Toronto", SettleSeconds: 1,
+		SpoolDirectory: filepath.Join(root, "spool"), CompletedDirectory: filepath.Join(root, "completed"), Timezone: "America/Toronto", SettleSeconds: 1,
 		RescanSeconds: 2, UploadWorkers: 1, MaxAudioBytes: 1024 * 1024,
 		WatchDirectories: []watchConfig{{Path: watchDirectory, SystemID: "SCANNER-DIGITAL", SystemName: "Scanner Digital", ConventionalIDPrefix: "CONV"}},
 	}
@@ -66,12 +66,12 @@ func TestApplicationDiscoversSettlesSpoolsAndUploads(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		_, err := os.Stat(filepath.Join(watchDirectory, "call.mp3"))
-		if os.IsNotExist(err) {
+		_, err := os.Stat(filepath.Join(root, "completed", "call.mp3"))
+		if err == nil {
 			break
 		}
-		if err != nil || time.Now().After(deadline) {
-			t.Fatalf("uploaded source recording was not deleted: %v", err)
+		if !os.IsNotExist(err) || time.Now().After(deadline) {
+			t.Fatalf("uploaded source recording was not moved: %v", err)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

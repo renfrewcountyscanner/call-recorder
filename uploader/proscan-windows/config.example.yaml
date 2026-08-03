@@ -16,9 +16,11 @@ rescan_seconds: 30
 upload_workers: 2
 max_audio_bytes: 104857600
 include_existing: true
-# Delete each original ProScan recording only after the logger confirms it.
-# Set false to retain source recordings after upload.
-delete_uploaded_files: true
+# After Logger confirms an upload, move the original recording here. This is
+# preferred when another local app also needs the completed audio.
+completed_directory: 'E:\ProScan-Normal'
+# Optional fallback when no completed_directory is configured.
+delete_uploaded_files: false
 
 watch_directories:
   - path: 'E:\ProScan\Digital'

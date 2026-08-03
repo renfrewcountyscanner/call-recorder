@@ -24,6 +24,7 @@ type config struct {
 	UploadWorkers       int           `yaml:"upload_workers"`
 	MaxAudioBytes       int64         `yaml:"max_audio_bytes"`
 	IncludeExisting     *bool         `yaml:"include_existing"`
+	CompletedDirectory  string        `yaml:"completed_directory"`
 	DeleteUploadedFiles *bool         `yaml:"delete_uploaded_files"`
 	LogFile             string        `yaml:"log_file"`
 	WatchDirectories    []watchConfig `yaml:"watch_directories"`
@@ -109,7 +110,7 @@ func (cfg *config) applyDefaults() {
 }
 
 func (cfg *config) resolveRelativePaths(base string) {
-	for _, target := range []*string{&cfg.SpoolDirectory, &cfg.LogFile, &cfg.Logger.APIKeyFile} {
+	for _, target := range []*string{&cfg.SpoolDirectory, &cfg.CompletedDirectory, &cfg.LogFile, &cfg.Logger.APIKeyFile} {
 		if *target != "" && !configuredPathIsAbs(*target) {
 			*target = filepath.Join(base, *target)
 		}
@@ -231,10 +232,10 @@ func (cfg config) apiKey() (string, error) {
 
 func (cfg config) includeExisting() bool { return cfg.IncludeExisting == nil || *cfg.IncludeExisting }
 
-// deleteUploadedFiles defaults to true because the durable spool already holds
-// a private copy until the logger has confirmed receipt.
+// deleteUploadedFiles is opt-in. completed_directory is preferred when the
+// original recording must remain available to another local application.
 func (cfg config) deleteUploadedFiles() bool {
-	return cfg.DeleteUploadedFiles == nil || *cfg.DeleteUploadedFiles
+	return cfg.DeleteUploadedFiles != nil && *cfg.DeleteUploadedFiles
 }
 func (watch watchConfig) recursive() bool { return watch.Recursive == nil || *watch.Recursive }
 func (watch watchConfig) useTPE2RadioID() bool {

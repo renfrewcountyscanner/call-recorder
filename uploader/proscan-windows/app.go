@@ -362,7 +362,17 @@ func (app *uploaderApplication) uploadWorker(ctx context.Context, number int) {
 					app.logger.Error("recording upload failed", "worker", number, "item", item.ID, "attempt", item.Attempts+1, "error", sanitizeError(err))
 					continue
 				}
-				if app.cfg.deleteUploadedFiles() {
+				if app.cfg.CompletedDirectory != "" {
+					destination, err := moveUploadedSource(item, app.cfg.CompletedDirectory)
+					if err != nil {
+						if retryErr := app.spool.Retry(item, err); retryErr != nil {
+							app.logger.Error("could not save source move retry", "item", item.ID, "error", retryErr)
+						}
+						app.logger.Error("uploaded recording could not be moved", "worker", number, "item", item.ID, "file", item.SourcePath, "error", sanitizeError(err))
+						continue
+					}
+					app.logger.Info("uploaded source recording moved", "worker", number, "item", item.ID, "file", item.SourcePath, "destination", destination)
+				} else if app.cfg.deleteUploadedFiles() {
 					if err := deleteUploadedSource(item); err != nil {
 						if retryErr := app.spool.Retry(item, err); retryErr != nil {
 							app.logger.Error("could not save source deletion retry", "item", item.ID, "error", retryErr)
@@ -399,6 +409,34 @@ func deleteUploadedSource(item *spoolItem) error {
 		return fmt.Errorf("delete source recording: %w", err)
 	}
 	return nil
+}
+
+// moveUploadedSource moves only the exact recording that was copied to the
+// durable spool. It never overwrites a completed recording with the same name.
+func moveUploadedSource(item *spoolItem, completedDirectory string) (string, error) {
+	info, err := os.Stat(item.SourcePath)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("stat source recording: %w", err)
+	}
+	if sourceFingerprint(item.SourcePath, info) != item.Fingerprint {
+		return "", fmt.Errorf("source recording changed after it was queued")
+	}
+	if err := os.MkdirAll(completedDirectory, 0o750); err != nil {
+		return "", fmt.Errorf("create completed recordings directory: %w", err)
+	}
+	destination := filepath.Join(completedDirectory, filepath.Base(item.SourcePath))
+	if _, err := os.Lstat(destination); err == nil {
+		extension := filepath.Ext(destination)
+		base := strings.TrimSuffix(filepath.Base(destination), extension)
+		destination = filepath.Join(completedDirectory, base+"-"+item.ID[:12]+extension)
+	}
+	if err := os.Rename(item.SourcePath, destination); err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("move source recording: %w", err)
+	}
+	return destination, nil
 }
 
 func (app *uploaderApplication) watchForPath(path string) (watchConfig, bool) {
