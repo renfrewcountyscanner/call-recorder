@@ -21,6 +21,19 @@ func TestGeneratedSenderKeyIsUUIDv4(t *testing.T) {
 	}
 }
 
+func TestLegacyNullValue(t *testing.T) {
+	for _, value := range []any{nil, "<nil>", " NULL "} {
+		if !legacyNullValue(value) {
+			t.Fatalf("expected %v to be legacy null", value)
+		}
+	}
+	for _, value := range []any{"", "1234", 0} {
+		if legacyNullValue(value) {
+			t.Fatalf("unexpected legacy null for %v", value)
+		}
+	}
+}
+
 func TestFilterFromQueryIncludesPhase7Fields(t *testing.T) {
 	f, err := filterFromQuery(url.Values{"q": {"dispatch"}, "sender": {"s"}, "system": {"sys"}, "site": {"site-1"}, "receiver": {"rx"}, "talkgroup": {"100"}, "radio": {"200"}, "call_type": {"private"}, "frequency": {"851"}, "min_duration": {"1.5"}, "max_duration": {"30"}, "patched": {"1"}, "page": {"2"}, "page_size": {"100"}})
 	if err != nil {

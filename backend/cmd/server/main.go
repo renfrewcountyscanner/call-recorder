@@ -504,7 +504,15 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	target := request.RecordedCall.TalkGroupInfo.CallTargets[0]
 	info := request.RecordedCall.TalkGroupInfo
-	call := callMetadata{Imported: request.Imported, StartTime: start, DurationMS: int64(request.RecordedCall.Duration * 1000), ReceiverID: info.Receiver, SystemID: fmt.Sprint(info.SystemID), SystemName: info.SystemLabel, SiteID: fmt.Sprint(info.SiteID), SiteName: info.SiteLabel, TalkgroupID: target.ID.String(), TalkgroupName: target.Label, TalkgroupTag: target.Tag, RadioID: fmt.Sprint(info.SourceID), RadioName: info.SourceLabel, RadioTag: info.SourceTag, Frequency: fmt.Sprint(info.Frequency), LCN: fmt.Sprint(info.LCN), VoiceService: info.VoiceService, CallType: fmt.Sprint(info.CallType)}
+	systemID, systemName, radioID := fmt.Sprint(info.SystemID), info.SystemLabel, fmt.Sprint(info.SourceID)
+	// Older Trunking Recorder feeds use a null source for scanner-wide calls
+	// while changing the per-call system label. Keep those calls together under
+	// the authenticated API sender, which is the scanner identity.
+	if legacyNullValue(info.SourceID) {
+		systemID, systemName = canonicalSender, canonicalSender
+		radioID = ""
+	}
+	call := callMetadata{Imported: request.Imported, StartTime: start, DurationMS: int64(request.RecordedCall.Duration * 1000), ReceiverID: info.Receiver, SystemID: systemID, SystemName: systemName, SiteID: fmt.Sprint(info.SiteID), SiteName: info.SiteLabel, TalkgroupID: target.ID.String(), TalkgroupName: target.Label, TalkgroupTag: target.Tag, RadioID: radioID, RadioName: info.SourceLabel, RadioTag: info.SourceTag, Frequency: fmt.Sprint(info.Frequency), LCN: fmt.Sprint(info.LCN), VoiceService: info.VoiceService, CallType: fmt.Sprint(info.CallType)}
 	body, _ := json.Marshal(createUploadRequest{SenderID: canonicalSender, IdempotencyKey: "legacy-" + request.RecordedCall.StartTime + "-" + target.ID.String(), AudioFormat: strings.ToLower(request.AudioFormat), Call: call})
 	forward := r.Clone(r.Context())
 	forward.Body = io.NopCloser(bytes.NewReader(body))
@@ -2711,6 +2719,14 @@ func (s *server) authenticateLegacy(ctx context.Context, sender, key string) (st
 		return "", false
 	}
 	return canonical, true
+}
+
+func legacyNullValue(value any) bool {
+	if value == nil {
+		return true
+	}
+	return strings.TrimSpace(strings.ToLower(fmt.Sprint(value))) == "<nil>" ||
+		strings.TrimSpace(strings.ToLower(fmt.Sprint(value))) == "null"
 }
 func (s *server) findDuplicate(ctx context.Context, senderID string, c callMetadata) (string, bool, error) {
 	var id string
