@@ -362,6 +362,16 @@ func (app *uploaderApplication) uploadWorker(ctx context.Context, number int) {
 					app.logger.Error("recording upload failed", "worker", number, "item", item.ID, "attempt", item.Attempts+1, "error", sanitizeError(err))
 					continue
 				}
+				if app.cfg.deleteUploadedFiles() {
+					if err := deleteUploadedSource(item); err != nil {
+						if retryErr := app.spool.Retry(item, err); retryErr != nil {
+							app.logger.Error("could not save source deletion retry", "item", item.ID, "error", retryErr)
+						}
+						app.logger.Error("uploaded recording could not be deleted", "worker", number, "item", item.ID, "file", item.SourcePath, "error", sanitizeError(err))
+						continue
+					}
+					app.logger.Info("uploaded source recording deleted", "worker", number, "item", item.ID, "file", item.SourcePath)
+				}
 				if err := app.spool.Complete(item); err != nil {
 					app.logger.Error("could not complete spool item", "item", item.ID, "error", err)
 					continue
@@ -370,6 +380,25 @@ func (app *uploaderApplication) uploadWorker(ctx context.Context, number int) {
 			}
 		}
 	}
+}
+
+// deleteUploadedSource deletes only the exact recording that was copied to the
+// durable spool. A changed file at the same path is left for normal discovery.
+func deleteUploadedSource(item *spoolItem) error {
+	info, err := os.Stat(item.SourcePath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat source recording: %w", err)
+	}
+	if sourceFingerprint(item.SourcePath, info) != item.Fingerprint {
+		return fmt.Errorf("source recording changed after it was queued")
+	}
+	if err := os.Remove(item.SourcePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete source recording: %w", err)
+	}
+	return nil
 }
 
 func (app *uploaderApplication) watchForPath(path string) (watchConfig, bool) {

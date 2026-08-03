@@ -64,6 +64,17 @@ func TestApplicationDiscoversSettlesSpoolsAndUploads(t *testing.T) {
 	case <-time.After(8 * time.Second):
 		t.Fatal("recording was not uploaded")
 	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err := os.Stat(filepath.Join(watchDirectory, "call.mp3"))
+		if os.IsNotExist(err) {
+			break
+		}
+		if err != nil || time.Now().After(deadline) {
+			t.Fatalf("uploaded source recording was not deleted: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	cancel()
 	select {
 	case err := <-done:

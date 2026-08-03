@@ -9,7 +9,7 @@
 - Size and modification time must also remain unchanged for `settle_seconds`.
 - A completed source file is copied into a private durable spool before any network request.
 - Metadata and audio uploads retry with bounded exponential backoff. Server idempotency makes a retry after an interrupted response safe.
-- Successfully processed source fingerprints are retained across restarts. Original recordings are never renamed, changed, or deleted.
+- Successfully processed source fingerprints are retained across restarts. By default, each original recording is deleted only after the logger confirms the upload; set `delete_uploaded_files: false` to retain source recordings.
 - Unknown YAML settings fail validation instead of being silently ignored.
 
 ## ProScan metadata

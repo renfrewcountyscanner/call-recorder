@@ -12,6 +12,7 @@ rescan_seconds: 30
 upload_workers: 2
 max_audio_bytes: 104857600
 include_existing: true
+delete_uploaded_files: true
 
 watch_directories:
   - path: 'E:\BCD996'

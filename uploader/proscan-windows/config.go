@@ -15,18 +15,19 @@ import (
 )
 
 type config struct {
-	Version          int           `yaml:"version"`
-	Logger           loggerConfig  `yaml:"logger"`
-	SpoolDirectory   string        `yaml:"spool_directory"`
-	Timezone         string        `yaml:"timezone"`
-	SettleSeconds    int           `yaml:"settle_seconds"`
-	RescanSeconds    int           `yaml:"rescan_seconds"`
-	UploadWorkers    int           `yaml:"upload_workers"`
-	MaxAudioBytes    int64         `yaml:"max_audio_bytes"`
-	IncludeExisting  *bool         `yaml:"include_existing"`
-	LogFile          string        `yaml:"log_file"`
-	WatchDirectories []watchConfig `yaml:"watch_directories"`
-	configPath       string
+	Version             int           `yaml:"version"`
+	Logger              loggerConfig  `yaml:"logger"`
+	SpoolDirectory      string        `yaml:"spool_directory"`
+	Timezone            string        `yaml:"timezone"`
+	SettleSeconds       int           `yaml:"settle_seconds"`
+	RescanSeconds       int           `yaml:"rescan_seconds"`
+	UploadWorkers       int           `yaml:"upload_workers"`
+	MaxAudioBytes       int64         `yaml:"max_audio_bytes"`
+	IncludeExisting     *bool         `yaml:"include_existing"`
+	DeleteUploadedFiles *bool         `yaml:"delete_uploaded_files"`
+	LogFile             string        `yaml:"log_file"`
+	WatchDirectories    []watchConfig `yaml:"watch_directories"`
+	configPath          string
 }
 
 type loggerConfig struct {
@@ -228,7 +229,13 @@ func (cfg config) apiKey() (string, error) {
 	return value, nil
 }
 
-func (cfg config) includeExisting() bool  { return cfg.IncludeExisting == nil || *cfg.IncludeExisting }
+func (cfg config) includeExisting() bool { return cfg.IncludeExisting == nil || *cfg.IncludeExisting }
+
+// deleteUploadedFiles defaults to true because the durable spool already holds
+// a private copy until the logger has confirmed receipt.
+func (cfg config) deleteUploadedFiles() bool {
+	return cfg.DeleteUploadedFiles == nil || *cfg.DeleteUploadedFiles
+}
 func (watch watchConfig) recursive() bool { return watch.Recursive == nil || *watch.Recursive }
 func (watch watchConfig) useTPE2RadioID() bool {
 	return watch.UseTPE2RadioID == nil || *watch.UseTPE2RadioID
