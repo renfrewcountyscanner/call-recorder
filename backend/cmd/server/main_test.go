@@ -5,10 +5,21 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestGeneratedSenderKeyIsUUIDv4(t *testing.T) {
+	key, err := generateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(key) {
+		t.Fatalf("generated key is not UUIDv4: %q", key)
+	}
+}
 
 func TestFilterFromQueryIncludesPhase7Fields(t *testing.T) {
 	f, err := filterFromQuery(url.Values{"q": {"dispatch"}, "sender": {"s"}, "system": {"sys"}, "site": {"site-1"}, "receiver": {"rx"}, "talkgroup": {"100"}, "radio": {"200"}, "call_type": {"private"}, "frequency": {"851"}, "min_duration": {"1.5"}, "max_duration": {"30"}, "patched": {"1"}, "page": {"2"}, "page_size": {"100"}})
