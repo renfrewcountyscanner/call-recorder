@@ -71,9 +71,12 @@ func TestApplicationDiscoversSettlesSpoolsAndUploads(t *testing.T) {
 			break
 		}
 		if !os.IsNotExist(err) || time.Now().After(deadline) {
-			t.Fatalf("uploaded source recording was not moved: %v", err)
+			t.Fatalf("uploaded recording was not copied: %v", err)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	if _, err := os.Stat(filepath.Join(watchDirectory, "call.mp3")); err != nil {
+		t.Fatalf("original source recording was changed: %v", err)
 	}
 	cancel()
 	select {

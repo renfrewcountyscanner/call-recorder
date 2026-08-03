@@ -363,15 +363,15 @@ func (app *uploaderApplication) uploadWorker(ctx context.Context, number int) {
 					continue
 				}
 				if app.cfg.CompletedDirectory != "" {
-					destination, err := moveUploadedSource(item, app.cfg.CompletedDirectory)
+					destination, err := copyUploadedSource(item, app.cfg.CompletedDirectory)
 					if err != nil {
 						if retryErr := app.spool.Retry(item, err); retryErr != nil {
-							app.logger.Error("could not save source move retry", "item", item.ID, "error", retryErr)
+							app.logger.Error("could not save completed copy retry", "item", item.ID, "error", retryErr)
 						}
-						app.logger.Error("uploaded recording could not be moved", "worker", number, "item", item.ID, "file", item.SourcePath, "error", sanitizeError(err))
+						app.logger.Error("uploaded recording could not be copied", "worker", number, "item", item.ID, "file", item.SourcePath, "error", sanitizeError(err))
 						continue
 					}
-					app.logger.Info("uploaded source recording moved", "worker", number, "item", item.ID, "file", item.SourcePath, "destination", destination)
+					app.logger.Info("uploaded recording copied", "worker", number, "item", item.ID, "file", item.SourcePath, "destination", destination)
 				} else if app.cfg.deleteUploadedFiles() {
 					if err := deleteUploadedSource(item); err != nil {
 						if retryErr := app.spool.Retry(item, err); retryErr != nil {
@@ -411,19 +411,10 @@ func deleteUploadedSource(item *spoolItem) error {
 	return nil
 }
 
-// moveUploadedSource moves only the exact recording that was copied to the
-// durable spool. It never overwrites a completed recording with the same name.
-func moveUploadedSource(item *spoolItem, completedDirectory string) (string, error) {
-	info, err := os.Stat(item.SourcePath)
-	if os.IsNotExist(err) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("stat source recording: %w", err)
-	}
-	if sourceFingerprint(item.SourcePath, info) != item.Fingerprint {
-		return "", fmt.Errorf("source recording changed after it was queued")
-	}
+// copyUploadedSource copies the private, exact audio spool that Logger has
+// confirmed. The source recording is deliberately left untouched for other
+// local applications, including ones which keep the source file locked.
+func copyUploadedSource(item *spoolItem, completedDirectory string) (string, error) {
 	if err := os.MkdirAll(completedDirectory, 0o750); err != nil {
 		return "", fmt.Errorf("create completed recordings directory: %w", err)
 	}
@@ -433,8 +424,30 @@ func moveUploadedSource(item *spoolItem, completedDirectory string) (string, err
 		base := strings.TrimSuffix(filepath.Base(destination), extension)
 		destination = filepath.Join(completedDirectory, base+"-"+item.ID[:12]+extension)
 	}
-	if err := os.Rename(item.SourcePath, destination); err != nil && !os.IsNotExist(err) {
-		return "", fmt.Errorf("move source recording: %w", err)
+	source, err := os.Open(filepath.Join(item.directory, item.AudioFile))
+	if err != nil {
+		return "", fmt.Errorf("open spooled recording: %w", err)
+	}
+	defer source.Close()
+	temporary := destination + ".partial-" + item.ID[:12]
+	output, err := os.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("create completed recording: %w", err)
+	}
+	defer os.Remove(temporary)
+	if _, err := io.Copy(output, source); err != nil {
+		_ = output.Close()
+		return "", fmt.Errorf("copy completed recording: %w", err)
+	}
+	if err := output.Sync(); err != nil {
+		_ = output.Close()
+		return "", fmt.Errorf("sync completed recording: %w", err)
+	}
+	if err := output.Close(); err != nil {
+		return "", fmt.Errorf("close completed recording: %w", err)
+	}
+	if err := os.Rename(temporary, destination); err != nil {
+		return "", fmt.Errorf("finalize completed recording: %w", err)
 	}
 	return destination, nil
 }

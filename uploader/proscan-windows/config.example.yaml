@@ -16,8 +16,8 @@ rescan_seconds: 30
 upload_workers: 2
 max_audio_bytes: 104857600
 include_existing: true
-# After Logger confirms an upload, move the original recording here. This is
-# preferred when another local app also needs the completed audio.
+# After Logger confirms an upload, copy its audio here. The original recording
+# remains untouched for another local app to use.
 completed_directory: 'E:\ProScan-Normal'
 # Optional fallback when no completed_directory is configured.
 delete_uploaded_files: false
