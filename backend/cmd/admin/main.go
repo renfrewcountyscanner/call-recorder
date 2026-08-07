@@ -77,7 +77,7 @@ func main() {
 }
 
 func createOrReplace(pool *pgxpool.Pool, replace bool, args []string) {
-	name := senderName(args)
+	name := strings.ToUpper(senderName(args))
 	key, err := generateKey()
 	if err != nil {
 		fatal(err)
@@ -100,7 +100,7 @@ func createOrReplace(pool *pgxpool.Pool, replace bool, args []string) {
 }
 
 func disable(pool *pgxpool.Pool, args []string) {
-	name := senderName(args)
+	name := strings.ToUpper(senderName(args))
 	result, err := pool.Exec(context.Background(), `UPDATE remote_senders SET enabled=false WHERE sender_id=$1`, name)
 	if err != nil {
 		fatal(err)

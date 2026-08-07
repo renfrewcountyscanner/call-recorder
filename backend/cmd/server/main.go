@@ -395,7 +395,7 @@ func (s *server) bootstrapSender(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(ctx, `INSERT INTO remote_senders (sender_id,key_hash,enabled) VALUES ($1,$2,true) ON CONFLICT (sender_id) DO NOTHING`, s.cfg.BootstrapSender, []byte(hash))
+	_, err = s.db.Exec(ctx, `INSERT INTO remote_senders (sender_id,key_hash,enabled) VALUES ($1,$2,true) ON CONFLICT (sender_id) DO NOTHING`, strings.ToUpper(s.cfg.BootstrapSender), []byte(hash))
 	return err
 }
 
@@ -407,7 +407,7 @@ func (s *server) bootstrapLegacySender(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(ctx, `INSERT INTO remote_senders (sender_id,key_hash,enabled) VALUES ($1,$2,true) ON CONFLICT (sender_id) DO NOTHING`, s.cfg.LegacyAuthID, []byte(hash))
+	_, err = s.db.Exec(ctx, `INSERT INTO remote_senders (sender_id,key_hash,enabled) VALUES ($1,$2,true) ON CONFLICT (sender_id) DO NOTHING`, strings.ToUpper(s.cfg.LegacyAuthID), []byte(hash))
 	return err
 }
 
@@ -577,7 +577,7 @@ func (s *server) createUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.AudioFormat = strings.ToLower(strings.TrimSpace(req.AudioFormat))
-	req.SenderID = strings.TrimSpace(req.SenderID)
+	req.SenderID = strings.ToUpper(strings.TrimSpace(req.SenderID))
 	req.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
 	req.Call.Patches = uniquePatches(req.Call.Patches)
 	if err := validateMetadata(req); err != nil {
@@ -2115,7 +2115,7 @@ func (s *server) adminSenderWrite(w http.ResponseWriter, r *http.Request, replac
 	if err != nil {
 		return "", "", errors.New("invalid form")
 	}
-	id := strings.TrimSpace(v.Get("sender_id"))
+	id := strings.ToUpper(strings.TrimSpace(v.Get("sender_id")))
 	if id == "" || len(id) > 100 || strings.ContainsAny(id, " \t\r\n") {
 		return "", "", errors.New("sender ID must be 1-100 characters without whitespace")
 	}
@@ -2185,7 +2185,7 @@ func (s *server) adminDisableSender(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	id := strings.TrimSpace(v.Get("sender_id"))
+	id := strings.ToUpper(strings.TrimSpace(v.Get("sender_id")))
 	if id == "" {
 		http.Error(w, "sender ID is required", http.StatusBadRequest)
 		return
@@ -2206,7 +2206,7 @@ func (s *server) adminDeleteSender(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	id := strings.TrimSpace(v.Get("sender_id"))
+	id := strings.ToUpper(strings.TrimSpace(v.Get("sender_id")))
 	if id == "" {
 		http.Error(w, "sender ID is required", http.StatusBadRequest)
 		return
