@@ -122,11 +122,16 @@ func senderName(args []string) string {
 }
 
 func generateKey() (string, error) {
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
+	// UUIDv4 keeps generated sender credentials compatible with older Trunking
+	// Recorder clients that expect the familiar UUID-shaped API key format.
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(bytes), nil
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	encoded := hex.EncodeToString(b)
+	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:32], nil
 }
 func hashAPIKey(value string) (string, error) {
 	salt := make([]byte, 16)
