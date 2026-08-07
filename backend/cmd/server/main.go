@@ -473,6 +473,7 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	decoder.UseNumber()
 	if err := decoder.Decode(&request); err != nil {
+		s.logger.Warn("legacy upload rejected: invalid JSON", "remote_addr", r.RemoteAddr)
 		if s.cfg.LegacyDebug {
 			s.logger.Info("legacy metadata result", "status", 400, "message", "invalid JSON")
 		}
@@ -481,6 +482,7 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	canonicalSender, authenticated := s.authenticateLegacy(r.Context(), request.AuthID, request.APIKey)
 	if !authenticated {
+		s.logger.Warn("legacy upload rejected: authentication failed", "sender_id", request.AuthID, "remote_addr", r.RemoteAddr)
 		if s.cfg.LegacyDebug {
 			s.logger.Info("legacy metadata result", "sender_id", request.AuthID, "status", 403, "message", "authentication failed")
 		}
@@ -488,6 +490,7 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(request.RecordedCall.TalkGroupInfo.CallTargets) == 0 {
+		s.logger.Warn("legacy upload rejected: missing call target", "sender_id", canonicalSender, "remote_addr", r.RemoteAddr)
 		if s.cfg.LegacyDebug {
 			s.logger.Info("legacy metadata result", "sender_id", request.AuthID, "status", 400, "message", "missing call target")
 		}
@@ -496,6 +499,7 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	start, err := time.Parse(time.RFC3339Nano, request.RecordedCall.StartTime)
 	if err != nil {
+		s.logger.Warn("legacy upload rejected: invalid start time", "sender_id", canonicalSender, "remote_addr", r.RemoteAddr)
 		if s.cfg.LegacyDebug {
 			s.logger.Info("legacy metadata result", "sender_id", request.AuthID, "status", 400, "message", "invalid start time")
 		}
@@ -568,6 +572,7 @@ func (s *server) createUpload(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	var req createUploadRequest
 	if err := decodeJSONStrict(r.Body, &req); err != nil {
+		s.logger.Warn("upload rejected: invalid JSON", "remote_addr", r.RemoteAddr)
 		writeJSON(w, 400, errorResponse{"invalid JSON metadata"})
 		return
 	}
@@ -576,10 +581,12 @@ func (s *server) createUpload(w http.ResponseWriter, r *http.Request) {
 	req.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
 	req.Call.Patches = uniquePatches(req.Call.Patches)
 	if err := validateMetadata(req); err != nil {
+		s.logger.Warn("upload rejected: invalid metadata", "error", err, "sender_id", req.SenderID, "remote_addr", r.RemoteAddr)
 		writeJSON(w, 400, errorResponse{err.Error()})
 		return
 	}
 	if !s.authenticate(r.Context(), req.SenderID, r.Header.Get("X-Call-Recorder-Key")) {
+		s.logger.Warn("upload rejected: authentication failed", "sender_id", req.SenderID, "remote_addr", r.RemoteAddr)
 		writeJSON(w, 401, errorResponse{"sender authentication failed"})
 		return
 	}
@@ -651,6 +658,7 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.ContentLength > s.cfg.MaxAudioBytes {
+		s.logger.Warn("upload rejected: exceeds max size", "content_length", r.ContentLength, "remote_addr", r.RemoteAddr)
 		writeJSON(w, 413, errorResponse{"audio exceeds maximum size"})
 		return
 	}
@@ -669,6 +677,7 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if time.Now().UTC().After(pending.ExpiresAt) {
+		s.logger.Warn("upload token expired", "sender_id", pending.SenderID)
 		_, _ = s.db.Exec(r.Context(), `UPDATE pending_uploads SET status='expired',lease_owner=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND status NOT IN ('completed','duplicate')`, pending.ID)
 		writeJSON(w, 410, errorResponse{"upload token expired"})
 		return
@@ -679,10 +688,12 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 	}
 	legacyBearer := r.Header.Get("X-Call-Recorder-Legacy") == "1"
 	if !legacyBearer && (r.Header.Get("X-Call-Recorder-Sender") != pending.SenderID || !s.authenticate(r.Context(), pending.SenderID, r.Header.Get("X-Call-Recorder-Key"))) {
+		s.logger.Warn("audio upload rejected: authentication failed", "sender_id", pending.SenderID, "remote_addr", r.RemoteAddr)
 		writeJSON(w, http.StatusUnauthorized, errorResponse{"sender authentication failed"})
 		return
 	}
 	if !contentTypeMatches(pending.AudioFormat, r.Header.Get("Content-Type")) {
+		s.logger.Warn("audio upload rejected: content type mismatch", "expected", pending.AudioFormat, "got", r.Header.Get("Content-Type"))
 		writeJSON(w, 415, errorResponse{"audio content type does not match declared format"})
 		return
 	}
@@ -717,10 +728,12 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if written == 0 || written > s.cfg.MaxAudioBytes {
+		s.logger.Warn("audio upload rejected: invalid size", "bytes", written, "sender_id", pending.SenderID)
 		writeJSON(w, 413, errorResponse{"invalid audio size"})
 		return
 	}
 	if err := validateAudioHeader(tmpName, pending.AudioFormat); err != nil {
+		s.logger.Warn("audio upload rejected: invalid header", "format", pending.AudioFormat, "error", err, "sender_id", pending.SenderID)
 		writeJSON(w, 415, errorResponse{err.Error()})
 		return
 	}
@@ -1099,7 +1112,7 @@ func chipsFor(f callFilter) []filterChip {
 func (s *server) callsFragment(w http.ResponseWriter, r *http.Request) {
 	f, ferr := filterFromQuery(r.URL.Query())
 	if ferr != nil {
-		s.render(w, "calls.html", map[string]any{"Error": "Invalid filter values: dates must use YYYY-MM-DD."})
+		s.render(w, "calls.html", map[string]any{"Error": "Invalid filter values: date must use YYYY-MM-DD, from/to must use HH:MM."})
 		return
 	}
 	calls, total, err := s.queryCalls(r.Context(), f)
@@ -1732,9 +1745,6 @@ func (s *server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	returnURL := r.Form.Get("return")
 	if returnURL == "" || !strings.HasPrefix(returnURL, "/") || strings.HasPrefix(returnURL, "//") || strings.ContainsAny(returnURL, "\r\n") {
 		returnURL = "/"
-		if r.URL.Path == "/admin/login" {
-			returnURL = "/admin/talkgroups"
-		}
 	}
 	http.Redirect(w, r, returnURL, http.StatusSeeOther)
 }
@@ -2579,10 +2589,15 @@ func filterFromQuery(q url.Values) (callFilter, error) {
 	default:
 		f.Sort = "newest"
 	}
-	for _, d := range []string{f.Date, f.From, f.To} {
-		if d != "" {
-			if _, err := time.Parse("2006-01-02", d); err != nil {
-				return f, errors.New("dates must use YYYY-MM-DD")
+	if f.Date != "" {
+		if _, err := time.Parse("2006-01-02", f.Date); err != nil {
+			return f, errors.New("date must use YYYY-MM-DD")
+		}
+	}
+	for _, pair := range []struct{ key, val string }{{"from", f.From}, {"to", f.To}} {
+		if pair.val != "" {
+			if _, err := time.Parse("15:04", pair.val); err != nil {
+				return f, errors.New(pair.key + " must use HH:MM (24-hour)")
 			}
 		}
 	}
@@ -2610,7 +2625,7 @@ func filterFromQuery(q url.Values) (callFilter, error) {
 }
 
 const callsFrom = ` FROM calls c LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id AND ta.enabled LEFT JOIN radio_aliases ra ON ra.system_id=c.system_id AND ra.radio_id=coalesce(c.radio_id,'') AND ra.enabled`
-const callsWhere = ` WHERE ($1='' OR c.search_document @@ plainto_tsquery('simple',$1) OR c.search_document::text ILIKE '%'||lower($1)||'%' OR EXISTS (SELECT 1 FROM transcripts st WHERE st.call_id=c.id AND coalesce(NULLIF(st.edited_text,''),st.text,'') ILIKE '%'||$1||'%')) AND ($2='' OR c.sender_id=ANY(string_to_array($2,','))) AND ($3='' OR c.system_id=ANY(string_to_array($3,','))) AND ($4='' OR c.site_id=ANY(string_to_array($4,','))) AND ($5='' OR coalesce(NULLIF(c.receiver_id,''),c.sender_id)=ANY(string_to_array($5,','))) AND ($6='' OR c.talkgroup_id=ANY(string_to_array($6,',')) OR c.system_id||'::'||c.talkgroup_id=ANY(string_to_array($6,','))) AND ($7='' OR c.radio_id=ANY(string_to_array($7,',')) OR c.system_id||'::'||c.radio_id=ANY(string_to_array($7,','))) AND ($8='' OR c.call_type=ANY(string_to_array($8,','))) AND ($9='' OR ($9='group' AND c.group_call=true) OR ($9='private' AND c.group_call=false)) AND ($10='' OR c.frequency ILIKE '%'||$10||'%') AND ($11='' OR c.duration_ms >= ($11::double precision*1000)) AND ($12='' OR c.duration_ms <= ($12::double precision*1000)) AND ($13='' OR c.start_time::date=$13::date) AND ($14='' OR c.start_time::date>=$14::date) AND ($15='' OR c.start_time::date<=$15::date) AND (NOT $16 OR EXISTS (SELECT 1 FROM call_targets ct WHERE ct.call_id=c.id)) AND ($17='' OR EXISTS (SELECT 1 FROM favourite_members fm WHERE fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id AND fm.group_id=$17::bigint))`
+const callsWhere = ` WHERE ($1='' OR c.search_document @@ plainto_tsquery('simple',$1) OR c.search_document::text ILIKE '%'||lower($1)||'%' OR EXISTS (SELECT 1 FROM transcripts st WHERE st.call_id=c.id AND coalesce(NULLIF(st.edited_text,''),st.text,'') ILIKE '%'||$1||'%')) AND ($2='' OR c.sender_id=ANY(string_to_array($2,','))) AND ($3='' OR c.system_id=ANY(string_to_array($3,','))) AND ($4='' OR c.site_id=ANY(string_to_array($4,','))) AND ($5='' OR coalesce(NULLIF(c.receiver_id,''),c.sender_id)=ANY(string_to_array($5,','))) AND ($6='' OR c.talkgroup_id=ANY(string_to_array($6,',')) OR c.system_id||'::'||c.talkgroup_id=ANY(string_to_array($6,','))) AND ($7='' OR c.radio_id=ANY(string_to_array($7,',')) OR c.system_id||'::'||c.radio_id=ANY(string_to_array($7,','))) AND ($8='' OR c.call_type=ANY(string_to_array($8,','))) AND ($9='' OR ($9='group' AND c.group_call=true) OR ($9='private' AND c.group_call=false)) AND ($10='' OR c.frequency ILIKE '%'||$10||'%') AND ($11='' OR c.duration_ms >= ($11::double precision*1000)) AND ($12='' OR c.duration_ms <= ($12::double precision*1000)) AND ($13='' OR c.start_time::date=$13::date) AND ($14='' OR c.start_time::time>=$14::time) AND ($15='' OR c.start_time::time<=$15::time) AND (NOT $16 OR EXISTS (SELECT 1 FROM call_targets ct WHERE ct.call_id=c.id)) AND ($17='' OR EXISTS (SELECT 1 FROM favourite_members fm WHERE fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id AND fm.group_id=$17::bigint))`
 
 func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall, int, error) {
 	args := []any{f.Q, f.Sender, f.System, f.Site, f.Receiver, f.Talkgroup, f.Radio, f.CallType, f.Group, f.Frequency, f.MinDuration, f.MaxDuration, f.Date, f.From, f.To, f.Patched, f.Favourite}

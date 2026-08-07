@@ -556,7 +556,6 @@
       on(list, 'change', function (event) {
         if (event.target && event.target.matches('input[type="checkbox"]')) {
           syncToInput();
-          input.dispatchEvent(new Event('input', { bubbles: true }));
         }
       });
       on(search, 'input', function () {

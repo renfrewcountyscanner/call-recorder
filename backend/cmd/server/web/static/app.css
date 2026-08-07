@@ -317,7 +317,7 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 0.75rem 0; }
 label { display: block; font-size: 0.78rem; color: var(--muted); font-weight: 500; }
 label > input, label > select, label > textarea { margin-top: 0.2rem; }
 
-input[type="text"], input:not([type]), input[type="date"], input[type="number"],
+input[type="text"], input:not([type]), input[type="date"], input[type="time"], input[type="number"],
 input[type="password"], input[type="url"], input[type="email"], input[type="datetime-local"],
 select, textarea {
   width: 100%; padding: 0.45rem 0.6rem;
@@ -403,7 +403,7 @@ form.inline, .inline form { display: inline; }
   display: grid; gap: 0.6rem; margin-top: 0.65rem;
   grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
 }
-.filter-grid.compact { grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr)); gap: 0.45rem; }
+.filter-grid.compact { grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: 0.45rem; }
 .filter-actions { display: flex; gap: 0.45rem; margin-top: 0.65rem; align-items: center; flex-wrap: wrap; }
 
 .column-options { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; margin-top: 0.5rem; }
@@ -710,7 +710,8 @@ dialog.confirm .dialog-actions { display: flex; gap: 0.45rem; justify-content: f
 }
 .dt-filter-toggle:hover, .dt-filter-toggle[aria-expanded="true"] { background: var(--accent); color: var(--accent-contrast); }
 .dt-filter-menu {
-  position: absolute; z-index: 50; top: calc(100% + 0.25rem); left: 0; right: 0;
+  position: absolute; z-index: 50; top: calc(100% + 0.25rem); left: 0;
+  min-width: 16rem; max-width: 24rem;
   background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   box-shadow: var(--shadow); padding: 0.45rem;
   max-height: 18rem; display: flex; flex-direction: column;
@@ -727,8 +728,8 @@ dialog.confirm .dialog-actions { display: flex; gap: 0.45rem; justify-content: f
 }
 .dt-filter.is-loading .dt-filter-list { opacity: 0.55; }
 .dt-filter-item {
-  display: flex; align-items: center; gap: 0.35rem; padding: 0.25rem 0.35rem;
-  border-radius: var(--radius-sm); cursor: pointer; font-size: 0.85rem;
+  display: flex; align-items: center; gap: 0.35rem; padding: 0.2rem 0.35rem;
+  border-radius: var(--radius-sm); cursor: pointer; font-size: 0.78rem;
 }
 .dt-filter-item:hover { background: var(--bg-soft); }
 .dt-filter-item input { margin: 0; accent-color: var(--accent); }

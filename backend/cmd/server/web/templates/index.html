@@ -15,7 +15,7 @@
 
 <details class="filters" open>
   <summary>Search options</summary>
-  <form id="filter-form" hx-get="/calls" hx-target="#calls" hx-swap="innerHTML" hx-trigger="submit, keyup changed delay:350ms from:input[name], change changed from:select, change changed from:input[type=date], change changed from:input[type=checkbox]">
+  <form id="filter-form" hx-get="/calls" hx-target="#calls" hx-swap="innerHTML" hx-trigger="submit, keyup changed delay:350ms from:input[name], change changed from:select, change changed from:input[type=date], change changed from:input[type=time], change changed from:input[type=checkbox]">
     <div class="filter-grid compact">
       <label>Search <input name="q" value="{{.Filter.Q}}" autocomplete="off" placeholder="Alias, ID, or text"></label>
       {{template "filterDropdown" (dict "Field" "sender" "Label" "Sender" "Value" .Filter.Sender "Options" (index .FilterOptions "sender"))}}
@@ -40,8 +40,8 @@
       <label>Min duration (s) <input name="min_duration" value="{{.Filter.MinDuration}}" inputmode="decimal"></label>
       <label>Max duration (s) <input name="max_duration" value="{{.Filter.MaxDuration}}" inputmode="decimal"></label>
       <label>Date <input type="date" name="date" value="{{.Filter.Date}}"></label>
-      <label>From <input type="date" name="from" value="{{.Filter.From}}"></label>
-      <label>To <input type="date" name="to" value="{{.Filter.To}}"></label>
+      <label>From <input type="time" name="from" value="{{.Filter.From}}"></label>
+      <label>To <input type="time" name="to" value="{{.Filter.To}}"></label>
       <label class="check all-dates"><input type="checkbox" name="all_dates" value="1" {{if and (eq .Filter.Date "") (eq .Filter.From "") (eq .Filter.To "")}}checked{{end}}> All dates</label>
       <label class="check"><input type="checkbox" name="patched" value="1" {{if .Filter.Patched}}checked{{end}}> Patched only</label>
       <label>Per page
