@@ -720,7 +720,7 @@ dialog.confirm .dialog-actions { display: flex; gap: 0.45rem; justify-content: f
 .dt-filter-search {
   width: 100%; margin-bottom: 0.35rem; padding: 0.35rem 0.5rem;
   border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-  background: var(--bg-soft); color: var(--text); font-size: 0.85rem;
+  background: var(--bg-soft); color: var(--text); font-size: 0.75rem;
 }
 .dt-filter-list {
   flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: column; gap: 0.1rem;
@@ -728,8 +728,8 @@ dialog.confirm .dialog-actions { display: flex; gap: 0.45rem; justify-content: f
 }
 .dt-filter.is-loading .dt-filter-list { opacity: 0.55; }
 .dt-filter-item {
-  display: flex; align-items: center; gap: 0.35rem; padding: 0.2rem 0.35rem;
-  border-radius: var(--radius-sm); cursor: pointer; font-size: 0.78rem;
+  display: flex; align-items: center; gap: 0.35rem; padding: 0.15rem 0.3rem;
+  border-radius: var(--radius-sm); cursor: pointer; font-size: 0.7rem;
 }
 .dt-filter-item:hover { background: var(--bg-soft); }
 .dt-filter-item input { margin: 0; accent-color: var(--accent); }
