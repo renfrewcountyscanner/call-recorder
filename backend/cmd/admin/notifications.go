@@ -11,9 +11,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/mail"
 	"net/smtp"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,7 +24,7 @@ import (
 
 func notifications(pool *pgxpool.Pool, args []string) {
 	if len(args) == 0 {
-		fatal(errors.New("usage: notifications <run|retry|history|test>"))
+		fatal(errors.New("usage: notifications <run|retry|history|test|diagnose>"))
 	}
 	switch args[0] {
 	case "run":
@@ -59,6 +61,15 @@ func notifications(pool *pgxpool.Pool, args []string) {
 			fatal(errors.New("--destination is required"))
 		}
 		sendTestNotification(pool, *id)
+	case "diagnose":
+		var online bool
+		if err := pool.QueryRow(context.Background(), `SELECT coalesce((SELECT heartbeat_at > now()-interval '1 minute' FROM notification_worker_heartbeat WHERE id=true),false)`).Scan(&online); err != nil {
+			fatal(err)
+		}
+		if !online {
+			fatal(errors.New("notification worker heartbeat is stale"))
+		}
+		fmt.Println("notification_worker=online")
 	default:
 		fatal(errors.New("unknown notifications command"))
 	}
@@ -84,7 +95,7 @@ func notificationRun(pool *pgxpool.Pool) {
 		fatal(errors.New("another notification worker is active"))
 	}
 	defer conn.Exec(ctx, `SELECT pg_advisory_unlock(81640001)`)
-	rows, err := conn.Query(ctx, `SELECT d.id,d.destination_id,coalesce(r.template,''),c.id,coalesce(c.sender_id,''),coalesce(c.system_id,''),coalesce(c.site_id,''),coalesce(c.talkgroup_id,''),coalesce(c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(c.radio_name,''),c.start_time,c.duration_ms,coalesce(c.call_type,''),coalesce(c.notes,''),coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,''),'') FROM notification_deliveries d JOIN notification_rules r ON r.id=d.rule_id JOIN calls c ON c.id=d.call_id LEFT JOIN LATERAL (SELECT edited_text,text FROM transcripts WHERE call_id=c.id ORDER BY updated_at DESC LIMIT 1) t ON true WHERE (d.status='pending' OR d.status='failed' AND d.attempt_count<5) AND d.next_attempt_at<=now() AND (r.keyword IS NULL OR coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,''),'') ILIKE '%'||r.keyword||'%') ORDER BY r.priority DESC,d.id LIMIT 100`)
+	rows, err := conn.Query(ctx, `SELECT d.id,d.destination_id,coalesce(r.template,''),c.id,coalesce(c.sender_id,''),coalesce(c.system_id,''),coalesce(c.site_id,''),coalesce(c.talkgroup_id,''),coalesce(c.talkgroup_name,''),coalesce(c.radio_id,''),coalesce(c.radio_name,''),c.start_time,c.duration_ms,coalesce(c.call_type,''),coalesce(c.notes,''),coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,''),NULLIF(c.transcript,''),'') FROM notification_deliveries d JOIN notification_rules r ON r.id=d.rule_id JOIN calls c ON c.id=d.call_id LEFT JOIN LATERAL (SELECT edited_text,text FROM transcripts WHERE call_id=c.id ORDER BY updated_at DESC LIMIT 1) t ON true WHERE (d.status='pending' OR d.status='failed' AND d.attempt_count<5) AND d.next_attempt_at<=now() AND NULLIF(btrim(r.keyword),'') IS NOT NULL AND coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,''),NULLIF(c.transcript,''),'') ILIKE '%'||r.keyword||'%' ORDER BY r.priority DESC,d.id LIMIT 100`)
 	if err != nil {
 		fatal(err)
 	}
@@ -130,7 +141,11 @@ func deliverNotification(ctx context.Context, conn *pgxpool.Conn, destID int64, 
 	var enabled bool
 	var cfg []byte
 	var secret *string
-	if err := conn.QueryRow(ctx, `SELECT destination_type,enabled,config,secret_ref FROM notification_destinations WHERE id=$1`, destID).Scan(&typ, &enabled, &cfg, &secret); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT d.destination_type,d.enabled,d.config,d.secret_ref
+		FROM notification_destinations d
+		JOIN notification_deliveries nd ON nd.destination_id=d.id AND nd.id=$2
+		JOIN notification_rules r ON r.id=nd.rule_id
+		WHERE d.id=$1 AND r.enabled`, destID, j.id).Scan(&typ, &enabled, &cfg, &secret); err != nil {
 		return err
 	}
 	if !enabled {
@@ -150,6 +165,14 @@ func deliverNotification(ctx context.Context, conn *pgxpool.Conn, destID int64, 
 	body += "\n\nTranscript:\n" + j.transcript
 	if j.transcript == "" {
 		body += "(no transcript available)"
+	}
+	if custom := strings.TrimSpace(j.template); custom != "" {
+		replacer := strings.NewReplacer(
+			"{{call_id}}", j.call, "{{sender}}", j.sender, "{{system}}", j.system,
+			"{{site}}", j.site, "{{talkgroup_id}}", j.tg, "{{talkgroup}}", j.tgName,
+			"{{radio_id}}", j.radio, "{{radio}}", j.radioName, "{{audio_url}}", audioURL,
+		)
+		body = replacer.Replace(custom) + "\n\n" + body
 	}
 	if typ == "smtp" {
 		return sendSMTPNotification(config, secret, body)
@@ -176,6 +199,13 @@ func deliverNotification(ctx context.Context, conn *pgxpool.Conn, destID int64, 
 	b, _ := json.Marshal(payload)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(b)))
 	req.Header.Set("Content-Type", "application/json")
+	if secret != nil && strings.TrimSpace(*secret) != "" {
+		if value := strings.TrimSpace(os.Getenv(*secret)); value != "" {
+			req.Header.Set("Authorization", "Bearer "+value)
+		} else {
+			return fmt.Errorf("destination secret environment variable %s is unavailable", *secret)
+		}
+	}
 	resp, err := safeHTTPClient().Do(req)
 	if err != nil {
 		return err
@@ -200,16 +230,27 @@ func sendSMTPNotification(config map[string]any, secret *string, body string) er
 	if host == "" || port == "" || from == "" || to == "" {
 		return errors.New("SMTP host, port, from, and to are required")
 	}
+	fromAddress, err := mail.ParseAddress(from)
+	if err != nil {
+		return errors.New("invalid SMTP from address")
+	}
+	toAddress, err := mail.ParseAddress(to)
+	if err != nil {
+		return errors.New("invalid SMTP to address")
+	}
+	if user != "" && !useTLS {
+		return errors.New("SMTP authentication requires STARTTLS")
+	}
 	password := ""
 	if secret != nil && *secret != "" {
 		password = os.Getenv(*secret)
 	}
-	dialer := &net.Dialer{Timeout: 15 * time.Second}
-	conn, err := dialer.Dial("tcp", net.JoinHostPort(host, port))
+	conn, err := safeNotificationDial(context.Background(), "tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 	client, err := smtp.NewClient(conn, host)
 	if err != nil {
 		return err
@@ -228,18 +269,18 @@ func sendSMTPNotification(config map[string]any, secret *string, body string) er
 			return err
 		}
 	}
-	if err := client.Mail(from); err != nil {
+	if err := client.Mail(fromAddress.Address); err != nil {
 		return err
 	}
-	if err := client.Rcpt(to); err != nil {
+	if err := client.Rcpt(toAddress.Address); err != nil {
 		return err
 	}
 	writer, err := client.Data()
 	if err != nil {
 		return err
 	}
-	headers := "From: " + from + "\r\nTo: " + to + "\r\nSubject: Call Logger v1.0.0 notification\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n"
-	if _, err = io.WriteString(writer, headers+"<p>"+html.EscapeString(body)+"</p>"); err != nil {
+	headers := "From: " + fromAddress.String() + "\r\nTo: " + toAddress.String() + "\r\nSubject: Call Logger v1.0.0 notification\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n"
+	if _, err = io.WriteString(writer, headers+"<pre>"+html.EscapeString(body)+"</pre>"); err != nil {
 		_ = writer.Close()
 		return err
 	}
@@ -265,6 +306,7 @@ func validateNotificationURL(raw string) error {
 }
 
 func safeHTTPClient() *http.Client {
+	allowPrivate := strings.EqualFold(os.Getenv("CALL_RECORDER_ALLOW_PRIVATE_DESTINATIONS"), "true")
 	return &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return errors.New("redirects are disabled") }, Transport: &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(address)
 		if err != nil {
@@ -275,13 +317,35 @@ func safeHTTPClient() *http.Client {
 			return nil, err
 		}
 		for _, ip := range ips {
-			if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+			if !allowPrivate && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()) {
 				continue
 			}
 			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 		}
 		return nil, errors.New("destination resolves to a private address")
 	}}}
+}
+
+func safeNotificationDial(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		return nil, errors.New("invalid destination port")
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil, err
+	}
+	allowPrivate := strings.EqualFold(os.Getenv("CALL_RECORDER_ALLOW_PRIVATE_DESTINATIONS"), "true")
+	for _, ip := range ips {
+		if !allowPrivate && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()) {
+			continue
+		}
+		return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+	}
+	return nil, errors.New("destination resolves only to private addresses")
 }
 func sendTestNotification(pool *pgxpool.Pool, id int64) {
 	ctx := context.Background()
@@ -327,6 +391,13 @@ func sendTestNotification(pool *pgxpool.Pool, id int64) {
 	b, _ := json.Marshal(payload)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(b)))
 	req.Header.Set("Content-Type", "application/json")
+	if secret != nil && strings.TrimSpace(*secret) != "" {
+		if value := strings.TrimSpace(os.Getenv(*secret)); value != "" {
+			req.Header.Set("Authorization", "Bearer "+value)
+		} else {
+			fatal(fmt.Errorf("destination secret environment variable %s is unavailable", *secret))
+		}
+	}
 	resp, err := safeHTTPClient().Do(req)
 	if err != nil {
 		fatal(fmt.Errorf("test send failed: %w", err))

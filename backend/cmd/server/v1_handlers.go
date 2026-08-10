@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -30,8 +31,10 @@ func (s *server) recordAudit(ctx context.Context, r *http.Request, action, targe
 	if err != nil {
 		raw = []byte(`{}`)
 	}
-	_, err = s.db.Exec(ctx, `INSERT INTO audit_events(actor,action,target_type,target_id,request_id,details) VALUES($1,$2,$3,NULLIF($4,''),NULLIF($5,''),$6)`,
-		s.requestIdentity(r), action, targetType, targetID, r.Header.Get("X-Request-ID"), raw)
+	remote, _, splitErr := net.SplitHostPort(r.RemoteAddr)
+	if splitErr != nil { remote = r.RemoteAddr }
+	_, err = s.db.Exec(ctx, `INSERT INTO audit_events(actor,action,target_type,target_id,request_id,source_address,details) VALUES($1,$2,$3,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7)`,
+		s.requestIdentity(r), action, targetType, targetID, r.Header.Get("X-Request-ID"), remote, raw)
 	if err != nil {
 		s.logger.Error("audit event failed", "action", action, "target_type", targetType, "target_id", targetID, "error", err)
 	}

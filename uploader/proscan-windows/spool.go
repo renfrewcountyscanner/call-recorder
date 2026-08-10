@@ -72,6 +72,11 @@ func openDurableSpool(root string) (*durableSpool, error) {
 	} else if !errors.Is(openErr, os.ErrNotExist) {
 		return nil, openErr
 	}
+	if info, statErr := os.Stat(ledgerPath); statErr == nil && info.Size() > 16*1024*1024 {
+		if err := compactProcessedLedger(ledgerPath, known); err != nil {
+			return nil, fmt.Errorf("compact processed ledger: %w", err)
+		}
+	}
 	processed, err := os.OpenFile(ledgerPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, err
@@ -97,6 +102,34 @@ func openDurableSpool(root string) (*durableSpool, error) {
 		spool.known[item.Fingerprint] = true
 	}
 	return spool, nil
+}
+
+func compactProcessedLedger(path string, known map[string]bool) error {
+	temporary := path + ".compact"
+	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	encoder := json.NewEncoder(file)
+	fingerprints := make([]string, 0, len(known))
+	for fingerprint := range known {
+		fingerprints = append(fingerprints, fingerprint)
+	}
+	sort.Strings(fingerprints)
+	for _, fingerprint := range fingerprints {
+		if err := encoder.Encode(completedRecord{Fingerprint: fingerprint}); err != nil {
+			_ = file.Close()
+			return err
+		}
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return replaceFile(temporary, path)
 }
 
 func (spool *durableSpool) Close() error {
@@ -302,4 +335,12 @@ func sourceFingerprint(path string, info os.FileInfo) string {
 	material := strings.ToLower(filepath.Clean(canonical)) + "\x00" + fmt.Sprint(info.Size()) + "\x00" + fmt.Sprint(info.ModTime().UnixNano())
 	digest := sha256.Sum256([]byte(material))
 	return hex.EncodeToString(digest[:])
+}
+
+func recordingFingerprint(audio []byte, callIdentity string) string {
+	digest := sha256.New()
+	_, _ = digest.Write([]byte(callIdentity))
+	_, _ = digest.Write([]byte{0})
+	_, _ = digest.Write(audio)
+	return hex.EncodeToString(digest.Sum(nil))
 }

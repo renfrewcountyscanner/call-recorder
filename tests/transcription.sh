@@ -2,7 +2,7 @@
 # End-to-end transcription test: WebUI configuration -> worker -> fake provider -> transcript.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-compose="${COMPOSE:-docker compose} --project-name callrecorder_it --env-file $root/deploy/integration.env -f $root/deploy/docker-compose.yml -f $root/deploy/docker-compose.integration.yml"
+compose="${COMPOSE:-docker-compose} --project-name callrecorder_it --env-file $root/deploy/integration.env -f $root/deploy/docker-compose.yml -f $root/deploy/docker-compose.integration.yml"
 work=$(mktemp -d)
 cleanup() { $compose down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$root/.test-runtime" "$work"; }
 trap cleanup EXIT
@@ -23,6 +23,9 @@ $compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -v ON
 # Create admin user
 $compose exec -T backend /usr/local/bin/call-recorder-admin users create --username admin --password testpassword --role admin
 curl -fsS -c "$work/cookie" -d 'username=admin&password=testpassword' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/login | grep -q 303
+csrf=$(awk '$6 == "call_recorder_csrf" { print $7 }' "$work/cookie")
+test -n "$csrf"
+curl() { command curl -H "X-CSRF-Token: $csrf" "$@"; }
 
 # Create a synthetic WAV call via the modern API.
 meta=$(cat <<'EOF'

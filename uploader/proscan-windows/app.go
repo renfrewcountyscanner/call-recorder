@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -303,6 +304,10 @@ func (app *uploaderApplication) processReadyFiles() {
 			app.deferFile(observed, parseErr)
 			continue
 		}
+		// The durable identity includes the parsed call identity and exact audio
+		// bytes. Reusing a filename with new audio is therefore uploaded, while a
+		// copied or renamed duplicate of the same call remains idempotent.
+		fingerprint = recordingFingerprint(raw, recording.Request.IdempotencyKey)
 		id, queued, queueErr := app.spool.Queue(observed.path, fingerprint, recording)
 		if queueErr != nil {
 			app.deferFile(observed, queueErr)
@@ -420,9 +425,18 @@ func copyUploadedSource(item *spoolItem, completedDirectory string) (string, err
 	}
 	destination := filepath.Join(completedDirectory, filepath.Base(item.SourcePath))
 	if _, err := os.Lstat(destination); err == nil {
+		if equal, compareErr := filesHaveSameSHA256(destination, filepath.Join(item.directory, item.AudioFile)); compareErr == nil && equal {
+			return destination, nil
+		}
 		extension := filepath.Ext(destination)
 		base := strings.TrimSuffix(filepath.Base(destination), extension)
 		destination = filepath.Join(completedDirectory, base+"-"+item.ID[:12]+extension)
+		if _, suffixErr := os.Lstat(destination); suffixErr == nil {
+			if equal, compareErr := filesHaveSameSHA256(destination, filepath.Join(item.directory, item.AudioFile)); compareErr == nil && equal {
+				return destination, nil
+			}
+			return "", fmt.Errorf("completed destination already exists with different content: %s", destination)
+		}
 	}
 	source, err := os.Open(filepath.Join(item.directory, item.AudioFile))
 	if err != nil {
@@ -450,6 +464,29 @@ func copyUploadedSource(item *spoolItem, completedDirectory string) (string, err
 		return "", fmt.Errorf("finalize completed recording: %w", err)
 	}
 	return destination, nil
+}
+
+func filesHaveSameSHA256(left, right string) (bool, error) {
+	hashFile := func(path string) ([sha256.Size]byte, error) {
+		file, err := os.Open(path)
+		if err != nil {
+			return [sha256.Size]byte{}, err
+		}
+		defer file.Close()
+		digest := sha256.New()
+		if _, err := io.Copy(digest, file); err != nil {
+			return [sha256.Size]byte{}, err
+		}
+		var result [sha256.Size]byte
+		copy(result[:], digest.Sum(nil))
+		return result, nil
+	}
+	a, err := hashFile(left)
+	if err != nil {
+		return false, err
+	}
+	b, err := hashFile(right)
+	return a == b, err
 }
 
 func (app *uploaderApplication) watchForPath(path string) (watchConfig, bool) {

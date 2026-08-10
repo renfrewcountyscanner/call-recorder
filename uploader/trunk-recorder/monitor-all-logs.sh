@@ -9,10 +9,10 @@ for candidate in "${COMPOSE_FILE:-}" ./docker-compose.yml ./deploy/docker-compos
 done
 
 compose_cmd=""
-if docker compose version >/dev/null 2>&1; then
-    compose_cmd="docker compose"
-elif command -v docker-compose >/dev/null 2>&1; then
+if command -v docker-compose >/dev/null 2>&1; then
     compose_cmd="docker-compose"
+elif docker compose version >/dev/null 2>&1; then
+    compose_cmd="docker compose"
 fi
 
 children=""

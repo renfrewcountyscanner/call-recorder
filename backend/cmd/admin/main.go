@@ -1,10 +1,12 @@
-// Command call-recorder-admin administers recorder senders without exposing
-// their API keys through the web application or application logs.
+// Command call-recorder-admin runs migrations, workers, diagnostics, and
+// administrative operations without writing credentials to application logs.
 package main
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
@@ -32,6 +34,12 @@ func main() {
 	defer pool.Close()
 	if err := pool.Ping(context.Background()); err != nil {
 		fatal(err)
+	}
+	if os.Args[1] == "migrate" {
+		if err := runMigrations(pool); err != nil {
+			fatal(err)
+		}
+		return
 	}
 	if os.Args[1] == "retention" {
 		retention(pool, os.Args[2:])
@@ -82,7 +90,7 @@ func createOrReplace(pool *pgxpool.Pool, replace bool, args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	hash, err := hashAPIKey(key)
+	hash, err := hashSenderKey(senderKeyPepper(), key)
 	if err != nil {
 		fatal(err)
 	}
@@ -141,6 +149,23 @@ func hashAPIKey(value string) (string, error) {
 	digest := argon2.IDKey([]byte(value), salt, 3, 64*1024, 2, 32)
 	return "argon2id$v=19$m=65536,t=3,p=2$" + hex.EncodeToString(salt) + "$" + hex.EncodeToString(digest), nil
 }
+
+func senderKeyPepper() string {
+	pepper := strings.TrimSpace(os.Getenv("CALL_RECORDER_SENDER_KEY_PEPPER"))
+	if pepper == "" {
+		pepper = os.Getenv("CALL_RECORDER_SESSION_SECRET")
+	}
+	return pepper
+}
+
+func hashSenderKey(pepper, value string) (string, error) {
+	if pepper == "" || value == "" {
+		return "", errors.New("CALL_RECORDER_SENDER_KEY_PEPPER or CALL_RECORDER_SESSION_SECRET is required")
+	}
+	digest := hmac.New(sha256.New, []byte(pepper))
+	_, _ = digest.Write([]byte(value))
+	return "hmac-sha256$v=1$" + hex.EncodeToString(digest.Sum(nil)), nil
+}
 func verifyAPIKey(encoded, value string) bool {
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 5 || parts[0] != "argon2id" || parts[1] != "v=19" {
@@ -148,22 +173,22 @@ func verifyAPIKey(encoded, value string) bool {
 	}
 	var memory, iterations uint32
 	var parallelism uint8
-	if _, err := fmt.Sscanf(parts[2], "m=%d,t=%d,p=%d", &memory, &iterations, &parallelism); err != nil || memory == 0 || iterations == 0 || parallelism == 0 {
+	if _, err := fmt.Sscanf(parts[2], "m=%d,t=%d,p=%d", &memory, &iterations, &parallelism); err != nil || memory == 0 || memory > 262144 || iterations == 0 || iterations > 10 || parallelism == 0 || parallelism > 8 {
 		return false
 	}
 	salt, err := hex.DecodeString(parts[3])
-	if err != nil || len(salt) == 0 {
+	if err != nil || len(salt) < 8 || len(salt) > 64 {
 		return false
 	}
 	expected, err := hex.DecodeString(parts[4])
-	if err != nil || len(expected) == 0 {
+	if err != nil || len(expected) < 16 || len(expected) > 64 {
 		return false
 	}
 	actual := argon2.IDKey([]byte(value), salt, iterations, memory, parallelism, uint32(len(expected)))
 	return subtle.ConstantTimeCompare(actual, expected) == 1
 }
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: call-recorder-admin sender|aliases|retention|notifications|transcription|datasets|storage|users ...")
+	fmt.Fprintln(os.Stderr, "usage: call-recorder-admin migrate|sender|aliases|retention|notifications|transcription|datasets|storage|users ...")
 	os.Exit(2)
 }
 func fatal(err error) { fmt.Fprintln(os.Stderr, "error:", err); os.Exit(1) }

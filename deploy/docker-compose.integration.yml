@@ -12,7 +12,7 @@ services:
     environment:
       CALL_RECORDER_TEST_FAIL_FINALIZE: ${CALL_RECORDER_TEST_FAIL_FINALIZE:-false}
     ports:
-      - "18080:8080"
+      - "127.0.0.1:18080:8080"
     volumes:
       - ../.test-runtime/audio:/var/lib/call-recorder/audio
       - ../.test-runtime/secrets:/var/lib/call-recorder/secrets

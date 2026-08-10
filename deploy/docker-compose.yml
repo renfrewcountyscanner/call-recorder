@@ -1,7 +1,30 @@
+x-app-hardening: &app-hardening
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=128m
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 256
+  mem_limit: 1g
+  logging:
+    driver: json-file
+    options:
+      max-size: 20m
+      max-file: "5"
+
 services:
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
+    pids_limit: 512
+    mem_limit: 2g
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-call_recorder}
       POSTGRES_USER: ${POSTGRES_USER:-call_recorder}
@@ -15,15 +38,19 @@ services:
       timeout: 5s
       retries: 10
   migrate:
-    image: postgres:17-alpine
+    <<: *app-hardening
+    build:
+      context: ../backend
+      args:
+        COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     depends_on:
       postgres:
         condition: service_healthy
+    entrypoint: ["/usr/local/bin/call-recorder-admin"]
+    command: ["migrate"]
     environment:
-      PGPASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - ../backend/migrations:/migrations:ro
-    command: ["sh", "-c", "for migration in /migrations/*.sql; do echo Applying $$migration; psql -v ON_ERROR_STOP=1 -h postgres -U ${POSTGRES_USER:-call_recorder} -d ${POSTGRES_DB:-call_recorder} -f $$migration; done"]
+      CALL_RECORDER_DATABASE_URL: postgresql://${POSTGRES_USER:-call_recorder}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-call_recorder}?sslmode=disable
   audio-init:
     image: alpine:3.21
     command: ["sh", "-c", "install -d -m 0750 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets /var/lib/call-recorder/exports && chown 10001:10001 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets /var/lib/call-recorder/exports && chmod 0750 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets /var/lib/call-recorder/exports"]
@@ -32,6 +59,7 @@ services:
       - ../runtime/secrets:/var/lib/call-recorder/secrets
       - ../runtime/exports:/var/lib/call-recorder/exports
   backend:
+    <<: *app-hardening
     build:
       context: ../backend
       args:
@@ -71,9 +99,10 @@ services:
       CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED: ${CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED:-false}
       CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL: ${CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL:-}
       CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS: ${CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS:-}
+      CALL_RECORDER_NOTIFICATION_SECRET: ${CALL_RECORDER_NOTIFICATION_SECRET:-}
       TZ: ${TZ:-America/Toronto}
     ports:
-      - "${CALL_RECORDER_PORT:-8080}:8080"
+      - "${CALL_RECORDER_BIND_ADDRESS:-127.0.0.1}:${CALL_RECORDER_PORT:-8080}:8080"
     volumes:
       - ../runtime/audio:/var/lib/call-recorder/audio
       - ../runtime/secrets:/var/lib/call-recorder/secrets
@@ -85,6 +114,7 @@ services:
       retries: 5
       start_period: 15s
   notification-worker:
+    <<: *app-hardening
     build:
       context: ../backend
       args:
@@ -101,9 +131,16 @@ services:
     environment:
       CALL_RECORDER_DATABASE_URL: postgresql://${POSTGRES_USER:-call_recorder}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-call_recorder}?sslmode=disable
       CALL_RECORDER_PUBLIC_URL: ${CALL_RECORDER_PUBLIC_URL:-https://logger.renfrewcountyscanner.com}
+      CALL_RECORDER_NOTIFICATION_SECRET: ${CALL_RECORDER_NOTIFICATION_SECRET:-}
       TZ: ${TZ:-America/Toronto}
     user: "10001:10001"
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/bin/call-recorder-admin notifications diagnose"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
   transcription-worker:
+    <<: *app-hardening
     build:
       context: ../backend
       args:
@@ -135,6 +172,7 @@ services:
       retries: 3
     # No ports exposed. A disabled configuration is a healthy idle state.
   dataset-worker:
+    <<: *app-hardening
     build:
       context: ../backend
       args:

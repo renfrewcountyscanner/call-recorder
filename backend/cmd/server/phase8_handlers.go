@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/mail"
 	"net/smtp"
 	"net/url"
 	"os"
@@ -37,7 +38,9 @@ func (s *server) enqueueNotifications(ctx context.Context, callID string) {
 		FROM notification_rules r
 		JOIN notification_destinations d ON d.id=r.destination_id
 		JOIN calls c ON c.id=$1
+		LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id
 		WHERE r.enabled AND d.enabled
+		  AND coalesce(ta.notification_eligible,true)
 		  AND (r.sender_filter IS NULL OR r.sender_filter=c.sender_id)
 		  AND (r.system_filter IS NULL OR r.system_filter=c.system_id)
 		  AND (r.site_filter IS NULL OR r.site_filter=c.site_id)
@@ -51,7 +54,8 @@ func (s *server) enqueueNotifications(ctx context.Context, callID string) {
 		  AND (NOT r.patched_only OR EXISTS (SELECT 1 FROM call_targets ct WHERE ct.call_id=c.id))
 		  -- Keyword rules are transcript-only. A call with no transcript must
 		  -- wait for the transcription worker to enqueue it after transcription.
-		  AND (r.keyword IS NULL OR EXISTS (SELECT 1 FROM transcripts t WHERE t.call_id=c.id AND coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,''),'') ILIKE '%'||r.keyword||'%'))
+		  AND NULLIF(btrim(r.keyword),'') IS NOT NULL
+		  AND coalesce((SELECT coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,'')) FROM transcripts t WHERE t.call_id=c.id ORDER BY t.updated_at DESC LIMIT 1),NULLIF(c.transcript,''),'') ILIKE '%'||r.keyword||'%'
 		  AND (r.favourite_group_id IS NULL OR EXISTS (SELECT 1 FROM favourite_members fm WHERE fm.group_id=r.favourite_group_id AND fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id))
 		ON CONFLICT(rule_id,call_id) DO NOTHING`, callID)
 }
@@ -85,6 +89,7 @@ func (s *server) adminProtectCall(w http.ResponseWriter, r *http.Request) {
 		_, _ = s.db.Exec(r.Context(), `UPDATE calls SET protected=false,protection_reason=NULL,protected_at=NULL,protected_by=NULL,protection_expires_at=NULL WHERE id=$1`, id)
 	}
 	_, _ = s.db.Exec(r.Context(), `INSERT INTO protection_events(call_id,protected,reason,identity) VALUES($1,$2,$3,$4)`, id, protected, reason, identity)
+	s.recordAudit(r.Context(), r, "call.protection.update", "call", id, map[string]any{"protected": protected, "reason": reason})
 	http.Redirect(w, r, "/call/"+id, http.StatusSeeOther)
 }
 
@@ -171,6 +176,7 @@ func (s *server) adminDeleteFavourite(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
+	s.recordAudit(r.Context(), r, "favourite.delete", "favourite_group", strconv.FormatInt(id, 10), map[string]any{})
 	http.Redirect(w, r, "/admin/favourites", http.StatusSeeOther)
 }
 
@@ -183,11 +189,14 @@ func (s *server) adminDeleteFavouriteMember(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "invalid group", http.StatusBadRequest)
 		return
 	}
-	_, err := s.db.Exec(r.Context(), `DELETE FROM favourite_members WHERE group_id=$1 AND system_id=$2 AND talkgroup_id=$3`, gid, strings.TrimSpace(r.FormValue("system_id")), strings.TrimSpace(r.FormValue("talkgroup_id")))
+	system := strings.TrimSpace(r.FormValue("system_id"))
+	talkgroup := strings.TrimSpace(r.FormValue("talkgroup_id"))
+	_, err := s.db.Exec(r.Context(), `DELETE FROM favourite_members WHERE group_id=$1 AND system_id=$2 AND talkgroup_id=$3`, gid, system, talkgroup)
 	if err != nil {
 		s.internal(w, err)
 		return
 	}
+	s.recordAudit(r.Context(), r, "favourite.member.delete", "favourite_group", strconv.FormatInt(gid, 10), map[string]any{"system": system, "talkgroup": talkgroup})
 	http.Redirect(w, r, "/admin/favourites?group="+strconv.FormatInt(gid, 10), http.StatusSeeOther)
 }
 func (s *server) adminSaveFavourite(w http.ResponseWriter, r *http.Request) {
@@ -209,6 +218,7 @@ func (s *server) adminSaveFavourite(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
+	s.recordAudit(r.Context(), r, "favourite.save", "favourite_group", name, map[string]any{"enabled": r.FormValue("enabled") == "on"})
 	http.Redirect(w, r, "/admin/favourites", 303)
 }
 func (s *server) adminSaveFavouriteMember(w http.ResponseWriter, r *http.Request) {
@@ -231,6 +241,7 @@ func (s *server) adminSaveFavouriteMember(w http.ResponseWriter, r *http.Request
 		s.internal(w, err)
 		return
 	}
+	s.recordAudit(r.Context(), r, "favourite.member.save", "favourite_group", strconv.FormatInt(gid, 10), map[string]any{"system": system, "talkgroup": tg})
 	http.Redirect(w, r, "/admin/favourites", 303)
 }
 
@@ -358,6 +369,7 @@ func (s *server) adminDestinationAction(w http.ResponseWriter, r *http.Request) 
 		s.internal(w, err)
 		return
 	}
+	s.recordAudit(r.Context(), r, "notification.destination."+action, "notification_destination", strconv.FormatInt(id, 10), map[string]any{})
 	http.Redirect(w, r, "/admin/notifications", 303)
 }
 
@@ -375,6 +387,9 @@ func (s *server) adminRuleAction(w http.ResponseWriter, r *http.Request) {
 	switch action {
 	case "enable", "disable":
 		_, err = s.db.Exec(r.Context(), `UPDATE notification_rules SET enabled=$2,updated_at=now() WHERE id=$1`, id, action == "enable")
+		if err == nil && action == "disable" {
+			_, err = s.db.Exec(r.Context(), `UPDATE notification_deliveries SET status='expired',error='Notification rule disabled',updated_at=now() WHERE rule_id=$1 AND status IN ('pending','failed')`, id)
+		}
 	case "delete":
 		_, err = s.db.Exec(r.Context(), `DELETE FROM notification_rules WHERE id=$1`, id)
 	default:
@@ -385,6 +400,7 @@ func (s *server) adminRuleAction(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
+	s.recordAudit(r.Context(), r, "notification.rule."+action, "notification_rule", strconv.FormatInt(id, 10), map[string]any{})
 	http.Redirect(w, r, "/admin/notifications", 303)
 }
 
@@ -480,13 +496,14 @@ func (s *server) adminSaveDestination(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid destination type", 400)
 		return
 	}
-	cfg := map[string]string{"url": strings.TrimSpace(r.FormValue("url")), "host": strings.TrimSpace(r.FormValue("host")), "port": strings.TrimSpace(r.FormValue("port")), "from": strings.TrimSpace(r.FormValue("from")), "to": strings.TrimSpace(r.FormValue("to")), "username": strings.TrimSpace(r.FormValue("username")), "chat_id": strings.TrimSpace(r.FormValue("chat_id"))}
+	cfg := map[string]any{"url": strings.TrimSpace(r.FormValue("url")), "host": strings.TrimSpace(r.FormValue("host")), "port": strings.TrimSpace(r.FormValue("port")), "from": strings.TrimSpace(r.FormValue("from")), "to": strings.TrimSpace(r.FormValue("to")), "username": strings.TrimSpace(r.FormValue("username")), "chat_id": strings.TrimSpace(r.FormValue("chat_id")), "tls": r.FormValue("tls") == "on"}
 	b, _ := json.Marshal(cfg)
 	_, err := s.db.Exec(r.Context(), `INSERT INTO notification_destinations(name,destination_type,enabled,config,secret_ref) VALUES($1,$2,false,$3,$4) ON CONFLICT(name) DO UPDATE SET destination_type=EXCLUDED.destination_type,config=EXCLUDED.config,secret_ref=EXCLUDED.secret_ref,updated_at=now()`, name, typ, b, strings.TrimSpace(r.FormValue("secret_ref")))
 	if err != nil {
 		s.internal(w, err)
 		return
 	}
+	s.recordAudit(r.Context(), r, "notification.destination.save", "notification_destination", name, map[string]any{"type": typ, "has_secret_reference": strings.TrimSpace(r.FormValue("secret_ref")) != ""})
 	http.Redirect(w, r, "/admin/notifications", 303)
 }
 
@@ -499,17 +516,19 @@ func (s *server) adminSaveNotificationRule(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
+	keyword := strings.TrimSpace(r.FormValue("keyword"))
 	dest, _ := strconv.ParseInt(r.FormValue("destination_id"), 10, 64)
 	priority, _ := strconv.Atoi(r.FormValue("priority"))
-	if name == "" || dest < 1 {
-		http.Error(w, "name and destination are required", 400)
+	if name == "" || dest < 1 || keyword == "" || len(keyword) > 500 {
+		http.Error(w, "name, destination, and a transcript keyword are required", 400)
 		return
 	}
-	_, err := s.db.Exec(r.Context(), `INSERT INTO notification_rules(name,destination_id,enabled,priority,sender_filter,system_filter,site_filter,talkgroup_filter,radio_filter,call_type_filter,frequency_min,frequency_max,min_duration_ms,max_duration_ms,patched_only,keyword,favourite_group_id,template) VALUES($1,$2,false,$3,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),NULLIF($8,''),NULLIF($9,''),NULLIF($10,'')::numeric,NULLIF($11,'')::numeric,NULLIF($12,'')::bigint,NULLIF($13,'')::bigint,$14,NULLIF($15,''),NULLIF($16,'')::bigint,NULLIF($17,'')) ON CONFLICT(name) DO UPDATE SET destination_id=EXCLUDED.destination_id,priority=EXCLUDED.priority,sender_filter=EXCLUDED.sender_filter,system_filter=EXCLUDED.system_filter,site_filter=EXCLUDED.site_filter,talkgroup_filter=EXCLUDED.talkgroup_filter,radio_filter=EXCLUDED.radio_filter,call_type_filter=EXCLUDED.call_type_filter,frequency_min=EXCLUDED.frequency_min,frequency_max=EXCLUDED.frequency_max,min_duration_ms=EXCLUDED.min_duration_ms,max_duration_ms=EXCLUDED.max_duration_ms,patched_only=EXCLUDED.patched_only,keyword=EXCLUDED.keyword,favourite_group_id=EXCLUDED.favourite_group_id,template=EXCLUDED.template,updated_at=now()`, name, dest, priority, r.FormValue("sender"), r.FormValue("system"), r.FormValue("site"), r.FormValue("talkgroup"), r.FormValue("radio"), r.FormValue("call_type"), r.FormValue("frequency_min"), r.FormValue("frequency_max"), r.FormValue("min_duration_ms"), r.FormValue("max_duration_ms"), r.FormValue("patched_only") == "on", r.FormValue("keyword"), r.FormValue("favourite_group_id"), r.FormValue("template"))
+	_, err := s.db.Exec(r.Context(), `INSERT INTO notification_rules(name,destination_id,enabled,priority,sender_filter,system_filter,site_filter,talkgroup_filter,radio_filter,call_type_filter,frequency_min,frequency_max,min_duration_ms,max_duration_ms,patched_only,keyword,favourite_group_id,template) VALUES($1,$2,false,$3,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),NULLIF($8,''),NULLIF($9,''),NULLIF($10,'')::numeric,NULLIF($11,'')::numeric,NULLIF($12,'')::bigint,NULLIF($13,'')::bigint,$14,$15,NULLIF($16,'')::bigint,NULLIF($17,'')) ON CONFLICT(name) DO UPDATE SET destination_id=EXCLUDED.destination_id,priority=EXCLUDED.priority,sender_filter=EXCLUDED.sender_filter,system_filter=EXCLUDED.system_filter,site_filter=EXCLUDED.site_filter,talkgroup_filter=EXCLUDED.talkgroup_filter,radio_filter=EXCLUDED.radio_filter,call_type_filter=EXCLUDED.call_type_filter,frequency_min=EXCLUDED.frequency_min,frequency_max=EXCLUDED.frequency_max,min_duration_ms=EXCLUDED.min_duration_ms,max_duration_ms=EXCLUDED.max_duration_ms,patched_only=EXCLUDED.patched_only,keyword=EXCLUDED.keyword,favourite_group_id=EXCLUDED.favourite_group_id,template=EXCLUDED.template,updated_at=now()`, name, dest, priority, r.FormValue("sender"), r.FormValue("system"), r.FormValue("site"), r.FormValue("talkgroup"), r.FormValue("radio"), r.FormValue("call_type"), r.FormValue("frequency_min"), r.FormValue("frequency_max"), r.FormValue("min_duration_ms"), r.FormValue("max_duration_ms"), r.FormValue("patched_only") == "on", keyword, r.FormValue("favourite_group_id"), r.FormValue("template"))
 	if err != nil {
 		s.internal(w, err)
 		return
 	}
+	s.recordAudit(r.Context(), r, "notification.rule.save", "notification_rule", name, map[string]any{"destination_id": dest, "keyword": keyword})
 	http.Redirect(w, r, "/admin/notifications", 303)
 }
 
@@ -668,14 +687,17 @@ func (s *server) adminRetryTranscription(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "invalid job", 400)
 		return
 	}
-	identity := strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email"))
-	if identity == "" {
-		identity = "admin-token"
-	}
-	if _, err := s.db.Exec(r.Context(), `UPDATE transcription_jobs SET status='pending',next_attempt_at=now(),error=NULL,retry_identity=$2,retry_at=now(),updated_at=now() WHERE id=$1`, id, identity); err != nil {
+	identity := s.requestIdentity(r)
+	tag, err := s.db.Exec(r.Context(), `UPDATE transcription_jobs SET status='pending',next_attempt_at=now(),error=NULL,retry_identity=$2,retry_at=now(),updated_at=now() WHERE id=$1`, id, identity)
+	if err != nil {
 		s.internal(w, err)
 		return
 	}
+	if tag.RowsAffected() == 0 {
+		http.Error(w, "job not found", http.StatusNotFound)
+		return
+	}
+	s.recordAudit(r.Context(), r, "transcription.retry", "transcription_job", strconv.FormatInt(id, 10), map[string]any{})
 	http.Redirect(w, r, safeAdminReturn(r.FormValue("return"), "/admin/transcription"), 303)
 }
 
@@ -697,15 +719,13 @@ func (s *server) adminSaveTranscriptionSecret(w http.ResponseWriter, r *http.Req
 		s.internal(w, err)
 		return
 	}
-	identity := strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email"))
-	if identity == "" {
-		identity = "admin-token"
-	}
+	identity := s.requestIdentity(r)
 	_, err = s.db.Exec(r.Context(), `INSERT INTO application_secrets(purpose,display_name,ciphertext,nonce,encryption_version,updated_by) VALUES('transcription_api_key','Transcription provider API key',$1,$2,1,$3) ON CONFLICT(purpose) DO UPDATE SET ciphertext=EXCLUDED.ciphertext,nonce=EXCLUDED.nonce,encryption_version=1,updated_by=EXCLUDED.updated_by,updated_at=now()`, ciphertext, nonce, identity)
 	if err != nil {
 		s.internal(w, err)
 		return
 	}
+	s.recordAudit(r.Context(), r, "transcription.secret.replace", "application_secret", "transcription_api_key", map[string]any{})
 	http.Redirect(w, r, "/admin/transcription?saved=1", 303)
 }
 
@@ -718,6 +738,7 @@ func (s *server) adminRemoveTranscriptionSecret(w http.ResponseWriter, r *http.R
 		s.internal(w, err)
 		return
 	}
+	s.recordAudit(r.Context(), r, "transcription.secret.remove", "application_secret", "transcription_api_key", map[string]any{})
 	http.Redirect(w, r, "/admin/transcription?removed=1", 303)
 }
 
@@ -783,6 +804,7 @@ func (s *server) adminSaveTranscriptionConfig(w http.ResponseWriter, r *http.Req
 		s.internal(w, err)
 		return
 	}
+	s.recordAudit(r.Context(), r, "transcription.config.update", "transcription_config", "default", map[string]any{"enabled": r.FormValue("enabled") == "on", "processing_enabled": r.FormValue("processing_enabled") == "on", "provider": strings.TrimSpace(r.FormValue("provider")), "model": strings.TrimSpace(r.FormValue("model"))})
 	http.Redirect(w, r, "/admin/transcription", 303)
 }
 
@@ -1204,6 +1226,7 @@ func (s *server) adminUpdateTalkgroupTranscription(w http.ResponseWriter, r *htt
 		s.internal(w, err)
 		return
 	}
+	s.recordAudit(r.Context(), r, "transcription.talkgroups."+action, "talkgroup", "bulk", map[string]any{"selected": len(systems), "changed": changed, "language": language})
 	msg := fmt.Sprintf("%d talkgroup%s %s for transcription.", changed, pluralSuffix(changed), action+"d")
 	tgq := strings.TrimSpace(r.FormValue("tgq"))
 	redirect := "/admin/transcription?saved=1&msg=" + url.QueryEscape(msg)
@@ -1240,6 +1263,7 @@ func (s *server) adminToggleSingleTalkgroupTranscription(w http.ResponseWriter, 
 		s.internal(w, err)
 		return
 	}
+	s.recordAudit(r.Context(), r, "transcription.talkgroup."+action, "talkgroup", systems[0]+"/"+talkgroups[0], map[string]any{"changed": changed})
 	msg := fmt.Sprintf("%d talkgroup %s for transcription.", changed, action+"d")
 	tgq := strings.TrimSpace(r.FormValue("tgq"))
 	redirect := "/admin/transcription?saved=1&msg=" + url.QueryEscape(msg)
@@ -1307,12 +1331,22 @@ func (s *server) sendTestNotificationDirect(ctx context.Context, typ string, con
 		if host == "" || port == "" || from == "" || to == "" {
 			return fmt.Errorf("SMTP host, port, from, and to are required")
 		}
+		fromAddress, err := mail.ParseAddress(from)
+		if err != nil {
+			return fmt.Errorf("invalid SMTP from address")
+		}
+		toAddress, err := mail.ParseAddress(to)
+		if err != nil {
+			return fmt.Errorf("invalid SMTP to address")
+		}
+		if user != "" && !useTLS {
+			return fmt.Errorf("SMTP authentication requires STARTTLS")
+		}
 		password := ""
 		if secret != nil && *secret != "" {
 			password = os.Getenv(*secret)
 		}
-		dialer := &net.Dialer{Timeout: 15 * time.Second}
-		conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
+		conn, err := safeDirectNotificationDial(ctx, "tcp", net.JoinHostPort(host, port))
 		if err != nil {
 			return err
 		}
@@ -1335,18 +1369,18 @@ func (s *server) sendTestNotificationDirect(ctx context.Context, typ string, con
 				return err
 			}
 		}
-		if err := client.Mail(from); err != nil {
+		if err := client.Mail(fromAddress.Address); err != nil {
 			return err
 		}
-		if err := client.Rcpt(to); err != nil {
+		if err := client.Rcpt(toAddress.Address); err != nil {
 			return err
 		}
 		writer, err := client.Data()
 		if err != nil {
 			return err
 		}
-		headers := "From: " + from + "\r\nTo: " + to + "\r\nSubject: Call Logger v1.0.0 test notification\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n"
-		if _, err = io.WriteString(writer, headers+"<p>"+html.EscapeString(body)+"</p>"); err != nil {
+		headers := "From: " + fromAddress.String() + "\r\nTo: " + toAddress.String() + "\r\nSubject: Call Logger v1.0.0 test notification\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n"
+		if _, err = io.WriteString(writer, headers+"<pre>"+html.EscapeString(body)+"</pre>"); err != nil {
 			_ = writer.Close()
 			return err
 		}
@@ -1356,8 +1390,8 @@ func (s *server) sendTestNotificationDirect(ctx context.Context, typ string, con
 	if endpoint == "" {
 		return fmt.Errorf("destination URL missing")
 	}
-	if !strings.HasPrefix(endpoint, "https://") && !strings.HasPrefix(endpoint, "http://") {
-		return fmt.Errorf("destination URL must use HTTP(S)")
+	if err := validateDirectNotificationURL(endpoint); err != nil {
+		return err
 	}
 	var payload map[string]any
 	switch typ {
@@ -1371,7 +1405,14 @@ func (s *server) sendTestNotificationDirect(ctx context.Context, typ string, con
 	b, _ := json.Marshal(payload)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(b)))
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 15 * time.Second}
+	if secret != nil && strings.TrimSpace(*secret) != "" {
+		if value := strings.TrimSpace(os.Getenv(*secret)); value != "" {
+			req.Header.Set("Authorization", "Bearer "+value)
+		} else {
+			return fmt.Errorf("destination secret environment variable %s is unavailable", *secret)
+		}
+	}
+	client := safeDirectNotificationClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -1382,6 +1423,77 @@ func (s *server) sendTestNotificationDirect(ctx context.Context, typ string, con
 		return fmt.Errorf("destination returned HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func validateDirectNotificationURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || u.User != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return errors.New("invalid HTTP(S) destination URL")
+	}
+	if strings.EqualFold(os.Getenv("CALL_RECORDER_ALLOW_PRIVATE_DESTINATIONS"), "true") {
+		return nil
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return errors.New("private notification destinations are disabled")
+	}
+	if ip := net.ParseIP(host); ip != nil && notificationIPIsPrivate(ip) {
+		return errors.New("private notification destinations are disabled")
+	}
+	return nil
+}
+
+func notificationIPIsPrivate(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+}
+
+func safeDirectNotificationClient() *http.Client {
+	return &http.Client{
+		Timeout: 15 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return errors.New("notification redirects are disabled")
+		},
+		Transport: &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+			if err != nil {
+				return nil, err
+			}
+			allowPrivate := strings.EqualFold(os.Getenv("CALL_RECORDER_ALLOW_PRIVATE_DESTINATIONS"), "true")
+			for _, ip := range ips {
+				if !allowPrivate && notificationIPIsPrivate(ip) {
+					continue
+				}
+				return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			}
+			return nil, errors.New("destination resolves only to private addresses")
+		}},
+	}
+}
+
+func safeDirectNotificationDial(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		return nil, errors.New("invalid destination port")
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil, err
+	}
+	allowPrivate := strings.EqualFold(os.Getenv("CALL_RECORDER_ALLOW_PRIVATE_DESTINATIONS"), "true")
+	for _, ip := range ips {
+		if !allowPrivate && notificationIPIsPrivate(ip) {
+			continue
+		}
+		return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+	}
+	return nil, errors.New("destination resolves only to private addresses")
 }
 
 func (s *server) phase8JSON(w http.ResponseWriter, value any) {

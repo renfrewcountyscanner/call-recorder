@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -24,6 +25,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -32,6 +35,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/argon2"
 )
@@ -77,21 +81,33 @@ type config struct {
 	SessionCookieSecure       bool
 	SessionMaxAge             int
 	AuthLoginURL              string
+	SenderKeyPepper           string
 }
 
 type server struct {
-	cfg        config
-	db         *pgxpool.Pool
-	logger     *slog.Logger
-	templates  *template.Template
-	masterKey  []byte
-	loginMu    sync.Mutex
-	loginFails map[string]loginFailure
+	cfg               config
+	db                *pgxpool.Pool
+	logger            *slog.Logger
+	templates         *template.Template
+	masterKey         []byte
+	loginMu           sync.Mutex
+	loginFails        map[string]loginFailure
+	ingestMu          sync.Mutex
+	ingestRate        map[string]ingestionWindow
+	senderAuthSlots   chan struct{}
+	dummyPasswordHash string
 }
+
+const maxPasswordBytes = 1024
 
 type loginFailure struct {
 	Count int
 	Until time.Time
+}
+
+type ingestionWindow struct {
+	Count int
+	Start time.Time
 }
 
 type callMetadata struct {
@@ -162,7 +178,15 @@ type completedCall struct {
 }
 
 func main() {
+	if err := validateEnvironment(); err != nil {
+		slog.Error("invalid configuration", "error", err)
+		os.Exit(2)
+	}
 	cfg := loadConfig()
+	if err := validateStorageRoots(cfg); err != nil {
+		slog.Error("invalid storage configuration", "error", err)
+		os.Exit(2)
+	}
 	if cfg.DatabaseURL == "" {
 		slog.Error("CALL_RECORDER_DATABASE_URL is required")
 		os.Exit(2)
@@ -173,6 +197,10 @@ func main() {
 	}
 	if cfg.AuthRequired && cfg.LocalAuthEnabled && cfg.SessionSecret == "" {
 		slog.Error("CALL_RECORDER_SESSION_SECRET is required for local browser authentication")
+		os.Exit(2)
+	}
+	if cfg.SenderKeyPepper == "" {
+		slog.Error("CALL_RECORDER_SENDER_KEY_PEPPER or CALL_RECORDER_SESSION_SECRET is required")
 		os.Exit(2)
 	}
 	if err := os.MkdirAll(cfg.AudioRoot, 0o750); err != nil {
@@ -198,7 +226,12 @@ func main() {
 		slog.Error("load application secrets key", "error", err)
 		os.Exit(2)
 	}
-	s := &server{cfg: cfg, db: pool, logger: slog.Default(), masterKey: masterKey, loginFails: make(map[string]loginFailure), templates: template.Must(template.New("cr").Funcs(template.FuncMap{"dur": formatDuration, "tdate": formatTimePtr, "srcBadge": sourceBadge, "bytes": formatBytes, "base": filepath.Base, "inc": func(n int) int { return n + 1 }, "dec": func(n int) int { return n - 1 }, "slice": func(v ...string) []string { return v }, "dict": func(values ...any) (map[string]any, error) {
+	dummyPasswordHash, err := hashAPIKey("invalid-login-password")
+	if err != nil {
+		slog.Error("initialize password verifier", "error", err)
+		os.Exit(2)
+	}
+	s := &server{cfg: cfg, db: pool, logger: slog.Default(), masterKey: masterKey, loginFails: make(map[string]loginFailure), ingestRate: make(map[string]ingestionWindow), senderAuthSlots: make(chan struct{}, 2), dummyPasswordHash: dummyPasswordHash, templates: template.Must(template.New("cr").Funcs(template.FuncMap{"dur": formatDuration, "tdate": formatTimePtr, "srcBadge": sourceBadge, "bytes": formatBytes, "base": filepath.Base, "inc": func(n int) int { return n + 1 }, "dec": func(n int) int { return n - 1 }, "slice": func(v ...string) []string { return v }, "dict": func(values ...any) (map[string]any, error) {
 		if len(values)%2 != 0 {
 			return nil, errors.New("invalid dict call")
 		}
@@ -232,7 +265,7 @@ func main() {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
-	mux.HandleFunc("GET /readyz", s.health)
+	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("GET /", s.requireViewer(s.callsPage))
 	mux.HandleFunc("GET /calls", s.requireViewer(s.callsFragment))
 	mux.HandleFunc("GET /filter-options", s.requireViewer(s.filterOptionsEndpoint))
@@ -335,15 +368,90 @@ func main() {
 		mux.HandleFunc("POST /api/callaudioupload/", s.legacyReceiveAudio)
 	}
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: s.securityHeaders(mux), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 60 * time.Second}
-	s.logger.Info("starting call recorder", "listen", cfg.ListenAddr)
-	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-		s.logger.Error("server stopped", "error", err)
-		os.Exit(1)
+	s.logger.Info("starting call logger", "listen", cfg.ListenAddr)
+	shutdownContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	go s.cleanupSessions(shutdownContext)
+	serveErrors := make(chan error, 1)
+	go func() { serveErrors <- srv.ListenAndServe() }()
+	select {
+	case err := <-serveErrors:
+		if !errors.Is(err, http.ErrServerClosed) {
+			s.logger.Error("server stopped", "error", err)
+			return
+		}
+	case <-shutdownContext.Done():
+		s.logger.Info("shutting down call logger")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			s.logger.Error("graceful shutdown failed", "error", err)
+			_ = srv.Close()
+		}
+		if err := <-serveErrors; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.logger.Error("server stopped", "error", err)
+		}
 	}
 }
 
 func loadConfig() config {
-	return config{ListenAddr: env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0") + ":" + env("CALL_RECORDER_LISTEN_PORT", "8080"), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), ExportRoot: env("CALL_RECORDER_EXPORT_ROOT", "/var/lib/call-recorder/exports"), SecretsRoot: env("CALL_RECORDER_SECRETS_ROOT", "/var/lib/call-recorder/secrets"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyDebug: env("CALL_RECORDER_LEGACY_DEBUG", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminOpen: env("CALL_RECORDER_ADMIN_OPEN", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS")), SessionSecret: env("CALL_RECORDER_SESSION_SECRET", ""), AuthRequired: env("CALL_RECORDER_AUTH_REQUIRED", "true") == "true", LocalAuthEnabled: env("CALL_RECORDER_LOCAL_AUTH_ENABLED", "true") == "true", SessionCookieSecure: env("CALL_RECORDER_SESSION_COOKIE_SECURE", "true") == "true", SessionMaxAge: int(envInt64("CALL_RECORDER_SESSION_MAX_AGE_SECONDS", 2592000)), AuthLoginURL: strings.TrimSpace(os.Getenv("CALL_RECORDER_AUTH_LOGIN_URL"))}
+	sessionSecret := env("CALL_RECORDER_SESSION_SECRET", "")
+	return config{ListenAddr: net.JoinHostPort(env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0"), env("CALL_RECORDER_LISTEN_PORT", "8080")), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), ExportRoot: env("CALL_RECORDER_EXPORT_ROOT", "/var/lib/call-recorder/exports"), SecretsRoot: env("CALL_RECORDER_SECRETS_ROOT", "/var/lib/call-recorder/secrets"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyDebug: env("CALL_RECORDER_LEGACY_DEBUG", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminOpen: env("CALL_RECORDER_ADMIN_OPEN", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS")), SessionSecret: sessionSecret, SenderKeyPepper: env("CALL_RECORDER_SENDER_KEY_PEPPER", sessionSecret), AuthRequired: env("CALL_RECORDER_AUTH_REQUIRED", "true") == "true", LocalAuthEnabled: env("CALL_RECORDER_LOCAL_AUTH_ENABLED", "true") == "true", SessionCookieSecure: env("CALL_RECORDER_SESSION_COOKIE_SECURE", "true") == "true", SessionMaxAge: int(envInt64("CALL_RECORDER_SESSION_MAX_AGE_SECONDS", 2592000)), AuthLoginURL: strings.TrimSpace(os.Getenv("CALL_RECORDER_AUTH_LOGIN_URL"))}
+}
+
+func validateEnvironment() error {
+	for _, key := range []string{
+		"CALL_RECORDER_LEGACY_INGESTION_ENABLED", "CALL_RECORDER_LEGACY_DEBUG",
+		"CALL_RECORDER_TEST_FAIL_FINALIZE", "CALL_RECORDER_ADMIN_ENABLED",
+		"CALL_RECORDER_ADMIN_OPEN", "CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED",
+		"CALL_RECORDER_AUTH_REQUIRED", "CALL_RECORDER_LOCAL_AUTH_ENABLED",
+		"CALL_RECORDER_SESSION_COOKIE_SECURE",
+	} {
+		if value := os.Getenv(key); value != "" && value != "true" && value != "false" {
+			return fmt.Errorf("%s must be true or false", key)
+		}
+	}
+	for _, key := range []string{
+		"CALL_RECORDER_MAX_AUDIO_BYTES", "CALL_RECORDER_PENDING_TTL_SECONDS",
+		"CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", "CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS",
+		"CALL_RECORDER_SESSION_MAX_AGE_SECONDS",
+	} {
+		if value := os.Getenv(key); value != "" {
+			parsed, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || parsed <= 0 {
+				return fmt.Errorf("%s must be a positive integer", key)
+			}
+		}
+	}
+	port, err := strconv.Atoi(env("CALL_RECORDER_LISTEN_PORT", "8080"))
+	if err != nil || port < 1 || port > 65535 {
+		return errors.New("CALL_RECORDER_LISTEN_PORT must be between 1 and 65535")
+	}
+	maxAudio := envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600)
+	if maxAudio < 1024 || maxAudio > 2*1024*1024*1024 {
+		return errors.New("CALL_RECORDER_MAX_AUDIO_BYTES must be between 1 KiB and 2 GiB")
+	}
+	sessionAge := envInt64("CALL_RECORDER_SESSION_MAX_AGE_SECONDS", 2592000)
+	if sessionAge > 31536000 {
+		return errors.New("CALL_RECORDER_SESSION_MAX_AGE_SECONDS must not exceed one year")
+	}
+	return nil
+}
+
+func validateStorageRoots(cfg config) error {
+	seen := map[string]string{}
+	for label, path := range map[string]string{"audio": cfg.AudioRoot, "exports": cfg.ExportRoot, "secrets": cfg.SecretsRoot} {
+		absolute, err := filepath.Abs(path)
+		if err != nil || filepath.Clean(absolute) == string(os.PathSeparator) {
+			return fmt.Errorf("%s storage root must be a specific directory", label)
+		}
+		clean := filepath.Clean(absolute)
+		if previous, exists := seen[clean]; exists {
+			return fmt.Errorf("%s and %s storage roots must be different", previous, label)
+		}
+		seen[clean] = label
+	}
+	return nil
 }
 func splitCSV(value string) []string {
 	var out []string
@@ -369,29 +477,50 @@ func envInt64(key string, fallback int64) int64 {
 }
 func (s *server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID, err := randomToken()
+		if err != nil {
+			requestID = strconv.FormatInt(time.Now().UnixNano(), 36)
+		}
+		r.Header.Set("X-Request-ID", requestID)
+		w.Header().Set("X-Request-ID", requestID)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "same-origin")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self'; media-src 'self'; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self'; media-src 'self'; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
 		next.ServeHTTP(w, r)
 	})
 }
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "version": version})
+}
+
+func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.Ping(r.Context()); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse{"database unavailable"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":    "ok",
-		"version":   version,
-		"commit":    commit,
-		"buildTime": buildTime,
-	})
+	var migrationReady bool
+	if err := s.db.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE filename='017_audit_source_address.sql')`).Scan(&migrationReady); err != nil || !migrationReady {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse{"database migrations incomplete"})
+		return
+	}
+	for _, path := range []string{s.cfg.AudioRoot, s.cfg.ExportRoot, s.cfg.SecretsRoot} {
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse{"application storage unavailable"})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ready", "version": version})
 }
 func (s *server) bootstrapSender(ctx context.Context) error {
 	if s.cfg.BootstrapSender == "" || s.cfg.BootstrapKey == "" {
 		return nil
 	}
-	hash, err := hashAPIKey(s.cfg.BootstrapKey)
+	hash, err := hashSenderKey(s.cfg.SenderKeyPepper, s.cfg.BootstrapKey)
 	if err != nil {
 		return err
 	}
@@ -403,7 +532,7 @@ func (s *server) bootstrapLegacySender(ctx context.Context) error {
 	if s.cfg.LegacyAuthID == "" || s.cfg.LegacyAPIKey == "" {
 		return errors.New("legacy sender ID and key are required when legacy ingestion is enabled")
 	}
-	hash, err := hashAPIKey(s.cfg.LegacyAPIKey)
+	hash, err := hashSenderKey(s.cfg.SenderKeyPepper, s.cfg.LegacyAPIKey)
 	if err != nil {
 		return err
 	}
@@ -478,6 +607,11 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 			s.logger.Info("legacy metadata result", "status", 400, "message", "invalid JSON")
 		}
 		writeJSON(w, http.StatusBadRequest, map[string]any{"Status": 400, "StatusMessage": "invalid JSON"})
+		return
+	}
+	if !s.ingestionAllowed(r, request.AuthID) {
+		w.Header().Set("Retry-After", "60")
+		writeJSON(w, http.StatusOK, map[string]any{"Status": 429, "StatusMessage": "ingestion rate limit exceeded"})
 		return
 	}
 	canonicalSender, authenticated := s.authenticateLegacy(r.Context(), request.AuthID, request.APIKey)
@@ -590,6 +724,14 @@ func (s *server) createUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, errorResponse{"sender authentication failed"})
 		return
 	}
+	// Charge the sender's quota only after authentication. Otherwise an
+	// unauthenticated client on the same NAT could exhaust a real receiver's
+	// upload allowance merely by claiming its sender ID.
+	if !s.ingestionAllowed(r, req.SenderID) {
+		w.Header().Set("Retry-After", "60")
+		writeJSON(w, http.StatusTooManyRequests, errorResponse{"ingestion rate limit exceeded"})
+		return
+	}
 	if id, found, err := s.findDuplicate(r.Context(), req.SenderID, req.Call); err != nil {
 		s.internal(w, err)
 		return
@@ -687,7 +829,8 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	legacyBearer := r.Header.Get("X-Call-Recorder-Legacy") == "1"
-	if !legacyBearer && (r.Header.Get("X-Call-Recorder-Sender") != pending.SenderID || !s.authenticate(r.Context(), pending.SenderID, r.Header.Get("X-Call-Recorder-Key"))) {
+	requestSender := strings.ToUpper(strings.TrimSpace(r.Header.Get("X-Call-Recorder-Sender")))
+	if !legacyBearer && (requestSender != pending.SenderID || !s.authenticate(r.Context(), pending.SenderID, r.Header.Get("X-Call-Recorder-Key"))) {
 		s.logger.Warn("audio upload rejected: authentication failed", "sender_id", pending.SenderID, "remote_addr", r.RemoteAddr)
 		writeJSON(w, http.StatusUnauthorized, errorResponse{"sender authentication failed"})
 		return
@@ -722,9 +865,10 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 	defer os.Remove(tmpName)
 	h := sha256.New()
 	written, copyErr := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(r.Body, s.cfg.MaxAudioBytes+1))
+	syncErr := tmp.Sync()
 	closeErr := tmp.Close()
-	if copyErr != nil || closeErr != nil {
-		s.internal(w, firstErr(copyErr, closeErr))
+	if copyErr != nil || syncErr != nil || closeErr != nil {
+		s.internal(w, firstErr(copyErr, firstErr(syncErr, closeErr)))
 		return
 	}
 	if written == 0 || written > s.cfg.MaxAudioBytes {
@@ -732,16 +876,18 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 413, errorResponse{"invalid audio size"})
 		return
 	}
-	if err := validateAudioHeader(tmpName, pending.AudioFormat); err != nil {
-		s.logger.Warn("audio upload rejected: invalid header", "format", pending.AudioFormat, "error", err, "sender_id", pending.SenderID)
-		writeJSON(w, 415, errorResponse{err.Error()})
-		return
-	}
 	var call callMetadata
 	if err := json.Unmarshal(pending.Metadata, &call); err != nil {
 		s.internal(w, err)
 		return
 	}
+	probe, err := validateAudioFile(r.Context(), tmpName, pending.AudioFormat, call.DurationMS)
+	if err != nil {
+		s.logger.Warn("audio upload rejected: decode validation failed", "format", pending.AudioFormat, "error", err, "sender_id", pending.SenderID)
+		writeJSON(w, 415, errorResponse{err.Error()})
+		return
+	}
+	s.logger.Info("audio validated", "sender_id", pending.SenderID, "codec", probe.Codec, "sample_rate", probe.SampleRate, "channels", probe.Channels, "duration_ms", probe.DurationMS)
 	if id, found, err := s.findDuplicate(r.Context(), pending.SenderID, call); err != nil {
 		s.internal(w, err)
 		return
@@ -763,6 +909,11 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := os.Rename(tmpName, final); err != nil {
+		s.internal(w, err)
+		return
+	}
+	if err := syncDirectory(filepath.Dir(final)); err != nil {
+		_ = os.Remove(final)
 		s.internal(w, err)
 		return
 	}
@@ -1207,14 +1358,17 @@ func (s *server) adminUpdateCallNotes(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "notes exceed 10000 characters", 400)
 		return
 	}
-	identity := strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email"))
-	if identity == "" {
-		identity = "admin-token"
-	}
-	if _, err := s.db.Exec(r.Context(), `UPDATE calls SET notes=$1,notes_updated_at=now(),notes_updated_by=$2 WHERE id=$3`, notes, identity, id); err != nil {
+	identity := s.requestIdentity(r)
+	tag, err := s.db.Exec(r.Context(), `UPDATE calls SET notes=$1,notes_updated_at=now(),notes_updated_by=$2 WHERE id=$3`, notes, identity, id)
+	if err != nil {
 		s.internal(w, err)
 		return
 	}
+	if tag.RowsAffected() == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	s.recordAudit(r.Context(), r, "call.notes.update", "call", id, map[string]any{"empty": notes == ""})
 	http.Redirect(w, r, "/call/"+url.PathEscape(id), http.StatusSeeOther)
 }
 
@@ -1251,14 +1405,17 @@ func (s *server) adminUpdateCallNotesInline(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "notes exceed 10000 characters", 400)
 		return
 	}
-	identity := strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email"))
-	if identity == "" {
-		identity = "admin-token"
-	}
-	if _, err := s.db.Exec(r.Context(), `UPDATE calls SET notes=$1,notes_updated_at=now(),notes_updated_by=$2 WHERE id=$3`, notes, identity, id); err != nil {
+	identity := s.requestIdentity(r)
+	tag, err := s.db.Exec(r.Context(), `UPDATE calls SET notes=$1,notes_updated_at=now(),notes_updated_by=$2 WHERE id=$3`, notes, identity, id)
+	if err != nil {
 		s.internal(w, err)
 		return
 	}
+	if tag.RowsAffected() == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	s.recordAudit(r.Context(), r, "call.notes.update", "call", id, map[string]any{"empty": notes == ""})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if notes == "" {
 		w.Write([]byte(`<span class="muted">—</span>`))
@@ -1566,7 +1723,12 @@ func (s *server) eventsCalls(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (s *server) adminOK(r *http.Request) bool {
-	if r.Method == http.MethodPost {
+	// Never accept identity asserted by an untrusted client. Authentication
+	// below repopulates these headers only after verifying a trusted source.
+	r.Header.Del("X-Call-Recorder-User")
+	r.Header.Del("X-Call-Recorder-Role")
+	unsafeMethod := r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions
+	if unsafeMethod {
 		if strings.EqualFold(r.Header.Get("Sec-Fetch-Site"), "cross-site") {
 			return false
 		}
@@ -1600,8 +1762,12 @@ func (s *server) adminOK(r *http.Request) bool {
 		if !strings.Contains(c.Value, ":") {
 			var username, role string
 			var enabled bool
-			err := s.db.QueryRow(r.Context(), `SELECT u.username,u.role,u.enabled FROM user_sessions ss JOIN users u ON u.username=ss.username WHERE ss.token_hash=$1 AND ss.revoked_at IS NULL AND ss.expires_at>now()`, tokenHash(c.Value)).Scan(&username, &role, &enabled)
+			var csrfHash []byte
+			err := s.db.QueryRow(r.Context(), `SELECT u.username,u.role,u.enabled,ss.csrf_token_hash FROM user_sessions ss JOIN users u ON u.username=ss.username WHERE ss.token_hash=$1 AND ss.revoked_at IS NULL AND ss.expires_at>now()`, tokenHash(c.Value)).Scan(&username, &role, &enabled, &csrfHash)
 			if err == nil && enabled {
+				if unsafeMethod && !validCSRFToken(r, csrfHash) {
+					return false
+				}
 				r.Header.Set("X-Call-Recorder-User", username)
 				r.Header.Set("X-Call-Recorder-Role", role)
 				_, _ = s.db.Exec(r.Context(), `UPDATE user_sessions SET last_seen_at=now() WHERE token_hash=$1 AND last_seen_at<now()-interval '5 minutes'`, tokenHash(c.Value))
@@ -1712,7 +1878,7 @@ func (s *server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	username := strings.TrimSpace(r.Form.Get("username"))
 	password := r.Form.Get("password")
-	if username == "" || password == "" {
+	if username == "" || password == "" || len(password) > maxPasswordBytes {
 		s.renderStatus(w, r, http.StatusUnauthorized, "admin_login.html", "Administration sign-in", "", map[string]any{"Error": "Username and password are required."})
 		return
 	}
@@ -1725,13 +1891,14 @@ func (s *server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	var role string
 	var enabled bool
 	err := s.db.QueryRow(r.Context(), `SELECT password_hash, role, enabled FROM users WHERE username=$1`, username).Scan(&passwordHash, &role, &enabled)
-	if err != nil || !enabled {
-		s.recordLoginFailure(r, username)
-		s.renderStatus(w, r, http.StatusUnauthorized, "admin_login.html", "Administration sign-in", "", map[string]any{"Error": "Invalid username or password."})
-		return
+	verificationHash := passwordHash
+	if err != nil {
+		verificationHash = s.dummyPasswordHash
 	}
-	// Verify password.
-	if !verifyAPIKey(passwordHash, password) {
+	// Always perform the expensive password verification so nonexistent and
+	// disabled accounts do not have a measurably faster failure path.
+	validPassword := verifyAPIKey(verificationHash, password)
+	if err != nil || !enabled || !validPassword {
 		s.recordLoginFailure(r, username)
 		s.renderStatus(w, r, http.StatusUnauthorized, "admin_login.html", "Administration sign-in", "", map[string]any{"Error": "Invalid username or password."})
 		return
@@ -1834,16 +2001,61 @@ func (s *server) createSession(ctx context.Context, w http.ResponseWriter, usern
 		Secure:   s.cfg.SessionCookieSecure,
 		MaxAge:   maxAge,
 	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     "call_recorder_csrf",
+		Value:    csrfValue,
+		Path:     "/",
+		HttpOnly: false,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   s.cfg.SessionCookieSecure,
+		MaxAge:   maxAge,
+	})
 	return nil
 }
 
+func (s *server) cleanupSessions(ctx context.Context) {
+	cleanup := func() {
+		if _, err := s.db.Exec(ctx, `DELETE FROM user_sessions WHERE expires_at < now()-interval '7 days' OR revoked_at < now()-interval '7 days'`); err != nil && !errors.Is(err, context.Canceled) {
+			s.logger.Warn("clean expired sessions", "error", err)
+		}
+	}
+	cleanup()
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cleanup()
+		}
+	}
+}
+
 func (s *server) adminLogout(w http.ResponseWriter, r *http.Request) {
+	if !s.adminOK(r) {
+		s.renderStatus(w, r, http.StatusForbidden, "admin_required.html", "Sign-out rejected", "", map[string]any{"Error": "The request could not be verified. Reload the page and try again."})
+		return
+	}
 	if cookie, err := r.Cookie("call_recorder_session"); err == nil && !strings.Contains(cookie.Value, ":") {
 		_, _ = s.db.Exec(r.Context(), `UPDATE user_sessions SET revoked_at=now() WHERE token_hash=$1`, tokenHash(cookie.Value))
 	}
 	http.SetCookie(w, &http.Cookie{Name: "call_recorder_session", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: s.cfg.SessionCookieSecure})
+	http.SetCookie(w, &http.Cookie{Name: "call_recorder_csrf", Path: "/", MaxAge: -1, HttpOnly: false, SameSite: http.SameSiteStrictMode, Secure: s.cfg.SessionCookieSecure})
 	http.SetCookie(w, &http.Cookie{Name: "call_recorder_admin", Path: "/admin", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: true})
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func validCSRFToken(r *http.Request, expectedHash []byte) bool {
+	provided := strings.TrimSpace(r.Header.Get("X-CSRF-Token"))
+	if provided == "" {
+		provided = strings.TrimSpace(r.FormValue("csrf_token"))
+	}
+	if provided == "" || len(expectedHash) != sha256.Size {
+		return false
+	}
+	actual := tokenHash(provided)
+	return subtle.ConstantTimeCompare(actual, expectedHash) == 1
 }
 
 func (s *server) getUserRole(r *http.Request) string {
@@ -1927,8 +2139,8 @@ func (s *server) adminCreateUser(w http.ResponseWriter, r *http.Request) {
 	username := strings.TrimSpace(r.Form.Get("username"))
 	password := r.Form.Get("password")
 	role := r.Form.Get("role")
-	if username == "" || strings.Contains(username, ":") || len(username) > 100 || len(password) < 12 {
-		http.Error(w, "username must not contain a colon and password must be at least 12 characters", http.StatusBadRequest)
+	if username == "" || strings.Contains(username, ":") || len(username) > 100 || len(password) < 12 || len(password) > maxPasswordBytes {
+		http.Error(w, "username must not contain a colon and password must be 12 to 1024 bytes", http.StatusBadRequest)
 		return
 	}
 	if role != "admin" && role != "editor" && role != "viewer" {
@@ -1948,6 +2160,7 @@ func (s *server) adminCreateUser(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
+	s.recordAudit(r.Context(), r, "user.create", "user", username, map[string]any{"role": role, "enabled": true})
 	http.Redirect(w, r, "/admin/users?created=1", http.StatusSeeOther)
 }
 
@@ -1965,16 +2178,30 @@ func (s *server) adminUserAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "you cannot disable the account currently in use", http.StatusBadRequest)
 		return
 	}
+	if action != "enable" && action != "disable" {
+		http.Error(w, "invalid action", http.StatusBadRequest)
+		return
+	}
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if _, err = tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock(81640003)`); err != nil {
+		s.internal(w, err)
+		return
+	}
 	if action == "disable" {
 		var role string
 		var enabled bool
-		if err := s.db.QueryRow(r.Context(), `SELECT role,enabled FROM users WHERE username=$1`, username).Scan(&role, &enabled); err != nil {
+		if err := tx.QueryRow(r.Context(), `SELECT role,enabled FROM users WHERE username=$1 FOR UPDATE`, username).Scan(&role, &enabled); err != nil {
 			http.Error(w, "user not found", http.StatusNotFound)
 			return
 		}
 		if role == "admin" && enabled {
 			var administrators int
-			if err := s.db.QueryRow(r.Context(), `SELECT count(*) FROM users WHERE role='admin' AND enabled`).Scan(&administrators); err != nil {
+			if err := tx.QueryRow(r.Context(), `SELECT count(*) FROM users WHERE role='admin' AND enabled`).Scan(&administrators); err != nil {
 				s.internal(w, err)
 				return
 			}
@@ -1984,24 +2211,29 @@ func (s *server) adminUserAction(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	var tag pgconn.CommandTag
 	switch action {
 	case "enable":
-		_, err := s.db.Exec(r.Context(), `UPDATE users SET enabled=true, updated_at=now() WHERE username=$1`, username)
-		if err != nil {
-			s.internal(w, err)
-			return
-		}
+		tag, err = tx.Exec(r.Context(), `UPDATE users SET enabled=true, updated_at=now() WHERE username=$1`, username)
 	case "disable":
-		_, err := s.db.Exec(r.Context(), `UPDATE users SET enabled=false, updated_at=now() WHERE username=$1`, username)
-		if err != nil {
-			s.internal(w, err)
-			return
+		tag, err = tx.Exec(r.Context(), `UPDATE users SET enabled=false, updated_at=now() WHERE username=$1`, username)
+		if err == nil {
+			_, err = tx.Exec(r.Context(), `UPDATE user_sessions SET revoked_at=now() WHERE username=$1`, username)
 		}
-		_, _ = s.db.Exec(r.Context(), `UPDATE user_sessions SET revoked_at=now() WHERE username=$1`, username)
-	default:
-		http.Error(w, "invalid action", http.StatusBadRequest)
+	}
+	if err != nil {
+		s.internal(w, err)
 		return
 	}
+	if tag.RowsAffected() == 0 {
+		http.Error(w, "user not found", http.StatusNotFound)
+		return
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		s.internal(w, err)
+		return
+	}
+	s.recordAudit(r.Context(), r, "user."+action, "user", username, map[string]any{})
 	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
 }
 
@@ -2015,8 +2247,8 @@ func (s *server) adminChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	username := r.FormValue("username")
 	password := r.FormValue("password")
-	if username == "" || len(password) < 12 {
-		http.Error(w, "username is required and password must be at least 12 characters", http.StatusBadRequest)
+	if username == "" || len(password) < 12 || len(password) > maxPasswordBytes {
+		http.Error(w, "username is required and password must be 12 to 1024 bytes", http.StatusBadRequest)
 		return
 	}
 	hash, err := hashAPIKey(password)
@@ -2034,6 +2266,7 @@ func (s *server) adminChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = s.db.Exec(r.Context(), `UPDATE user_sessions SET revoked_at=now() WHERE username=$1`, username)
+	s.recordAudit(r.Context(), r, "user.password.replace", "user", username, map[string]any{"sessions_revoked": true})
 	http.Redirect(w, r, "/admin/users?updated=1", http.StatusSeeOther)
 }
 
@@ -2050,9 +2283,19 @@ func (s *server) adminDeleteUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "you cannot delete the account currently in use", http.StatusBadRequest)
 		return
 	}
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if _, err = tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock(81640003)`); err != nil {
+		s.internal(w, err)
+		return
+	}
 	var role string
 	var enabled bool
-	if err := s.db.QueryRow(r.Context(), `SELECT role,enabled FROM users WHERE username=$1`, username).Scan(&role, &enabled); err != nil {
+	if err := tx.QueryRow(r.Context(), `SELECT role,enabled FROM users WHERE username=$1 FOR UPDATE`, username).Scan(&role, &enabled); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.Error(w, "user not found", http.StatusNotFound)
 			return
@@ -2062,7 +2305,7 @@ func (s *server) adminDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if role == "admin" && enabled {
 		var admins int
-		if err := s.db.QueryRow(r.Context(), `SELECT count(*) FROM users WHERE role='admin' AND enabled=true`).Scan(&admins); err != nil {
+		if err := tx.QueryRow(r.Context(), `SELECT count(*) FROM users WHERE role='admin' AND enabled=true`).Scan(&admins); err != nil {
 			s.internal(w, err)
 			return
 		}
@@ -2071,10 +2314,15 @@ func (s *server) adminDeleteUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if _, err := s.db.Exec(r.Context(), `DELETE FROM users WHERE username=$1`, username); err != nil {
+	if _, err := tx.Exec(r.Context(), `DELETE FROM users WHERE username=$1`, username); err != nil {
 		s.internal(w, err)
 		return
 	}
+	if err := tx.Commit(r.Context()); err != nil {
+		s.internal(w, err)
+		return
+	}
+	s.recordAudit(r.Context(), r, "user.delete", "user", username, map[string]any{})
 	http.Redirect(w, r, "/admin/users?deleted=1", http.StatusSeeOther)
 }
 
@@ -2129,7 +2377,7 @@ func (s *server) adminSenderWrite(w http.ResponseWriter, r *http.Request, replac
 	} else if len(key) < 16 || len(key) > 512 || strings.ContainsAny(key, " \t\r\n") {
 		return "", "", errors.New("API key must be 16-512 characters and contain no whitespace")
 	}
-	hash, err := hashAPIKey(key)
+	hash, err := hashSenderKey(s.cfg.SenderKeyPepper, key)
 	if err != nil {
 		return "", "", err
 	}
@@ -2164,6 +2412,7 @@ func (s *server) adminCreateSender(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adminSendersPage(w, r, id, key)
+	s.recordAudit(r.Context(), r, "sender.create", "sender", id, map[string]any{"generated_key": key != ""})
 }
 func (s *server) adminReplaceSender(w http.ResponseWriter, r *http.Request) {
 	id, key, err := s.adminSenderWrite(w, r, true)
@@ -2175,6 +2424,7 @@ func (s *server) adminReplaceSender(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adminSendersPage(w, r, id, key)
+	s.recordAudit(r.Context(), r, "sender.key.replace", "sender", id, map[string]any{"generated_key": key != ""})
 }
 func (s *server) adminDisableSender(w http.ResponseWriter, r *http.Request) {
 	if !s.adminOnly(w, r) {
@@ -2194,6 +2444,7 @@ func (s *server) adminDisableSender(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
+	s.recordAudit(r.Context(), r, "sender.disable", "sender", id, map[string]any{})
 	http.Redirect(w, r, "/admin/senders", http.StatusSeeOther)
 }
 
@@ -2225,6 +2476,7 @@ func (s *server) adminDeleteSender(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sender not found", http.StatusNotFound)
 		return
 	}
+	s.recordAudit(r.Context(), r, "sender.delete", "sender", id, map[string]any{"historical_calls_preserved": true})
 	http.Redirect(w, r, "/admin/senders?deleted=1", http.StatusSeeOther)
 }
 func adminForm(r *http.Request) (url.Values, error) {
@@ -2276,6 +2528,7 @@ func (s *server) adminSaveTalkgroup(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
+	s.recordAudit(r.Context(), r, "talkgroup.save", "talkgroup", system+"/"+id, map[string]any{"transcription_mode": mode, "notification_eligible": v.Get("notification_eligible") != "off"})
 	http.Redirect(w, r, "/admin/talkgroups?q="+url.QueryEscape(v.Get("q")), http.StatusSeeOther)
 }
 func (s *server) adminSaveRadio(w http.ResponseWriter, r *http.Request) {
@@ -2297,6 +2550,7 @@ func (s *server) adminSaveRadio(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
+	s.recordAudit(r.Context(), r, "radio.save", "radio", system+"/"+id, map[string]any{"enabled": enabled})
 	http.Redirect(w, r, "/admin/radios?q="+url.QueryEscape(v.Get("q")), http.StatusSeeOther)
 }
 func (s *server) adminTalkgroups(w http.ResponseWriter, r *http.Request) {
@@ -2490,6 +2744,7 @@ func (s *server) adminSaveRetention(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
+	s.recordAudit(r.Context(), r, "retention.policy.save", "retention_policy", name, map[string]any{"retention_days": days, "enabled": v.Get("enabled") == "on", "dry_run": v.Get("dry_run") != "off"})
 	http.Redirect(w, r, "/admin/retention", 303)
 }
 func (s *server) adminDeleteRetention(w http.ResponseWriter, r *http.Request) {
@@ -2510,6 +2765,7 @@ func (s *server) adminDeleteRetention(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, e)
 		return
 	}
+	s.recordAudit(r.Context(), r, "retention.policy.delete", "retention_policy", strconv.Itoa(id), map[string]any{})
 	http.Redirect(w, r, "/admin/retention", 303)
 }
 func (s *server) adminRunRetention(w http.ResponseWriter, r *http.Request) {
@@ -2554,6 +2810,7 @@ func (s *server) adminRunRetention(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, e)
 		return
 	}
+	s.recordAudit(r.Context(), r, "retention.preview", "retention_policy", strconv.Itoa(id), map[string]any{"calls_matched": n})
 	http.Redirect(w, r, "/admin/retention", 303)
 }
 
@@ -2612,13 +2869,9 @@ func filterFromQuery(q url.Values) (callFilter, error) {
 		f.Page = n
 	}
 	if n, err := strconv.Atoi(q.Get("page_size")); err == nil {
-		if n == 0 {
-			f.PageSize = 0
-		} else {
-			switch n {
-			case 25, 50, 100, 250:
-				f.PageSize = n
-			}
+		switch n {
+		case 25, 50, 100, 250:
+			f.PageSize = n
 		}
 	}
 	return f, nil
@@ -2664,16 +2917,7 @@ func (s *server) queryCalls(ctx context.Context, f callFilter) ([]completedCall,
 		orderBy = "coalesce(ra.alias,c.radio_name,''),c.start_time DESC"
 	}
 	query := `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.talkgroup_tag,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.radio_tag,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.voice_service,''),c.start_time,c.duration_ms,coalesce(c.audio_offset_ms,0),c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.protected AND (c.protection_expires_at IS NULL OR c.protection_expires_at > now()),c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id),EXISTS(SELECT 1 FROM transcripts t WHERE t.call_id=c.id),coalesce((SELECT coalesce(NULLIF(t.edited_text,''),t.text) FROM transcripts t WHERE t.call_id=c.id ORDER BY t.updated_at DESC LIMIT 1),''),coalesce((SELECT tj.status FROM transcription_jobs tj WHERE tj.call_id=c.id ORDER BY tj.updated_at DESC LIMIT 1),''),coalesce((SELECT string_agg(g.name, ', ') FROM favourite_members fm JOIN favourite_groups g ON g.id = fm.group_id WHERE fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id),'')` + callsFrom + callsWhere + ` ORDER BY ` + orderBy + ` LIMIT $18 OFFSET $19`
-	if f.PageSize == 0 {
-		query = `SELECT c.id,c.sender_id,coalesce(c.receiver_id,''),c.system_id,coalesce(c.system_name,''),coalesce(c.site_id,''),coalesce(c.site_name,''),c.talkgroup_id,coalesce(ta.alias,c.talkgroup_name,''),coalesce(c.talkgroup_tag,''),coalesce(c.radio_id,''),coalesce(ra.alias,c.radio_name,''),coalesce(c.radio_tag,''),coalesce(c.frequency,''),coalesce(c.lcn,''),coalesce(c.voice_service,''),c.start_time,c.duration_ms,coalesce(c.audio_offset_ms,0),c.audio_path,c.audio_format,c.audio_size,coalesce(c.transcript,''),coalesce(c.notes,''),coalesce(c.call_type,''),c.protected AND (c.protection_expires_at IS NULL OR c.protection_expires_at > now()),c.group_call,(SELECT count(*) FROM call_targets ct WHERE ct.call_id=c.id),EXISTS(SELECT 1 FROM transcripts t WHERE t.call_id=c.id),coalesce((SELECT coalesce(NULLIF(t.edited_text,''),t.text) FROM transcripts t WHERE t.call_id=c.id ORDER BY t.updated_at DESC LIMIT 1),''),coalesce((SELECT tj.status FROM transcription_jobs tj WHERE tj.call_id=c.id ORDER BY tj.updated_at DESC LIMIT 1),''),coalesce((SELECT string_agg(g.name, ', ') FROM favourite_members fm JOIN favourite_groups g ON g.id = fm.group_id WHERE fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id),'')` + callsFrom + callsWhere + ` ORDER BY ` + orderBy
-	}
-	var result pgx.Rows
-	var err error
-	if f.PageSize == 0 {
-		result, err = s.db.Query(ctx, query, args...)
-	} else {
-		result, err = s.db.Query(ctx, query, append(args, f.PageSize, (f.Page-1)*f.PageSize)...)
-	}
+	result, err := s.db.Query(ctx, query, append(args, f.PageSize, (f.Page-1)*f.PageSize)...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -2716,7 +2960,48 @@ func (s *server) authenticate(ctx context.Context, sender, key string) bool {
 	var hash []byte
 	var enabled bool
 	err := s.db.QueryRow(ctx, `SELECT key_hash,enabled FROM remote_senders WHERE sender_id=$1`, sender).Scan(&hash, &enabled)
-	return err == nil && enabled && verifyAPIKey(string(hash), key)
+	if err != nil || !enabled {
+		return false
+	}
+	encoded := string(hash)
+	if strings.HasPrefix(encoded, "argon2id$") {
+		select {
+		case s.senderAuthSlots <- struct{}{}:
+			defer func() { <-s.senderAuthSlots }()
+		default:
+			return false
+		}
+	}
+	if !verifySenderKey(s.cfg.SenderKeyPepper, encoded, key) {
+		return false
+	}
+	s.upgradeSenderKeyHash(ctx, sender, string(hash), key)
+	return true
+}
+
+func (s *server) ingestionAllowed(r *http.Request, sender string) bool {
+	remote, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		remote = r.RemoteAddr
+	}
+	key := remote + "|" + strings.ToUpper(strings.TrimSpace(sender))
+	now := time.Now()
+	s.ingestMu.Lock()
+	defer s.ingestMu.Unlock()
+	window := s.ingestRate[key]
+	if window.Start.IsZero() || now.Sub(window.Start) >= time.Minute {
+		window = ingestionWindow{Start: now}
+	}
+	window.Count++
+	s.ingestRate[key] = window
+	if len(s.ingestRate) > 10000 {
+		for existing, item := range s.ingestRate {
+			if now.Sub(item.Start) >= time.Minute {
+				delete(s.ingestRate, existing)
+			}
+		}
+	}
+	return window.Count <= 600
 }
 
 // authenticateLegacy accepts case variations from legacy senders while keeping
@@ -2730,9 +3015,22 @@ func (s *server) authenticateLegacy(ctx context.Context, sender, key string) (st
 	var hash []byte
 	var enabled bool
 	err := s.db.QueryRow(ctx, `SELECT sender_id,key_hash,enabled FROM remote_senders WHERE lower(sender_id)=lower($1) LIMIT 1`, sender).Scan(&canonical, &hash, &enabled)
-	if err != nil || !enabled || !verifyAPIKey(string(hash), key) {
+	if err != nil || !enabled {
 		return "", false
 	}
+	encoded := string(hash)
+	if strings.HasPrefix(encoded, "argon2id$") {
+		select {
+		case s.senderAuthSlots <- struct{}{}:
+			defer func() { <-s.senderAuthSlots }()
+		default:
+			return "", false
+		}
+	}
+	if !verifySenderKey(s.cfg.SenderKeyPepper, encoded, key) {
+		return "", false
+	}
+	s.upgradeSenderKeyHash(ctx, canonical, string(hash), key)
 	return canonical, true
 }
 
@@ -2838,6 +3136,76 @@ func validateAudioHeader(path, format string) error {
 	}
 	return nil
 }
+
+type audioProbe struct {
+	Codec      string
+	SampleRate int
+	Channels   int
+	DurationMS int64
+}
+
+func validateAudioFile(parent context.Context, path, format string, declaredDurationMS int64) (audioProbe, error) {
+	if err := validateAudioHeader(path, format); err != nil {
+		return audioProbe{}, err
+	}
+	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name,sample_rate,channels:format=format_name,duration", "-of", "json", path)
+	output, err := command.Output()
+	if err != nil {
+		if ctx.Err() != nil {
+			return audioProbe{}, errors.New("audio decode validation timed out")
+		}
+		return audioProbe{}, errors.New("audio does not decode successfully")
+	}
+	var result struct {
+		Streams []struct {
+			CodecName  string `json:"codec_name"`
+			SampleRate string `json:"sample_rate"`
+			Channels   int    `json:"channels"`
+		} `json:"streams"`
+		Format struct {
+			Name     string `json:"format_name"`
+			Duration string `json:"duration"`
+		} `json:"format"`
+	}
+	if err := json.Unmarshal(output, &result); err != nil || len(result.Streams) != 1 {
+		return audioProbe{}, errors.New("audio must contain exactly one decodable audio stream")
+	}
+	stream := result.Streams[0]
+	sampleRate, _ := strconv.Atoi(stream.SampleRate)
+	durationSeconds, _ := strconv.ParseFloat(result.Format.Duration, 64)
+	probe := audioProbe{Codec: stream.CodecName, SampleRate: sampleRate, Channels: stream.Channels, DurationMS: int64(durationSeconds * 1000)}
+	if probe.SampleRate < 4000 || probe.SampleRate > 384000 || probe.Channels < 1 || probe.Channels > 2 || probe.DurationMS < 1 {
+		return audioProbe{}, errors.New("audio stream has invalid duration, sample rate, or channels")
+	}
+	if format == "mp3" && probe.Codec != "mp3" {
+		return audioProbe{}, errors.New("declared MP3 does not contain MP3 audio")
+	}
+	if format == "wav" && !strings.Contains(result.Format.Name, "wav") {
+		return audioProbe{}, errors.New("declared WAV is not a WAV container")
+	}
+	if declaredDurationMS > 0 {
+		difference := probe.DurationMS - declaredDurationMS
+		if difference < 0 {
+			difference = -difference
+		}
+		tolerance := declaredDurationMS*35/100 + 3000
+		if difference > tolerance {
+			return audioProbe{}, fmt.Errorf("decoded duration differs from metadata by %dms", difference)
+		}
+	}
+	return probe, nil
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
+}
 func randomToken() (string, error) {
 	b := make([]byte, 24)
 	_, err := rand.Read(b)
@@ -2867,6 +3235,40 @@ func hashAPIKey(value string) (string, error) {
 	return "argon2id$v=19$m=65536,t=3,p=2$" + hex.EncodeToString(salt) + "$" + hex.EncodeToString(digest), nil
 }
 
+func hashSenderKey(pepper, value string) (string, error) {
+	if pepper == "" || value == "" {
+		return "", errors.New("sender key pepper and API key are required")
+	}
+	digest := hmac.New(sha256.New, []byte(pepper))
+	_, _ = digest.Write([]byte(value))
+	return "hmac-sha256$v=1$" + hex.EncodeToString(digest.Sum(nil)), nil
+}
+
+func verifySenderKey(pepper, encoded, value string) bool {
+	if strings.HasPrefix(encoded, "hmac-sha256$v=1$") {
+		expected, err := hex.DecodeString(strings.TrimPrefix(encoded, "hmac-sha256$v=1$"))
+		if err != nil || len(expected) != sha256.Size {
+			return false
+		}
+		digest := hmac.New(sha256.New, []byte(pepper))
+		_, _ = digest.Write([]byte(value))
+		return hmac.Equal(digest.Sum(nil), expected)
+	}
+	// Existing Argon2 sender hashes remain valid during the migration window.
+	return verifyAPIKey(encoded, value)
+}
+
+func (s *server) upgradeSenderKeyHash(ctx context.Context, sender, current, key string) {
+	if strings.HasPrefix(current, "hmac-sha256$v=1$") {
+		return
+	}
+	replacement, err := hashSenderKey(s.cfg.SenderKeyPepper, key)
+	if err != nil {
+		return
+	}
+	_, _ = s.db.Exec(ctx, `UPDATE remote_senders SET key_hash=$1 WHERE sender_id=$2 AND key_hash=$3`, []byte(replacement), sender, []byte(current))
+}
+
 func verifyAPIKey(encoded, value string) bool {
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 5 || parts[0] != "argon2id" {
@@ -2874,15 +3276,15 @@ func verifyAPIKey(encoded, value string) bool {
 	}
 	var memory, iterations uint32
 	var parallelism uint8
-	if _, err := fmt.Sscanf(parts[2], "m=%d,t=%d,p=%d", &memory, &iterations, &parallelism); err != nil {
+	if _, err := fmt.Sscanf(parts[2], "m=%d,t=%d,p=%d", &memory, &iterations, &parallelism); err != nil || memory == 0 || memory > 262144 || iterations == 0 || iterations > 10 || parallelism == 0 || parallelism > 8 {
 		return false
 	}
 	salt, err := hex.DecodeString(parts[3])
-	if err != nil {
+	if err != nil || len(salt) < 8 || len(salt) > 64 {
 		return false
 	}
 	expected, err := hex.DecodeString(parts[4])
-	if err != nil {
+	if err != nil || len(expected) < 16 || len(expected) > 64 {
 		return false
 	}
 	actual := argon2.IDKey([]byte(value), salt, iterations, memory, parallelism, uint32(len(expected)))
@@ -2969,10 +3371,13 @@ func (s *server) internal(w http.ResponseWriter, err error) {
 	writeJSON(w, 500, errorResponse{"internal server error"})
 }
 func (s *server) render(w http.ResponseWriter, name string, data any) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, name, data); err != nil {
+	var body bytes.Buffer
+	if err := s.templates.ExecuteTemplate(&body, name, data); err != nil {
 		s.internal(w, err)
+		return
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = body.WriteTo(w)
 }
 
 type navContext struct {
@@ -2996,11 +3401,15 @@ func (s *server) renderStatus(w http.ResponseWriter, r *http.Request, status int
 		data = map[string]any{}
 	}
 	data["Nav"] = s.nav(r, active, title)
+	var body bytes.Buffer
+	if err := s.templates.ExecuteTemplate(&body, name, data); err != nil {
+		s.logger.Error("render failed", "template", name, "error", err)
+		http.Error(w, "page rendering failed", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	if err := s.templates.ExecuteTemplate(w, name, data); err != nil {
-		s.logger.Error("render failed", "template", name, "error", err)
-	}
+	_, _ = body.WriteTo(w)
 }
 func (s *server) page(w http.ResponseWriter, r *http.Request, name, title, active string, data map[string]any) {
 	s.renderStatus(w, r, http.StatusOK, name, title, active, data)

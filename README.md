@@ -1,4 +1,4 @@
-# Call Recorder
+# Call Logger v1.0.0
 
 ## v1.0.0
 
@@ -8,7 +8,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full history and [known limitations](do
 
 For planning and migration work, see the [complete feature inventory](docs/logger-feature-inventory.md) and the [legacy recorder comparison](docs/legacy-vs-logger-comparison.md).
 
-Call Recorder is a Linux-native call logger for receiving completed calls from Linux Trunk Recorder installations. It uses Go, PostgreSQL, Docker Compose, bind-mounted Linux audio storage, durable sender spooling, browser playback, and verified backup/restore tooling.
+Call Logger is a Linux-native call logger for receiving completed calls from Linux Trunk Recorder, Trunking Recorder, ProScan, and compatible senders. It uses Go, PostgreSQL, Docker Compose, bind-mounted Linux audio storage, durable sender spooling, browser playback, and verified backup/restore tooling.
 
 A clean-room Linux call logger for completed radio calls. The scope is: ingest completed calls from Trunk Recorder and remote recorder sources, store normalized metadata and audio in PostgreSQL-backed storage, and provide secure browser search and playback.
 
@@ -55,7 +55,7 @@ See [docs/linux-installation.md](docs/linux-installation.md) for detailed instal
 - Administrator storage-capacity gauge for the audio filesystem
 - Backup and restore with checksums
 - Storage diagnostics CLI (missing/orphan audio reports)
-- Build commit and timestamp reporting in health endpoint
+- Separate minimal liveness and dependency-aware readiness endpoints
 - Automatic idempotent database migrations before service startup
 
 The project is licensed under AGPL-3.0-or-later. See [LICENSE](LICENSE). A detailed v1 inventory and future roadmap are in [docs/v1-release-and-roadmap.md](docs/v1-release-and-roadmap.md).

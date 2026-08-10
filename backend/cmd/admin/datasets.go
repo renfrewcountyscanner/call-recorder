@@ -203,7 +203,7 @@ func buildDataset(ctx context.Context, pool *pgxpool.Pool, audioRoot, exportRoot
 	for k, f := range splitFiles {
 		splitEncoders[k] = json.NewEncoder(f)
 	}
-	processed, warningsCount := 0, 0
+	processedCalls, exportedSamples, warningsCount := 0, 0, 0
 	for _, item := range items {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -214,6 +214,10 @@ func buildDataset(ctx context.Context, pool *pgxpool.Pool, audioRoot, exportRoot
 		}
 		if status == "cancelled" {
 			return nil
+		}
+		processedCalls++
+		if _, err = pool.Exec(ctx, `UPDATE dataset_exports SET processed_items=$2,warning_count=$3,lease_expires_at=now()+interval '2 minutes',updated_at=now() WHERE id=$1 AND status='running'`, id, processedCalls, warningsCount); err != nil {
+			return err
 		}
 		full := filepath.Join(audioRoot, item.AudioPath)
 		if !strings.HasPrefix(filepath.Clean(full), filepath.Clean(audioRoot)+string(os.PathSeparator)) {
@@ -235,6 +239,13 @@ func buildDataset(ctx context.Context, pool *pgxpool.Pool, audioRoot, exportRoot
 				_ = errorEncoder.Encode(map[string]any{"call_id": item.CallID, "error": "VAD segmentation failed"})
 				continue
 			}
+		}
+		if exportType == "asr_finetune" && len(ranges) > 1 && !(item.LabelSource == "generated" && len(item.TimedSegments) > 2) {
+			warningsCount++
+			if err := errorEncoder.Encode(map[string]any{"call_id": item.CallID, "error": "long reviewed label excluded because segment-level transcript alignment is unavailable"}); err != nil {
+				return err
+			}
+			continue
 		}
 		for index, rng := range ranges {
 			generated := alignText(item.GeneratedText, item.TimedSegments, rng, info.Duration, item.LabelSource == "generated")
@@ -308,9 +319,9 @@ func buildDataset(ctx context.Context, pool *pgxpool.Pool, audioRoot, exportRoot
 				return err
 			}
 			_ = size
-			processed++
+			exportedSamples++
 		}
-		if _, err = pool.Exec(ctx, `UPDATE dataset_exports SET processed_items=$2,warning_count=$3,lease_expires_at=now()+interval '2 minutes',updated_at=now() WHERE id=$1 AND status='running'`, id, processed, warningsCount); err != nil {
+		if _, err = pool.Exec(ctx, `UPDATE dataset_exports SET processed_items=$2,warning_count=$3,lease_expires_at=now()+interval '2 minutes',updated_at=now() WHERE id=$1 AND status='running'`, id, processedCalls, warningsCount); err != nil {
 			return err
 		}
 	}
@@ -360,12 +371,12 @@ func buildDataset(ctx context.Context, pool *pgxpool.Pool, audioRoot, exportRoot
 	if warningsCount > 0 {
 		finalStatus = "completed_with_warnings"
 	}
-	_, err = pool.Exec(ctx, `UPDATE dataset_exports SET status=$2,processed_items=$3,warning_count=$4,output_path=$5,output_size=$6,output_sha256=$7,completed_at=now(),lease_owner=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND status='running'`, id, finalStatus, processed, warningsCount, finalRel, size, hash)
+	_, err = pool.Exec(ctx, `UPDATE dataset_exports SET status=$2,processed_items=$3,warning_count=$4,output_path=$5,output_size=$6,output_sha256=$7,completed_at=now(),lease_owner=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND status='running'`, id, finalStatus, processedCalls, warningsCount, finalRel, size, hash)
 	if err != nil {
 		_ = os.Remove(final)
 		return err
 	}
-	fmt.Printf("dataset=%s status=%s items=%d warnings=%d bytes=%d\n", id, finalStatus, processed, warningsCount, size)
+	fmt.Printf("dataset=%s status=%s calls=%d samples=%d warnings=%d bytes=%d\n", id, finalStatus, processedCalls, exportedSamples, warningsCount, size)
 	return nil
 }
 

@@ -7,6 +7,19 @@ import (
 	"time"
 )
 
+func TestRecordingFingerprintUsesCallIdentityAndAudio(t *testing.T) {
+	base := recordingFingerprint([]byte("audio-a"), "call-a")
+	if base == recordingFingerprint([]byte("audio-b"), "call-a") {
+		t.Fatal("changed audio must change fingerprint")
+	}
+	if base == recordingFingerprint([]byte("audio-a"), "call-b") {
+		t.Fatal("changed call identity must change fingerprint")
+	}
+	if base != recordingFingerprint([]byte("audio-a"), "call-a") {
+		t.Fatal("fingerprint must be deterministic")
+	}
+}
+
 func TestDurableSpoolSurvivesRestartAndRemembersCompletion(t *testing.T) {
 	root := t.TempDir()
 	spool, err := openDurableSpool(root)

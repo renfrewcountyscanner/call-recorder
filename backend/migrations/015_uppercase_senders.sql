@@ -7,6 +7,46 @@ ALTER TABLE calls DROP CONSTRAINT IF EXISTS calls_sender_id_fkey;
 ALTER TABLE pending_uploads DROP CONSTRAINT IF EXISTS pending_uploads_sender_id_fkey;
 ALTER TABLE receiver_status_entries DROP CONSTRAINT IF EXISTS receiver_status_entries_sender_id_fkey;
 
+-- Normalize collision-prone child rows before changing sender IDs. Pending
+-- uploads can share an idempotency key after case folding; keep the most useful
+-- and most recently updated row. Receiver status is rebuilt from an aggregate
+-- so its composite primary key cannot collide during the rename.
+DELETE FROM pending_uploads p
+USING (
+    SELECT id
+    FROM (
+        SELECT id,
+               row_number() OVER (
+                   PARTITION BY upper(sender_id), idempotency_key
+                   ORDER BY CASE status WHEN 'completed' THEN 0 WHEN 'duplicate' THEN 1 ELSE 2 END,
+                            updated_at DESC,
+                            id
+               ) AS position
+        FROM pending_uploads
+        WHERE idempotency_key IS NOT NULL
+    ) ranked
+    WHERE position > 1
+) duplicate
+WHERE p.id = duplicate.id;
+
+CREATE TEMP TABLE merged_receiver_status_entries AS
+SELECT upper(sender_id) AS sender_id,
+       receiver_id,
+       system_id,
+       site_id,
+       max(system_name) AS system_name,
+       max(site_name) AS site_name,
+       sum(call_count) AS call_count,
+       max(last_call_at) AS last_call_at,
+       max(dismissed_at) AS dismissed_at,
+       max(dismissed_by) AS dismissed_by,
+       max(dismissed_last_call_at) AS dismissed_last_call_at,
+       min(created_at) AS created_at,
+       max(updated_at) AS updated_at
+FROM receiver_status_entries
+GROUP BY upper(sender_id),receiver_id,system_id,site_id;
+TRUNCATE receiver_status_entries;
+
 DO $$
 DECLARE
     grp RECORD;
@@ -63,6 +103,15 @@ BEGIN
     UPDATE pending_uploads SET sender_id = upper(sender_id) WHERE sender_id != upper(sender_id);
     UPDATE receiver_status_entries SET sender_id = upper(sender_id) WHERE sender_id != upper(sender_id);
 END $$;
+
+INSERT INTO receiver_status_entries(
+    sender_id,receiver_id,system_id,site_id,system_name,site_name,call_count,
+    last_call_at,dismissed_at,dismissed_by,dismissed_last_call_at,created_at,updated_at
+)
+SELECT sender_id,receiver_id,system_id,site_id,system_name,site_name,call_count,
+       last_call_at,dismissed_at,dismissed_by,dismissed_last_call_at,created_at,updated_at
+FROM merged_receiver_status_entries;
+DROP TABLE merged_receiver_status_entries;
 
 -- Prevent future case-duplicates at the database level.
 CREATE UNIQUE INDEX IF NOT EXISTS remote_senders_lower_idx

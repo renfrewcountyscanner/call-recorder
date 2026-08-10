@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Recursively import legacy logger audio, deleting only successful files."""
-import argparse, json, logging, os, re, time, wave
+import argparse, json, logging, os, re, shutil, subprocess, time, wave
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-AUDIO_TYPES = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4"}
+AUDIO_TYPES = {".mp3": "audio/mpeg", ".wav": "audio/wav"}
 LOG = logging.getLogger("call-recorder.importer")
 
 def post(url, data, headers, timeout):
@@ -28,34 +28,25 @@ def parse_time(value):
     for fmt in ("%Y-%m-%d_%H%M%S", "%m-%d-%y %H-%M-%S", "%Y%m%d_%H-%M-%S", "%Y%m%d_%H%M%S"):
         try: return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
         except ValueError: pass
-    return datetime.now(timezone.utc)
+    return None
 
 def numeric_id(value):
     """The legacy endpoint accepts numeric IDs; retain labels separately."""
     match = re.search(r"\d+(?:\.\d+)?", str(value or ""))
-    return match.group(0) if match else "0"
+    return match.group(0) if match else ""
 
 def audio_duration_seconds(audio):
-    """Read WAV duration exactly; estimate MP3 duration from its frame bitrate."""
+    """Use a real media probe; never invent duration from file size."""
     if audio.suffix.lower() == ".wav":
         with wave.open(str(audio), "rb") as stream:
             return stream.getnframes() / float(stream.getframerate())
-    data = audio.read_bytes()[:8192]
-    offset = 0
-    if data[:3] == b"ID3" and len(data) >= 10:
-        offset = 10 + sum((data[index] & 0x7f) << (7 * (9 - index)) for index in range(6, 10))
-    for index in range(offset, max(offset, len(data) - 3)):
-        header = int.from_bytes(data[index:index + 4], "big")
-        if header >> 21 != 0x7ff:
-            continue
-        version, layer, bitrate_index = (header >> 19) & 3, (header >> 17) & 3, (header >> 12) & 15
-        if layer != 1 or bitrate_index in (0, 15):
-            continue
-        table = (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320) if version == 3 else (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160)
-        return max(0.001, (audio.stat().st_size - index) * 8 / (table[bitrate_index] * 1000))
-    # The importer prefers an approximate but non-zero duration over throwing
-    # away an otherwise valid legacy recording with an uncommon codec.
-    return max(0.001, audio.stat().st_size * 8 / 64000)
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(audio)],
+        check=True, capture_output=True, text=True, timeout=30,
+    )
+    duration = float(result.stdout.strip())
+    if duration <= 0: raise ValueError(f"invalid decoded duration for {audio}")
+    return duration
 
 def infer(audio, root, cfg):
     parts = audio.relative_to(root).parts; stem = audio.stem
@@ -72,12 +63,14 @@ def infer(audio, root, cfg):
         talkgroup = numeric_id(talkgroup_label)
     match = re.match(r"^(.+?)_?(\d{8}_\d{2}-\d{2}-\d{2})$", stem)
     if match: system, source_label, stamp = system or match.group(1).strip(" _-"), match.group(1).strip(" _-"), parse_time(match.group(2))
-    talkgroup = talkgroup or cfg.get("TALKGROUP_ID", "0")
+    talkgroup = talkgroup or cfg.get("TALKGROUP_ID", "")
     talkgroup_label = talkgroup_label or talkgroup
     system = system or source_label or (parts[0] if len(parts) > 1 else "")
     receiver = receiver or source_label or system
     if not system: raise ValueError(f"cannot infer system for {audio}; set SYSTEM_NAME or use a system subdirectory")
-    return {"start_time": (stamp or datetime.now(timezone.utc)).timestamp(), "talkgroup": talkgroup, "talkgroup_description": talkgroup_label, "talkgroup_tag": talkgroup_label, "source": source, "site": site, "site_description": site, "system": system, "receiver": receiver, "call_length": 0}
+    if stamp is None: raise ValueError(f"cannot infer timestamp for {audio}; add a supported filename timestamp or JSON sidecar")
+    if not talkgroup: raise ValueError(f"cannot infer talkgroup for {audio}; set TALKGROUP_ID or add a JSON sidecar")
+    return {"start_time": stamp.timestamp(), "talkgroup": talkgroup, "talkgroup_description": talkgroup_label, "talkgroup_tag": talkgroup_label, "source": source, "site": site, "site_description": site, "system": system, "receiver": receiver, "call_length": 0}
 
 def load_call(audio, root, cfg):
     sidecar = audio.with_suffix(".json")
@@ -89,6 +82,8 @@ def load_call(audio, root, cfg):
     return value
 
 def upload(audio, call, cfg):
+    maximum = int(cfg.get("IMPORT_MAX_AUDIO_BYTES", str(100 * 1024 * 1024)))
+    if audio.stat().st_size > maximum: raise ValueError(f"audio exceeds IMPORT_MAX_AUDIO_BYTES ({maximum})")
     start = call.get("start_time")
     if isinstance(start, str): start = datetime.fromisoformat(start.replace("Z", "+00:00")).timestamp()
     started = datetime.fromtimestamp(float(start), timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
@@ -104,13 +99,27 @@ def upload(audio, call, cfg):
     if not token: raise RuntimeError("metadata accepted without CallAudioID")
     status, body = post(base + "/api/callaudioupload/" + token, audio.read_bytes(), {"Content-Type": AUDIO_TYPES[audio.suffix.lower()]}, timeout); response(status, body, "audio")
 
+def preserve_success(audio, sidecar, root, cfg):
+    action = cfg.get("IMPORT_SUCCESS_ACTION", "archive").strip().lower()
+    if action == "keep": return
+    if action == "delete":
+        audio.unlink()
+        if sidecar.is_file(): sidecar.unlink()
+        return
+    if action != "archive": raise ValueError("IMPORT_SUCCESS_ACTION must be archive, keep, or delete")
+    archive_root = Path(cfg.get("IMPORT_ARCHIVE_ROOT", str(root.parent / (root.name + "-archive"))))
+    destination = archive_root / audio.relative_to(root)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists(): raise ValueError(f"archive destination already exists: {destination}")
+    shutil.move(str(audio), str(destination))
+    if sidecar.is_file(): shutil.move(str(sidecar), str(destination.with_suffix(".json")))
+
 def scan(root, cfg, min_age):
     imported = failed = 0
     for audio in sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in AUDIO_TYPES):
         if time.time() - audio.stat().st_mtime < min_age: continue
         try:
-            upload(audio, load_call(audio, root, cfg), cfg); sidecar = audio.with_suffix(".json"); audio.unlink()
-            if sidecar.is_file(): sidecar.unlink()
+            upload(audio, load_call(audio, root, cfg), cfg); sidecar = audio.with_suffix(".json"); preserve_success(audio, sidecar, root, cfg)
             imported += 1; LOG.info("imported %s", audio)
         except (OSError, ValueError, RuntimeError, URLError) as error:
             failed += 1; LOG.error("could not import %s: %s", audio, error)

@@ -1,0 +1,62 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static-and-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: |
+            backend/go.sum
+            uploader/go.sum
+      - name: Go formatting
+        run: test -z "$(gofmt -l backend uploader)"
+      - name: Backend tests and vet
+        working-directory: backend
+        run: go test ./... && go vet ./...
+      - name: Uploader tests and vet
+        working-directory: uploader
+        run: go test ./... && go vet ./...
+      - name: Python tests
+        run: |
+          python3 -m unittest discover -s uploader/trunk-recorder -p 'test*.py'
+          python3 -m unittest discover -s uploader/trunk-recorder/tests -p 'test*.py'
+          python3 -m py_compile uploader/trunk-recorder/*.py tests/*.py
+      - name: Shell syntax
+        run: find . -name '*.sh' -not -path './.git/*' -exec bash -n {} +
+      - name: Reachable Go vulnerabilities
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          (cd backend && govulncheck ./...)
+          (cd uploader && govulncheck ./...)
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: End-to-end ingestion and migration test
+        env:
+          COMPOSE: docker compose
+        run: ./tests/integration.sh
+
+  container-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'

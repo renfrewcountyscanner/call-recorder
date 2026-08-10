@@ -2,7 +2,7 @@
 # Web administration smoke coverage; only callrecorder_it/.test-runtime are used.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-compose="${COMPOSE:-docker compose} --project-name callrecorder_it --env-file $root/deploy/integration.env -f $root/deploy/docker-compose.yml -f $root/deploy/docker-compose.integration.yml"
+compose="${COMPOSE:-docker-compose} --project-name callrecorder_it --env-file $root/deploy/integration.env -f $root/deploy/docker-compose.yml -f $root/deploy/docker-compose.integration.yml"
 work=$(mktemp -d)
 cleanup() { $compose down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$root/.test-runtime" "$work"; }
 trap cleanup EXIT
@@ -13,6 +13,9 @@ for n in $(seq 1 40); do curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&
 $compose exec -T backend /usr/local/bin/call-recorder-admin users create --username admin --password testpassword --role admin || true
 # Login with username/password
 curl -fsS -c "$work/cookie" -d 'username=admin&password=testpassword' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/login | grep -q 303
+csrf=$(awk '$6 == "call_recorder_csrf" { print $7 }' "$work/cookie")
+test -n "$csrf"
+curl() { command curl -H "X-CSRF-Token: $csrf" "$@"; }
 curl -fsS -b "$work/cookie" -d 'system=system-z&id=900&alias=Manual+Dispatch&description=synthetic&category=test&priority=4&source=manual&enabled=on' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/talkgroups | grep -q 303
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select alias from talkgroup_aliases where system_id='system-z' and talkgroup_id='900'")" = 'Manual Dispatch'
 curl -fsS -b "$work/cookie" -d 'system=system-z&id=901&alias=Manual+Unit&description=synthetic&category=test&source=manual&enabled=on' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/radios | grep -q 303
@@ -48,18 +51,18 @@ curl -fsS -b "$work/cookie" -d "name=synthetic-rule&destination_id=$dest_id&prio
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select patched_only from notification_rules where name='synthetic-rule'")" = t
 curl -fsS -b "$work/cookie" http://127.0.0.1:18080/admin/notifications/history | grep -q 'Notification delivery history'
 sender_page=$(curl -fsS -b "$work/cookie" -d 'sender_id=web-test-sender' http://127.0.0.1:18080/admin/senders/create)
-printf '%s' "$sender_page" | grep -q 'New API key for web-test-sender'
-test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select enabled from remote_senders where sender_id='web-test-sender'")" = t
-# key_hash is a bytea column; verify a non-empty Argon2id encoding without
+printf '%s' "$sender_page" | grep -q 'New API key for WEB-TEST-SENDER'
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select enabled from remote_senders where sender_id='WEB-TEST-SENDER'")" = t
+# key_hash is a bytea column; verify a non-empty HMAC encoding without
 # relying on PostgreSQL's bytea display representation.
-test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select octet_length(key_hash)>32 from remote_senders where sender_id='web-test-sender'")" = t
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select octet_length(key_hash)>32 from remote_senders where sender_id='WEB-TEST-SENDER'")" = t
 curl -fsS -b "$work/cookie" -d 'sender_id=web-test-sender' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/senders/disable | grep -q 303
-test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select enabled from remote_senders where sender_id='web-test-sender'")" = f
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select enabled from remote_senders where sender_id='WEB-TEST-SENDER'")" = f
 # Delete must archive a credential even when historical upload rows reference it.
-$compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -c "insert into pending_uploads(id,token_hash,sender_id,metadata,audio_format,status,expires_at) values('sender-delete-ref',decode('01','hex'),'web-test-sender','{}','wav','expired',now())" >/dev/null
+$compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -c "insert into pending_uploads(id,token_hash,sender_id,metadata,audio_format,status,expires_at) values('sender-delete-ref',decode('01','hex'),'WEB-TEST-SENDER','{}','wav','expired',now())" >/dev/null
 curl -fsS -b "$work/cookie" -d 'sender_id=web-test-sender' -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/senders/delete | grep -q 303
-test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select (not enabled) and deleted_at is not null from remote_senders where sender_id='web-test-sender'")" = t
-if curl -fsS -b "$work/cookie" http://127.0.0.1:18080/admin/senders | grep -q 'web-test-sender'; then echo 'archived sender still listed'; exit 1; fi
+test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select (not enabled) and deleted_at is not null from remote_senders where sender_id='WEB-TEST-SENDER'")" = t
+if curl -fsS -b "$work/cookie" http://127.0.0.1:18080/admin/senders | grep -q 'WEB-TEST-SENDER'; then echo 'archived sender still listed'; exit 1; fi
 # Transcription: provider type and CIDR validation.
 curl -fsS -b "$work/cookie" -d 'enabled=on&processing_enabled=on&provider=openai&provider_type=openai-compatible&endpoint=http%3A%2F%2Fexample.invalid%2Fv1%2Faudio%2Ftranscriptions&model=whisper-v3&language=en&min_duration_seconds=0.5&max_duration_minutes=15&max_file_size_mb=50&temperature=0&request_timeout_seconds=60&concurrency=1&retry_limit=3' http://127.0.0.1:18080/admin/transcription/config >/dev/null
 test "$($compose exec -T postgres psql -U call_recorder_test -d call_recorder_test -Atc "select provider_type from transcription_config where id=true")" = 'openai-compatible'

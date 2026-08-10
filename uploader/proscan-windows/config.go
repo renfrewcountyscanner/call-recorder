@@ -144,6 +144,9 @@ func (cfg config) validate() error {
 	if credentialSources > 1 {
 		return errors.New("configure exactly one API key source")
 	}
+	if strings.TrimSpace(cfg.Logger.APIKey) != "" {
+		return errors.New("logger.api_key plaintext configuration is disabled; use api_key_file or api_key_environment")
+	}
 	if cfg.SpoolDirectory == "" {
 		return errors.New("spool_directory is required")
 	}

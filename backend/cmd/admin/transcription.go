@@ -316,14 +316,20 @@ func transcriptionWorker(ctx context.Context, pool *pgxpool.Pool, cfg transcript
 				FROM notification_rules r
 				WHERE d.rule_id=r.id AND d.call_id=$1 AND r.keyword IS NOT NULL
 				  AND d.status IN ('pending','failed')
-				  AND NOT EXISTS (SELECT 1 FROM transcripts t WHERE t.call_id=$1 AND coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,''),'') ILIKE '%'||r.keyword||'%')`, job.callID)
+				  AND NOT coalesce((SELECT coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,'')) FROM transcripts t WHERE t.call_id=$1 ORDER BY t.updated_at DESC LIMIT 1),(SELECT NULLIF(c.transcript,'') FROM calls c WHERE c.id=$1),'') ILIKE '%'||r.keyword||'%'`, job.callID)
 			// Keyword rules are evaluated again after generated text becomes
 			// available. The uniqueness constraint prevents duplicate delivery.
 			_, _ = pool.Exec(ctx, `INSERT INTO notification_deliveries(rule_id,destination_id,call_id)
 				SELECT r.id,r.destination_id,c.id FROM notification_rules r JOIN notification_destinations d ON d.id=r.destination_id JOIN calls c ON c.id=$1
-				WHERE r.enabled AND d.enabled AND r.keyword IS NOT NULL
-				AND EXISTS (SELECT 1 FROM transcripts t WHERE t.call_id=c.id AND coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,''),'') ILIKE '%'||r.keyword||'%')
+				LEFT JOIN talkgroup_aliases ta ON ta.system_id=c.system_id AND ta.talkgroup_id=c.talkgroup_id
+				WHERE r.enabled AND d.enabled AND NULLIF(btrim(r.keyword),'') IS NOT NULL AND coalesce(ta.notification_eligible,true)
+				AND coalesce((SELECT coalesce(NULLIF(t.edited_text,''),NULLIF(t.text,'')) FROM transcripts t WHERE t.call_id=c.id ORDER BY t.updated_at DESC LIMIT 1),NULLIF(c.transcript,''),'') ILIKE '%'||r.keyword||'%'
 				AND (r.sender_filter IS NULL OR r.sender_filter=c.sender_id) AND (r.system_filter IS NULL OR r.system_filter=c.system_id) AND (r.site_filter IS NULL OR r.site_filter=c.site_id) AND (r.talkgroup_filter IS NULL OR r.talkgroup_filter=c.talkgroup_id) AND (r.radio_filter IS NULL OR r.radio_filter=c.radio_id) AND (r.call_type_filter IS NULL OR r.call_type_filter=c.call_type)
+				AND (r.frequency_min IS NULL OR (c.frequency ~ '^[0-9]+([.][0-9]+)?$' AND c.frequency::numeric >= r.frequency_min))
+				AND (r.frequency_max IS NULL OR (c.frequency ~ '^[0-9]+([.][0-9]+)?$' AND c.frequency::numeric <= r.frequency_max))
+				AND (r.min_duration_ms IS NULL OR c.duration_ms >= r.min_duration_ms) AND (r.max_duration_ms IS NULL OR c.duration_ms <= r.max_duration_ms)
+				AND (NOT r.patched_only OR EXISTS (SELECT 1 FROM call_targets ct WHERE ct.call_id=c.id))
+				AND (r.favourite_group_id IS NULL OR EXISTS (SELECT 1 FROM favourite_members fm WHERE fm.group_id=r.favourite_group_id AND fm.system_id=c.system_id AND fm.talkgroup_id=c.talkgroup_id))
 				ON CONFLICT(rule_id,call_id) DO UPDATE SET status='pending',next_attempt_at=now(),error=NULL,updated_at=now()
 				WHERE notification_deliveries.status IN ('pending','failed','expired')`, job.callID)
 		} else {

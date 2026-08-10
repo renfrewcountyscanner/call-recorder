@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -18,6 +19,32 @@ func TestGeneratedSenderKeyIsUUIDv4(t *testing.T) {
 	}
 	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(key) {
 		t.Fatalf("generated key is not UUIDv4: %q", key)
+	}
+}
+
+func TestSenderKeyHMACAndLegacyCompatibility(t *testing.T) {
+	encoded, err := hashSenderKey("test-pepper", "sender-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verifySenderKey("test-pepper", encoded, "sender-key") {
+		t.Fatal("HMAC sender key was rejected")
+	}
+	if verifySenderKey("wrong-pepper", encoded, "sender-key") || verifySenderKey("test-pepper", encoded, "wrong-key") {
+		t.Fatal("invalid HMAC sender credential was accepted")
+	}
+	legacy, err := hashAPIKey("legacy-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verifySenderKey("test-pepper", legacy, "legacy-key") {
+		t.Fatal("legacy Argon2 sender credential was rejected during migration")
+	}
+}
+
+func TestArgonParametersAreBounded(t *testing.T) {
+	if verifyAPIKey("argon2id$v=19$m=4294967295,t=3,p=2$0011223344556677$00112233445566778899aabbccddeeff", "key") {
+		t.Fatal("unbounded Argon2 parameters were accepted")
 	}
 }
 
@@ -220,5 +247,24 @@ func TestCloudflareIdentityMapsAdminAndViewer(t *testing.T) {
 	spoofed.Header.Set("Cf-Access-Authenticated-User-Email", "admin@example.test")
 	if s.adminOK(spoofed) {
 		t.Fatal("untrusted Cloudflare identity was accepted")
+	}
+}
+
+func TestValidCSRFToken(t *testing.T) {
+	token := "csrf-test-token"
+	req := httptest.NewRequest(http.MethodPost, "/admin/action", strings.NewReader("csrf_token="+url.QueryEscape(token)))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if !validCSRFToken(req, tokenHash(token)) {
+		t.Fatal("valid form CSRF token was rejected")
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/admin/action", nil)
+	req.Header.Set("X-CSRF-Token", token)
+	if !validCSRFToken(req, tokenHash(token)) {
+		t.Fatal("valid header CSRF token was rejected")
+	}
+	req.Header.Set("X-CSRF-Token", "wrong")
+	if validCSRFToken(req, tokenHash(token)) {
+		t.Fatal("invalid CSRF token was accepted")
 	}
 }

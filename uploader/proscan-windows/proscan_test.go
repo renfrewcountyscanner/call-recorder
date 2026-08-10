@@ -74,13 +74,14 @@ func TestParseConventionalProScanRecording(t *testing.T) {
 }
 
 func TestLoadConfigRejectsUnknownFieldsAndAppliesMappings(t *testing.T) {
+	t.Setenv("CALL_LOGGER_TEST_API_KEY", "synthetic-key")
 	directory := t.TempDir()
 	path := filepath.Join(directory, "config.yaml")
 	raw := `version: 1
 logger:
   url: http://127.0.0.1:8080
   sender_id: windows-proscan
-  api_key: synthetic-key
+  api_key_environment: CALL_LOGGER_TEST_API_KEY
 spool_directory: spool
 watch_directories:
   - path: 'E:\BCD996'

@@ -3,6 +3,52 @@
 (function () {
   'use strict';
 
+  /* ---------- Request forgery protection ---------- */
+  function cookieValue(name) {
+    var prefix = name + '=';
+    var parts = document.cookie ? document.cookie.split(';') : [];
+    for (var i = 0; i < parts.length; i += 1) {
+      var value = parts[i].trim();
+      if (value.indexOf(prefix) === 0) return decodeURIComponent(value.substring(prefix.length));
+    }
+    return '';
+  }
+  function addCSRFFields(root) {
+    var token = cookieValue('call_recorder_csrf');
+    if (!token) return;
+    (root || document).querySelectorAll('form').forEach(function (form) {
+      var method = (form.getAttribute('method') || 'get').toLowerCase();
+      var htmxPost = form.hasAttribute('hx-post');
+      if (method === 'get' && !htmxPost) return;
+      var field = form.querySelector('input[name="csrf_token"]');
+      if (!field) {
+        field = document.createElement('input');
+        field.type = 'hidden';
+        field.name = 'csrf_token';
+        form.appendChild(field);
+      }
+      field.value = token;
+    });
+  }
+  addCSRFFields(document);
+  document.addEventListener('htmx:afterSwap', function (event) { addCSRFFields(event.target); });
+  document.addEventListener('htmx:configRequest', function (event) {
+    var token = cookieValue('call_recorder_csrf');
+    if (token) event.detail.headers['X-CSRF-Token'] = token;
+  });
+
+  function updateNotificationDestinationFields() {
+    var type = $('notification-destination-type');
+    if (!type) return;
+    var smtp = type.value === 'smtp';
+    var telegram = type.value === 'telegram';
+    document.querySelectorAll('[data-notification-http]').forEach(function (field) { field.hidden = smtp; });
+    document.querySelectorAll('[data-notification-smtp]').forEach(function (field) { field.hidden = !smtp; });
+    document.querySelectorAll('[data-notification-telegram]').forEach(function (field) { field.hidden = !telegram; });
+  }
+  on($('notification-destination-type'), 'change', updateNotificationDestinationFields);
+  updateNotificationDestinationFields();
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); });
   }
@@ -620,7 +666,10 @@
     if (!retry) return;
     var callId = retry.getAttribute('data-call-id');
     if (!callId) return;
-    fetch('/admin/transcription/queue/' + callId, { method: 'POST' })
+    fetch('/admin/transcription/queue/' + callId, {
+      method: 'POST',
+      headers: { 'X-CSRF-Token': cookieValue('call_recorder_csrf') }
+    })
       .then(function (r) {
         if (r.ok || r.redirected) {
           var container = retry.closest('.transcript-inline');

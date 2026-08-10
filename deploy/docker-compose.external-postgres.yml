@@ -1,11 +1,31 @@
+x-app-hardening: &app-hardening
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=128m
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 256
+  mem_limit: 1g
+  logging:
+    driver: json-file
+    options:
+      max-size: 20m
+      max-file: "5"
+
 services:
   migrate:
-    image: postgres:17-alpine
+    <<: *app-hardening
+    build:
+      context: ../backend
+      args:
+        COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+    entrypoint: ["/usr/local/bin/call-recorder-admin"]
+    command: ["migrate"]
     environment:
       CALL_RECORDER_DATABASE_URL: ${CALL_RECORDER_DATABASE_URL:?set CALL_RECORDER_DATABASE_URL in your .env file}
-    volumes:
-      - ../backend/migrations:/migrations:ro
-    command: ["sh", "-c", "for migration in /migrations/*.sql; do echo Applying $$migration; psql $$CALL_RECORDER_DATABASE_URL -v ON_ERROR_STOP=1 -f $$migration; done"]
   audio-init:
     image: alpine:3.21
     command: ["sh", "-c", "install -d -m 0750 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets /var/lib/call-recorder/exports && chown 10001:10001 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets /var/lib/call-recorder/exports && chmod 0750 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets /var/lib/call-recorder/exports"]
@@ -14,6 +34,7 @@ services:
       - ${CALL_RECORDER_SECRETS_HOST_PATH:-../runtime/secrets}:/var/lib/call-recorder/secrets
       - ${CALL_RECORDER_EXPORTS_HOST_PATH:-../runtime/exports}:/var/lib/call-recorder/exports
   backend:
+    <<: *app-hardening
     build:
       context: ../backend
       args:
@@ -51,9 +72,10 @@ services:
       CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED: ${CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED:-false}
       CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL: ${CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL:-}
       CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS: ${CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS:-}
+      CALL_RECORDER_NOTIFICATION_SECRET: ${CALL_RECORDER_NOTIFICATION_SECRET:-}
       TZ: ${TZ:-America/Toronto}
     ports:
-      - "${CALL_RECORDER_PORT:-8080}:8080"
+      - "${CALL_RECORDER_BIND_ADDRESS:-127.0.0.1}:${CALL_RECORDER_PORT:-8080}:8080"
     volumes:
       - ${CALL_RECORDER_AUDIO_HOST_PATH:-../runtime/audio}:/var/lib/call-recorder/audio
       - ${CALL_RECORDER_SECRETS_HOST_PATH:-../runtime/secrets}:/var/lib/call-recorder/secrets
@@ -65,6 +87,7 @@ services:
       retries: 5
       start_period: 15s
   notification-worker:
+    <<: *app-hardening
     build:
       context: ../backend
       args:
@@ -79,9 +102,16 @@ services:
     environment:
       CALL_RECORDER_DATABASE_URL: ${CALL_RECORDER_DATABASE_URL:?set CALL_RECORDER_DATABASE_URL in your .env file}
       CALL_RECORDER_PUBLIC_URL: ${CALL_RECORDER_PUBLIC_URL:-https://logger.renfrewcountyscanner.com}
+      CALL_RECORDER_NOTIFICATION_SECRET: ${CALL_RECORDER_NOTIFICATION_SECRET:-}
       TZ: ${TZ:-America/Toronto}
     user: "10001:10001"
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/bin/call-recorder-admin notifications diagnose"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
   transcription-worker:
+    <<: *app-hardening
     build:
       context: ../backend
       args:
@@ -111,6 +141,7 @@ services:
       retries: 3
     # No ports exposed. A disabled configuration is a healthy idle state.
   dataset-worker:
+    <<: *app-hardening
     build:
       context: ../backend
       args:
