@@ -196,6 +196,7 @@
     '</form>';
   document.body.appendChild(dialog);
   var pendingForm = null;
+  var pendingSubmitter = null;
   document.addEventListener('submit', function (e) {
     var form = e.target;
     if (!(form instanceof HTMLFormElement)) return;
@@ -203,22 +204,26 @@
     if (!message || form.dataset.confirmed === 'yes') return;
     e.preventDefault();
     pendingForm = form;
+    pendingSubmitter = e.submitter || null;
     $('confirm-text').textContent = message;
     dialog.showModal();
   }, true);
   dialog.addEventListener('close', function () {
     if (dialog.returnValue === 'confirm' && pendingForm) {
       pendingForm.dataset.confirmed = 'yes';
-      if (pendingForm.requestSubmit) pendingForm.requestSubmit();
+      /* Preserve the clicked button so its name/value (for example,
+         action=delete) remains part of the confirmed submission. */
+      if (pendingForm.requestSubmit) pendingForm.requestSubmit(pendingSubmitter || undefined);
       else pendingForm.submit();
     }
     pendingForm = null;
+    pendingSubmitter = null;
   });
 
   document.addEventListener('click', function (e) {
     var button = e.target.closest ? e.target.closest('button[name="action"][value="delete"]') : null;
     if (button && button.form && !button.form.getAttribute('data-confirm')) {
-      button.form.setAttribute('data-confirm', 'Delete this item and its associated history?');
+      button.form.setAttribute('data-confirm', button.getAttribute('data-submit-confirm') || 'Delete this item and its associated history?');
     }
     var selectButton = e.target.closest ? e.target.closest('[data-tg-select]') : null;
     if (!selectButton) return;
