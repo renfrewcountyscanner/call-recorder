@@ -266,6 +266,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.ready)
+	mux.HandleFunc("GET /api/v1/sender/status", s.senderStatus)
 	mux.HandleFunc("GET /", s.requireViewer(s.callsPage))
 	mux.HandleFunc("GET /calls", s.requireViewer(s.callsFragment))
 	mux.HandleFunc("GET /filter-options", s.requireViewer(s.filterOptionsEndpoint))
@@ -351,7 +352,9 @@ func main() {
 		mux.HandleFunc("POST /admin/users/password", s.adminChangePassword)
 		mux.HandleFunc("POST /admin/users/delete", s.adminDeleteUser)
 		mux.HandleFunc("GET /admin/storage", s.adminStorage)
+		mux.HandleFunc("GET /admin/diagnostics", s.adminDiagnostics)
 		mux.HandleFunc("POST /admin/receiver-status/dismiss", s.adminDismissReceiverStatus)
+		mux.HandleFunc("POST /admin/receiver-status/dismiss-stale", s.adminDismissStaleReceiverStatus)
 		mux.HandleFunc("POST /admin/receiver-status/restore", s.adminRestoreReceiverStatus)
 		mux.HandleFunc("POST /admin/receiver-status/settings", s.adminReceiverStatusSettings)
 		mux.HandleFunc("GET /admin/datasets", s.adminDatasets)
@@ -372,6 +375,7 @@ func main() {
 	shutdownContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 	go s.cleanupSessions(shutdownContext)
+	go s.cleanupOperationalState(shutdownContext)
 	serveErrors := make(chan error, 1)
 	go func() { serveErrors <- srv.ListenAndServe() }()
 	select {
@@ -504,7 +508,7 @@ func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var migrationReady bool
-	if err := s.db.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE filename='017_audit_source_address.sql')`).Scan(&migrationReady); err != nil || !migrationReady {
+	if err := s.db.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE filename='018_ingestion_diagnostics.sql')`).Scan(&migrationReady); err != nil || !migrationReady {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse{"database migrations incomplete"})
 		return
 	}
@@ -616,6 +620,7 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	canonicalSender, authenticated := s.authenticateLegacy(r.Context(), request.AuthID, request.APIKey)
 	if !authenticated {
+		s.recordIngestionRejection(r.Context(), request.AuthID, "authentication_failed")
 		s.logger.Warn("legacy upload rejected: authentication failed", "sender_id", request.AuthID, "remote_addr", r.RemoteAddr)
 		if s.cfg.LegacyDebug {
 			s.logger.Info("legacy metadata result", "sender_id", request.AuthID, "status", 403, "message", "authentication failed")
@@ -715,11 +720,13 @@ func (s *server) createUpload(w http.ResponseWriter, r *http.Request) {
 	req.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
 	req.Call.Patches = uniquePatches(req.Call.Patches)
 	if err := validateMetadata(req); err != nil {
+		s.recordIngestionRejection(r.Context(), req.SenderID, "invalid_metadata")
 		s.logger.Warn("upload rejected: invalid metadata", "error", err, "sender_id", req.SenderID, "remote_addr", r.RemoteAddr)
 		writeJSON(w, 400, errorResponse{err.Error()})
 		return
 	}
 	if !s.authenticate(r.Context(), req.SenderID, r.Header.Get("X-Call-Recorder-Key")) {
+		s.recordIngestionRejection(r.Context(), req.SenderID, "authentication_failed")
 		s.logger.Warn("upload rejected: authentication failed", "sender_id", req.SenderID, "remote_addr", r.RemoteAddr)
 		writeJSON(w, 401, errorResponse{"sender authentication failed"})
 		return
@@ -831,6 +838,7 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 	legacyBearer := r.Header.Get("X-Call-Recorder-Legacy") == "1"
 	requestSender := strings.ToUpper(strings.TrimSpace(r.Header.Get("X-Call-Recorder-Sender")))
 	if !legacyBearer && (requestSender != pending.SenderID || !s.authenticate(r.Context(), pending.SenderID, r.Header.Get("X-Call-Recorder-Key"))) {
+		s.recordIngestionRejection(r.Context(), pending.SenderID, "audio_authentication_failed")
 		s.logger.Warn("audio upload rejected: authentication failed", "sender_id", pending.SenderID, "remote_addr", r.RemoteAddr)
 		writeJSON(w, http.StatusUnauthorized, errorResponse{"sender authentication failed"})
 		return
@@ -2032,6 +2040,35 @@ func (s *server) cleanupSessions(ctx context.Context) {
 	}
 }
 
+func (s *server) cleanupOperationalState(ctx context.Context) {
+	cleanup := func() {
+		if _, err := s.db.Exec(ctx, `UPDATE pending_uploads
+			SET status='expired',lease_owner=NULL,lease_expires_at=NULL,last_error='upload session expired before completion',updated_at=now()
+			WHERE status IN ('pending','failed') AND expires_at<now()`); err != nil && !errors.Is(err, context.Canceled) {
+			s.logger.Warn("expire abandoned upload sessions", "error", err)
+		}
+		if _, err := s.db.Exec(ctx, `UPDATE pending_uploads
+			SET status='pending',lease_owner=NULL,lease_expires_at=NULL,last_error='expired upload lease recovered',updated_at=now()
+			WHERE status='uploading' AND lease_expires_at<now() AND expires_at>=now()`); err != nil && !errors.Is(err, context.Canceled) {
+			s.logger.Warn("recover expired upload leases", "error", err)
+		}
+		if _, err := s.db.Exec(ctx, `DELETE FROM ingestion_rejection_counters WHERE bucket<now()-interval '30 days'`); err != nil && !errors.Is(err, context.Canceled) {
+			s.logger.Warn("clean ingestion diagnostics", "error", err)
+		}
+	}
+	cleanup()
+	ticker := time.NewTicker(15 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cleanup()
+		}
+	}
+}
+
 func (s *server) adminLogout(w http.ResponseWriter, r *http.Request) {
 	if !s.adminOK(r) {
 		s.renderStatus(w, r, http.StatusForbidden, "admin_required.html", "Sign-out rejected", "", map[string]any{"Error": "The request could not be verified. Reload the page and try again."})
@@ -2977,6 +3014,42 @@ func (s *server) authenticate(ctx context.Context, sender, key string) bool {
 	}
 	s.upgradeSenderKeyHash(ctx, sender, string(hash), key)
 	return true
+}
+
+// senderStatus validates a sender credential without allocating an upload or
+// accepting call metadata. Uploaders use it during deployment and startup so
+// identity/key mismatches fail visibly before calls are lost.
+func (s *server) senderStatus(w http.ResponseWriter, r *http.Request) {
+	sender := strings.TrimSpace(r.Header.Get("X-Call-Recorder-Sender"))
+	if !s.ingestionAllowed(r, sender) {
+		w.Header().Set("Retry-After", "60")
+		writeJSON(w, http.StatusTooManyRequests, errorResponse{"authentication rate limit exceeded"})
+		return
+	}
+	canonical, ok := s.authenticateLegacy(r.Context(), sender, r.Header.Get("X-Call-Recorder-Key"))
+	if !ok {
+		s.recordIngestionRejection(r.Context(), sender, "credential_check_failed")
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"sender authentication failed"})
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "sender_id": canonical})
+}
+
+func (s *server) recordIngestionRejection(ctx context.Context, sender, reason string) {
+	sender = strings.ToUpper(strings.TrimSpace(sender))
+	if len(sender) > 100 {
+		sender = sender[:100]
+	}
+	if len(reason) > 80 {
+		reason = reason[:80]
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO ingestion_rejection_counters(bucket,sender_id,reason,rejection_count,last_at)
+		VALUES(date_trunc('hour',now()),$1,$2,1,now())
+		ON CONFLICT(bucket,sender_id,reason) DO UPDATE SET rejection_count=ingestion_rejection_counters.rejection_count+1,last_at=now()`, sender, reason)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.logger.Warn("record ingestion rejection", "sender_id", sender, "reason", reason, "error", err)
+	}
 }
 
 func (s *server) ingestionAllowed(r *http.Request, sender string) bool {

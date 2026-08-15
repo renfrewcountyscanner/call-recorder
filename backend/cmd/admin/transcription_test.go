@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/renfrewcountyscanner/call-recorder/backend/internal/transcription"
@@ -18,6 +19,19 @@ func TestTranscriptionEndpointAllowlistValidation(t *testing.T) {
 	}
 	if _, err := transcription.HTTPClient("http://user:pass@example.invalid/transcribe", ""); err == nil {
 		t.Fatal("embedded credentials must be rejected")
+	}
+}
+
+func TestTransientTranscriptionErrorsReceiveExtendedRetries(t *testing.T) {
+	for _, message := range []string{"provider returned HTTP 503", "dial tcp: connection refused", "request timeout", "connection reset by peer"} {
+		if !isTransientTranscriptionError(errors.New(message)) {
+			t.Fatalf("expected transient classification for %q", message)
+		}
+	}
+	for _, message := range []string{"stat audio.mp3: no such file or directory", "provider returned HTTP 404"} {
+		if isTransientTranscriptionError(errors.New(message)) {
+			t.Fatalf("expected terminal classification for %q", message)
+		}
 	}
 }
 

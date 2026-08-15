@@ -297,13 +297,17 @@ func transcriptionWorker(ctx context.Context, pool *pgxpool.Pool, cfg transcript
 		if err != nil {
 			safe := sanitizeTranscriptionError(err)
 			backoffSec := int64(math.Min(math.Pow(2, float64(job.attemptCount)), 3600))
+			retryLimit := cfg.RetryLimit
+			if isTransientTranscriptionError(err) {
+				retryLimit += 3
+			}
 			_, _ = pool.Exec(ctx, `
 				UPDATE transcription_jobs
 				SET status=CASE WHEN attempt_count>$1 THEN 'failed' ELSE 'pending' END,
 				    error=$2,
 				    next_attempt_at=now()+($3 * interval '1 second'),
 				    updated_at=now()
-				WHERE id=$4`, cfg.RetryLimit, safe, backoffSec, job.id)
+				WHERE id=$4`, retryLimit, safe, backoffSec, job.id)
 			continue
 		}
 		segments, _ := json.Marshal(result.Segments)
@@ -337,6 +341,19 @@ func transcriptionWorker(ctx context.Context, pool *pgxpool.Pool, cfg transcript
 		}
 	}
 	return nil
+}
+
+func isTransientTranscriptionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{"http 429", "http 500", "http 502", "http 503", "http 504", "timeout", "connection refused", "connection reset", "temporarily unavailable", "unexpected eof"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 type timedTranscriptSegment struct {

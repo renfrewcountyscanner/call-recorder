@@ -32,7 +32,9 @@ func (s *server) recordAudit(ctx context.Context, r *http.Request, action, targe
 		raw = []byte(`{}`)
 	}
 	remote, _, splitErr := net.SplitHostPort(r.RemoteAddr)
-	if splitErr != nil { remote = r.RemoteAddr }
+	if splitErr != nil {
+		remote = r.RemoteAddr
+	}
 	_, err = s.db.Exec(ctx, `INSERT INTO audit_events(actor,action,target_type,target_id,request_id,source_address,details) VALUES($1,$2,$3,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7)`,
 		s.requestIdentity(r), action, targetType, targetID, r.Header.Get("X-Request-ID"), remote, raw)
 	if err != nil {
@@ -84,6 +86,81 @@ func (s *server) adminDismissReceiverStatus(w http.ResponseWriter, r *http.Reque
 	target := receiverStatusID(sender, receiver, system, site)
 	s.recordAudit(r.Context(), r, "receiver.dismiss", "receiver_status", target, map[string]any{"stale_minutes": staleMinutes})
 	http.Redirect(w, r, "/status?dismissed=1", http.StatusSeeOther)
+}
+
+func (s *server) adminDismissStaleReceiverStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.adminOnly(w, r) {
+		return
+	}
+	actor := s.requestIdentity(r)
+	tag, err := s.db.Exec(r.Context(), `UPDATE receiver_status_entries
+		SET dismissed_at=now(),dismissed_by=$1,dismissed_last_call_at=last_call_at,updated_at=now()
+		WHERE dismissed_at IS NULL AND last_call_at<now()-interval '7 days'`, actor)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	s.recordAudit(r.Context(), r, "receiver.dismiss_stale", "receiver_status", "older-than-7-days", map[string]any{"rows": tag.RowsAffected()})
+	http.Redirect(w, r, "/status?dismissed_stale=1", http.StatusSeeOther)
+}
+
+func (s *server) adminDiagnostics(w http.ResponseWriter, r *http.Request) {
+	if !s.adminOnly(w, r) {
+		return
+	}
+	type rejectionRow struct {
+		Sender, Reason string
+		Count          int64
+		Last           time.Time
+	}
+	type queueRow struct {
+		Name, Status string
+		Count        int64
+		Oldest       *time.Time
+	}
+	rejections := []rejectionRow{}
+	rows, err := s.db.Query(r.Context(), `SELECT sender_id,reason,sum(rejection_count),max(last_at)
+		FROM ingestion_rejection_counters WHERE bucket>=now()-interval '24 hours'
+		GROUP BY sender_id,reason ORDER BY sum(rejection_count) DESC,sender_id LIMIT 100`)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	for rows.Next() {
+		var x rejectionRow
+		if rows.Scan(&x.Sender, &x.Reason, &x.Count, &x.Last) == nil {
+			rejections = append(rejections, x)
+		}
+	}
+	rows.Close()
+	queues := []queueRow{}
+	for _, query := range []struct{ name, sql string }{
+		{"Transcription", `SELECT status,count(*),min(created_at) FROM transcription_jobs GROUP BY status ORDER BY status`},
+		{"Notifications", `SELECT status,count(*),min(created_at) FROM notification_deliveries GROUP BY status ORDER BY status`},
+		{"Uploads", `SELECT status,count(*),min(created_at) FROM pending_uploads GROUP BY status ORDER BY status`},
+		{"Datasets", `SELECT status,count(*),min(created_at) FROM dataset_exports GROUP BY status ORDER BY status`},
+	} {
+		result, queryErr := s.db.Query(r.Context(), query.sql)
+		if queryErr != nil {
+			s.internal(w, queryErr)
+			return
+		}
+		for result.Next() {
+			x := queueRow{Name: query.name}
+			if result.Scan(&x.Status, &x.Count, &x.Oldest) == nil {
+				queues = append(queues, x)
+			}
+		}
+		result.Close()
+	}
+	var transcriptionHeartbeat, notificationHeartbeat *time.Time
+	_ = s.db.QueryRow(r.Context(), `SELECT heartbeat_at FROM transcription_worker_heartbeat WHERE id=true`).Scan(&transcriptionHeartbeat)
+	_ = s.db.QueryRow(r.Context(), `SELECT heartbeat_at FROM notification_worker_heartbeat WHERE id=true`).Scan(&notificationHeartbeat)
+	storage, _ := s.storageStats()
+	s.page(w, r, "diagnostics.html", "Diagnostics", "diagnostics", map[string]any{
+		"Rejections": rejections, "Queues": queues, "Storage": storage,
+		"TranscriptionHeartbeat": transcriptionHeartbeat, "NotificationHeartbeat": notificationHeartbeat,
+	})
 }
 
 func (s *server) adminRestoreReceiverStatus(w http.ResponseWriter, r *http.Request) {

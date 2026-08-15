@@ -55,7 +55,7 @@ services:
     image: alpine:3.21
     command: ["sh", "-c", "install -d -m 0750 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets /var/lib/call-recorder/exports && chown 10001:10001 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets /var/lib/call-recorder/exports && chmod 0750 /var/lib/call-recorder/audio /var/lib/call-recorder/secrets /var/lib/call-recorder/exports"]
     volumes:
-      - ../runtime/audio:/var/lib/call-recorder/audio
+      - ${CALL_RECORDER_AUDIO_HOST_PATH:-../audio}:/var/lib/call-recorder/audio
       - ../runtime/secrets:/var/lib/call-recorder/secrets
       - ../runtime/exports:/var/lib/call-recorder/exports
   backend:
@@ -104,7 +104,7 @@ services:
     ports:
       - "${CALL_RECORDER_BIND_ADDRESS:-127.0.0.1}:${CALL_RECORDER_PORT:-8080}:8080"
     volumes:
-      - ../runtime/audio:/var/lib/call-recorder/audio
+      - ${CALL_RECORDER_AUDIO_HOST_PATH:-../audio}:/var/lib/call-recorder/audio
       - ../runtime/secrets:/var/lib/call-recorder/secrets
       - ../runtime/exports:/var/lib/call-recorder/exports
     healthcheck:
@@ -162,7 +162,7 @@ services:
       CALL_RECORDER_SECRETS_ROOT: /var/lib/call-recorder/secrets
       TZ: ${TZ:-America/Toronto}
     volumes:
-      - ../runtime/audio:/var/lib/call-recorder/audio:ro
+      - ${CALL_RECORDER_AUDIO_HOST_PATH:-../audio}:/var/lib/call-recorder/audio:ro
       - ../runtime/secrets:/var/lib/call-recorder/secrets:ro
     user: "10001:10001"
     healthcheck:
@@ -194,6 +194,6 @@ services:
       CALL_RECORDER_EXPORT_ROOT: /var/lib/call-recorder/exports
       TZ: ${TZ:-America/Toronto}
     volumes:
-      - ../runtime/audio:/var/lib/call-recorder/audio:ro
+      - ${CALL_RECORDER_AUDIO_HOST_PATH:-../audio}:/var/lib/call-recorder/audio:ro
       - ../runtime/exports:/var/lib/call-recorder/exports
     user: "10001:10001"

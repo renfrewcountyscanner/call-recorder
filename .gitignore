@@ -59,6 +59,7 @@ logs/
 __pycache__/
 *.pyc
 backups/
+upgrade-backups/
 .restore.*
 .test-runtime/
 

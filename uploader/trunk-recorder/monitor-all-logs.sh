@@ -4,7 +4,7 @@ set -eu
 
 compose_file=""
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-for candidate in "${COMPOSE_FILE:-}" ./docker-compose.yml ./deploy/docker-compose.yml "$script_dir/../../../deploy/docker-compose.yml" /app/call-recorder/deploy/docker-compose.yml /opt/call-recorder/deploy/docker-compose.yml; do
+for candidate in "${COMPOSE_FILE:-}" ./docker-compose.external-postgres.yml ./deploy/docker-compose.external-postgres.yml "$script_dir/../../../deploy/docker-compose.external-postgres.yml" /app/call-recorder/deploy/docker-compose.external-postgres.yml /opt/call-recorder/deploy/docker-compose.external-postgres.yml ./docker-compose.yml ./deploy/docker-compose.yml "$script_dir/../../../deploy/docker-compose.yml" /app/call-recorder/deploy/docker-compose.yml /opt/call-recorder/deploy/docker-compose.yml; do
     if [ -n "$candidate" ] && [ -f "$candidate" ]; then compose_file="$candidate"; break; fi
 done
 

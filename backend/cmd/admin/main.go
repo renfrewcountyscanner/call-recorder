@@ -85,8 +85,15 @@ func main() {
 }
 
 func createOrReplace(pool *pgxpool.Pool, replace bool, args []string) {
-	name := strings.ToUpper(senderName(args))
-	key, err := generateKey()
+	flags := flag.NewFlagSet("sender", flag.ExitOnError)
+	nameFlag := flags.String("name", "", "unique sender name")
+	keyFile := flags.String("key-file", "", "read an existing API key from this file")
+	_ = flags.Parse(args)
+	name := strings.ToUpper(strings.TrimSpace(*nameFlag))
+	if name == "" || len(name) > 128 {
+		fatal(errors.New("--name is required and must be at most 128 characters"))
+	}
+	key, supplied, err := senderCredential(*keyFile)
 	if err != nil {
 		fatal(err)
 	}
@@ -103,8 +110,29 @@ func createOrReplace(pool *pgxpool.Pool, replace bool, args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	// This is deliberately the only output containing the newly generated key.
+	if supplied {
+		// Never echo a supplied credential back to a terminal or deployment log.
+		fmt.Printf("sender=%s\napi_key=loaded-from-file\n", name)
+		return
+	}
+	// This is deliberately the only output containing a newly generated key.
 	fmt.Printf("sender=%s\napi_key=%s\n", name, key)
+}
+
+func senderCredential(keyFile string) (key string, supplied bool, err error) {
+	if strings.TrimSpace(keyFile) == "" {
+		key, err = generateKey()
+		return key, false, err
+	}
+	value, err := os.ReadFile(keyFile)
+	if err != nil {
+		return "", true, fmt.Errorf("read --key-file: %w", err)
+	}
+	key = strings.TrimSpace(string(value))
+	if len(key) < 16 || len(key) > 512 || strings.IndexFunc(key, func(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' }) >= 0 {
+		return "", true, errors.New("API key from --key-file must be 16-512 characters with no whitespace")
+	}
+	return key, true, nil
 }
 
 func disable(pool *pgxpool.Pool, args []string) {
@@ -189,6 +217,7 @@ func verifyAPIKey(encoded, value string) bool {
 }
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: call-recorder-admin migrate|sender|aliases|retention|notifications|transcription|datasets|storage|users ...")
+	fmt.Fprintln(os.Stderr, "sender create|replace --name NAME [--key-file PATH]")
 	os.Exit(2)
 }
 func fatal(err error) { fmt.Fprintln(os.Stderr, "error:", err); os.Exit(1) }

@@ -8,7 +8,7 @@
     <div class="storage-used" style="width: {{printf "%.2f" .Storage.UsedPct}}%"></div>
   </div>
   <div class="storage-legend"><span><strong>{{bytes .Storage.FreeBytes}}</strong> free ({{printf "%.1f" .Storage.FreePct}}%)</span><span><strong>{{bytes .Storage.UsedBytes}}</strong> used ({{printf "%.1f" .Storage.UsedPct}}%)</span><span><strong>{{bytes .Storage.TotalBytes}}</strong> total</span></div>
-  {{if lt .Storage.FreePct 10.0}}<div class="alert danger" role="alert">Less than 10% of the audio filesystem is free.</div>{{else if lt .Storage.FreePct 20.0}}<div class="alert warning" role="status">Less than 20% of the audio filesystem is free.</div>{{end}}
+  {{if lt .Storage.FreePct 5.0}}<div class="alert danger" role="alert">Critical: less than 5% of the audio filesystem is free.</div>{{else if lt .Storage.FreePct 10.0}}<div class="alert danger" role="alert">Less than 10% of the audio filesystem is free.</div>{{else if lt .Storage.FreePct 20.0}}<div class="alert warning" role="status">Less than 20% of the audio filesystem is free.</div>{{end}}
 </section>
 {{template "bottom" .}}
 {{end}}
