@@ -202,6 +202,19 @@ func TestContentTypeMatches(t *testing.T) {
 	}
 }
 
+func TestShouldQuarantineLegacyAudio(t *testing.T) {
+	first := time.Date(2026, time.August, 16, 18, 0, 0, 0, time.UTC)
+	if shouldQuarantineLegacyAudio(9, first, first.Add(time.Minute), 10, 30*time.Second) {
+		t.Fatal("quarantined before the identical failure threshold")
+	}
+	if shouldQuarantineLegacyAudio(10, first, first.Add(29*time.Second), 10, 30*time.Second) {
+		t.Fatal("quarantined before the grace period")
+	}
+	if !shouldQuarantineLegacyAudio(10, first, first.Add(30*time.Second), 10, 30*time.Second) {
+		t.Fatal("did not quarantine after both safeguards were met")
+	}
+}
+
 func TestStorageStatsUsesConfiguredAudioFilesystem(t *testing.T) {
 	dir := t.TempDir()
 	s := &server{cfg: config{AudioRoot: dir}}

@@ -65,6 +65,8 @@ type config struct {
 	BootstrapKey              string
 	LegacyEnabled             bool
 	LegacyDebug               bool
+	LegacyQuarantineFailures  int
+	LegacyQuarantineGrace     time.Duration
 	LegacyAuthID              string
 	LegacyAPIKey              string
 	TestFailFinalize          bool
@@ -400,7 +402,7 @@ func main() {
 
 func loadConfig() config {
 	sessionSecret := env("CALL_RECORDER_SESSION_SECRET", "")
-	return config{ListenAddr: net.JoinHostPort(env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0"), env("CALL_RECORDER_LISTEN_PORT", "8080")), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), ExportRoot: env("CALL_RECORDER_EXPORT_ROOT", "/var/lib/call-recorder/exports"), SecretsRoot: env("CALL_RECORDER_SECRETS_ROOT", "/var/lib/call-recorder/secrets"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyDebug: env("CALL_RECORDER_LEGACY_DEBUG", "false") == "true", LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminOpen: env("CALL_RECORDER_ADMIN_OPEN", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS")), SessionSecret: sessionSecret, SenderKeyPepper: env("CALL_RECORDER_SENDER_KEY_PEPPER", sessionSecret), AuthRequired: env("CALL_RECORDER_AUTH_REQUIRED", "true") == "true", LocalAuthEnabled: env("CALL_RECORDER_LOCAL_AUTH_ENABLED", "true") == "true", SessionCookieSecure: env("CALL_RECORDER_SESSION_COOKIE_SECURE", "true") == "true", SessionMaxAge: int(envInt64("CALL_RECORDER_SESSION_MAX_AGE_SECONDS", 2592000)), AuthLoginURL: strings.TrimSpace(os.Getenv("CALL_RECORDER_AUTH_LOGIN_URL"))}
+	return config{ListenAddr: net.JoinHostPort(env("CALL_RECORDER_LISTEN_ADDRESS", "0.0.0.0"), env("CALL_RECORDER_LISTEN_PORT", "8080")), DatabaseURL: os.Getenv("CALL_RECORDER_DATABASE_URL"), AudioRoot: env("CALL_RECORDER_AUDIO_ROOT", "/var/lib/call-recorder/audio"), ExportRoot: env("CALL_RECORDER_EXPORT_ROOT", "/var/lib/call-recorder/exports"), SecretsRoot: env("CALL_RECORDER_SECRETS_ROOT", "/var/lib/call-recorder/secrets"), MaxAudioBytes: envInt64("CALL_RECORDER_MAX_AUDIO_BYTES", 104857600), PendingTTL: time.Duration(envInt64("CALL_RECORDER_PENDING_TTL_SECONDS", 900)) * time.Second, StartToleranceMS: envInt64("CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", 2000), DurationTolMS: envInt64("CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS", 300), BootstrapSender: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_ID"), BootstrapKey: os.Getenv("CALL_RECORDER_BOOTSTRAP_SENDER_KEY"), LegacyEnabled: env("CALL_RECORDER_LEGACY_INGESTION_ENABLED", "false") == "true", LegacyDebug: env("CALL_RECORDER_LEGACY_DEBUG", "false") == "true", LegacyQuarantineFailures: int(envInt64("CALL_RECORDER_LEGACY_QUARANTINE_FAILURES", 10)), LegacyQuarantineGrace: time.Duration(envInt64("CALL_RECORDER_LEGACY_QUARANTINE_GRACE_SECONDS", 30)) * time.Second, LegacyAuthID: os.Getenv("CALL_RECORDER_LEGACY_AUTH_ID"), LegacyAPIKey: os.Getenv("CALL_RECORDER_LEGACY_API_KEY"), TestFailFinalize: env("CALL_RECORDER_TEST_FAIL_FINALIZE", "false") == "true", AdminEnabled: env("CALL_RECORDER_ADMIN_ENABLED", "false") == "true", AdminOpen: env("CALL_RECORDER_ADMIN_OPEN", "false") == "true", AdminToken: os.Getenv("CALL_RECORDER_ADMIN_TOKEN"), CloudflareAccessEnabled: env("CALL_RECORDER_CLOUDFLARE_ACCESS_ENABLED", "false") == "true", CloudflareAdminEmail: strings.ToLower(strings.TrimSpace(os.Getenv("CALL_RECORDER_CLOUDFLARE_ADMIN_EMAIL"))), CloudflareTrustedProxyIPs: splitCSV(os.Getenv("CALL_RECORDER_CLOUDFLARE_TRUSTED_PROXY_IPS")), SessionSecret: sessionSecret, SenderKeyPepper: env("CALL_RECORDER_SENDER_KEY_PEPPER", sessionSecret), AuthRequired: env("CALL_RECORDER_AUTH_REQUIRED", "true") == "true", LocalAuthEnabled: env("CALL_RECORDER_LOCAL_AUTH_ENABLED", "true") == "true", SessionCookieSecure: env("CALL_RECORDER_SESSION_COOKIE_SECURE", "true") == "true", SessionMaxAge: int(envInt64("CALL_RECORDER_SESSION_MAX_AGE_SECONDS", 2592000)), AuthLoginURL: strings.TrimSpace(os.Getenv("CALL_RECORDER_AUTH_LOGIN_URL"))}
 }
 
 func validateEnvironment() error {
@@ -418,6 +420,7 @@ func validateEnvironment() error {
 	for _, key := range []string{
 		"CALL_RECORDER_MAX_AUDIO_BYTES", "CALL_RECORDER_PENDING_TTL_SECONDS",
 		"CALL_RECORDER_DUPLICATE_START_TOLERANCE_MS", "CALL_RECORDER_DUPLICATE_DURATION_TOLERANCE_MS",
+		"CALL_RECORDER_LEGACY_QUARANTINE_FAILURES", "CALL_RECORDER_LEGACY_QUARANTINE_GRACE_SECONDS",
 		"CALL_RECORDER_SESSION_MAX_AGE_SECONDS",
 	} {
 		if value := os.Getenv(key); value != "" {
@@ -508,7 +511,7 @@ func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var migrationReady bool
-	if err := s.db.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE filename='018_ingestion_diagnostics.sql')`).Scan(&migrationReady); err != nil || !migrationReady {
+	if err := s.db.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE filename='019_legacy_audio_quarantine.sql')`).Scan(&migrationReady); err != nil || !migrationReady {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse{"database migrations incomplete"})
 		return
 	}
@@ -671,6 +674,8 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 	if response.Error != "" {
 		status = recorded.Code
 		message = response.Error
+	} else if response.Status == "quarantined" {
+		message = "invalid audio quarantined; upload acknowledged"
 	}
 	if s.cfg.LegacyDebug {
 		s.logger.Info("legacy metadata result", "sender_id", request.AuthID, "canonical_sender_id", canonicalSender, "status", status, "duplicate", response.Duplicate, "call_audio_id_present", response.UploadToken != "", "message", message)
@@ -699,6 +704,8 @@ func (s *server) legacyReceiveAudio(w http.ResponseWriter, r *http.Request) {
 	if response.Error != "" {
 		status = recorded.Code
 		message = response.Error
+	} else if response.Status == "quarantined" {
+		message = "invalid audio quarantined; upload acknowledged"
 	}
 	if s.cfg.LegacyDebug {
 		s.logger.Info("legacy audio result", "status", status, "message", message)
@@ -762,7 +769,7 @@ func (s *server) createUpload(w http.ResponseWriter, r *http.Request) {
 		var leaseExpires *time.Time
 		err = s.db.QueryRow(r.Context(), `SELECT id,status,coalesce(completed_call_id,''),lease_expires_at FROM pending_uploads WHERE sender_id=$1 AND idempotency_key=$2`, req.SenderID, req.IdempotencyKey).Scan(&existingID, &status, &callID, &leaseExpires)
 		if err == nil {
-			if status == "completed" || status == "duplicate" {
+			if status == "completed" || status == "duplicate" || status == "quarantined" {
 				writeJSON(w, 200, createUploadResponse{Duplicate: true, CallID: callID, Status: status})
 				return
 			}
@@ -825,14 +832,14 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
+	if pending.Status == "completed" || pending.Status == "duplicate" || pending.Status == "quarantined" {
+		writeJSON(w, 200, createUploadResponse{Duplicate: true, CallID: pending.CompletedCallID, Status: pending.Status})
+		return
+	}
 	if time.Now().UTC().After(pending.ExpiresAt) {
 		s.logger.Warn("upload token expired", "sender_id", pending.SenderID)
 		_, _ = s.db.Exec(r.Context(), `UPDATE pending_uploads SET status='expired',lease_owner=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND status NOT IN ('completed','duplicate')`, pending.ID)
 		writeJSON(w, 410, errorResponse{"upload token expired"})
-		return
-	}
-	if pending.Status == "completed" || pending.Status == "duplicate" {
-		writeJSON(w, 200, createUploadResponse{Duplicate: true, CallID: pending.CompletedCallID, Status: pending.Status})
 		return
 	}
 	legacyBearer := r.Header.Get("X-Call-Recorder-Legacy") == "1"
@@ -891,7 +898,55 @@ func (s *server) receiveAudio(w http.ResponseWriter, r *http.Request) {
 	}
 	probe, err := validateAudioFile(r.Context(), tmpName, pending.AudioFormat, call.DurationMS)
 	if err != nil {
-		s.logger.Warn("audio upload rejected: decode validation failed", "format", pending.AudioFormat, "error", err, "sender_id", pending.SenderID)
+		digest := h.Sum(nil)
+		var failureCount int
+		var firstFailure time.Time
+		trackErr := s.db.QueryRow(r.Context(), `UPDATE pending_uploads SET
+			decode_failure_count=CASE WHEN rejected_audio_sha256=$2 THEN decode_failure_count+1 ELSE 1 END,
+			decode_failure_first_at=CASE WHEN rejected_audio_sha256=$2 THEN coalesce(decode_failure_first_at,now()) ELSE now() END,
+			rejected_audio_sha256=$2,last_error=$3,updated_at=now()
+			WHERE id=$1 AND status='uploading'
+			RETURNING decode_failure_count,decode_failure_first_at`, pending.ID, digest, err.Error()).Scan(&failureCount, &firstFailure)
+		if trackErr != nil {
+			s.internal(w, trackErr)
+			return
+		}
+		if legacyBearer && shouldQuarantineLegacyAudio(failureCount, firstFailure, time.Now().UTC(), s.cfg.LegacyQuarantineFailures, s.cfg.LegacyQuarantineGrace) {
+			rel := filepath.Join("quarantine", call.StartTime.UTC().Format("2006/01/02"), pending.ID+"."+pending.AudioFormat)
+			final := filepath.Join(s.cfg.AudioRoot, rel)
+			if err := os.MkdirAll(filepath.Dir(final), 0o750); err != nil {
+				s.internal(w, err)
+				return
+			}
+			if err := os.Rename(tmpName, final); err != nil {
+				s.internal(w, err)
+				return
+			}
+			if err := syncDirectory(filepath.Dir(final)); err != nil {
+				_ = os.Remove(final)
+				s.internal(w, err)
+				return
+			}
+			result, updateErr := s.db.Exec(r.Context(), `UPDATE pending_uploads SET status='quarantined',quarantine_path=$2,quarantined_at=now(),completed_at=now(),lease_owner=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND status='uploading'`, pending.ID, rel)
+			if updateErr != nil || result.RowsAffected() != 1 {
+				_ = os.Remove(final)
+				if updateErr == nil {
+					updateErr = errors.New("audio quarantine state changed concurrently")
+				}
+				s.internal(w, updateErr)
+				return
+			}
+			_, _ = s.db.Exec(r.Context(), `UPDATE remote_senders SET last_error_at=now(),last_error=$2 WHERE sender_id=$1`, pending.SenderID, "legacy audio quarantined: "+err.Error())
+			finished = true
+			s.recordIngestionRejection(r.Context(), pending.SenderID, "audio_quarantined")
+			s.logger.Error("legacy audio quarantined and acknowledged", "sender_id", pending.SenderID, "upload_id", pending.ID, "format", pending.AudioFormat, "bytes", written, "sha256", hex.EncodeToString(digest), "failures", failureCount, "quarantine_path", rel, "error", err)
+			writeJSON(w, http.StatusOK, createUploadResponse{Duplicate: true, Status: "quarantined"})
+			return
+		}
+		_, _ = s.db.Exec(r.Context(), `UPDATE pending_uploads SET status='pending',lease_owner=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND status='uploading'`, pending.ID)
+		finished = true
+		s.recordIngestionRejection(r.Context(), pending.SenderID, "audio_decode_failed")
+		s.logger.Warn("audio upload rejected: decode validation failed", "format", pending.AudioFormat, "error", err, "sender_id", pending.SenderID, "identical_failures", failureCount, "bytes", written, "sha256", hex.EncodeToString(digest))
 		writeJSON(w, 415, errorResponse{err.Error()})
 		return
 	}
@@ -3190,6 +3245,11 @@ func contentTypeMatches(format, ct string) bool {
 	ct = strings.ToLower(strings.Split(ct, ";")[0])
 	return (format == "mp3" && (ct == "audio/mpeg" || ct == "audio/mp3")) || (format == "wav" && (ct == "audio/wav" || ct == "audio/x-wav" || ct == "audio/wave"))
 }
+
+func shouldQuarantineLegacyAudio(failures int, firstFailure, now time.Time, requiredFailures int, grace time.Duration) bool {
+	return failures >= requiredFailures && !firstFailure.IsZero() && now.Sub(firstFailure) >= grace
+}
+
 func validateAudioHeader(path, format string) error {
 	f, err := os.Open(path)
 	if err != nil {
