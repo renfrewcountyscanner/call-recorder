@@ -15,21 +15,26 @@ fi
 
 priority_sql="UPDATE transcription_jobs j SET priority=-100,updated_at=now()
 FROM pending_uploads p
-WHERE p.sender_id='legacy-import' AND p.status='completed' AND p.completed_call_id=j.call_id AND j.priority<>-100;"
+WHERE upper(p.sender_id)='LEGACY-IMPORT' AND p.status='completed' AND p.completed_call_id=j.call_id AND j.priority<>-100;"
 
 mapping_sql="WITH mapping(old_receiver,sender,receiver,system_id,system_name) AS (VALUES
  ('Pembroke Twr','SCANNER-DIGITAL','BCD996P2','SCANNER-DIGITAL','Scanner Digital'),
+ ('PEMBROKE','SCANNER-DIGITAL','BCD996P2','SCANNER-DIGITAL','Scanner Digital'),
  ('Services','SCANNER-ANALOG','BCT15X','SCANNER-ANALOG','Scanner Analog'),
  ('RDIO-ANALOG','SCANNER-ANALOG','BCT15X','SCANNER-ANALOG','Scanner Analog'),
  ('EASTRENFREW','SCANNER-ANALOG','BCT15X','SCANNER-ANALOG','Scanner Analog'),
  ('RENFREW-EMS','SCANNER-ANALOG','BCT15X','SCANNER-ANALOG','Scanner Analog'),
  ('RENFREW-FIRE','SCANNER-ANALOG','BCT15X','SCANNER-ANALOG','Scanner Analog'),
+ ('KINGSTON','FLEETNET-KINGSTON','FLEETNET-KINGSTON','FLEETNET-KINGSTON','kingston'),
+ ('KINBRN','FLEETNET-OTTAWA','FLEETNET-OTTAWA','FLEETNET-OTTAWA','KINBRN'),
+ ('WINCHS','FLEETNET-OTTAWA','FLEETNET-OTTAWA','FLEETNET-OTTAWA','WINCHS'),
+ ('MTSPAT','FLEETNET-OTTAWA','FLEETNET-OTTAWA','FLEETNET-OTTAWA','MTSPAT'),
  ('SEARS','SEARS','SEARS','SEARS','GRNPetawawa'),
  ('LANARK','LANARK-FIRE','LANARK-FIRE','LANARK','lanark'),
  ('FRONTENAC','fleetnet-kingston','FLEETNET-KINGSTON','FLEETNET-KINGSTON','kingston')
 ), updated AS (
  UPDATE calls c SET sender_id=m.sender,receiver_id=m.receiver,system_id=m.system_id,system_name=m.system_name
- FROM mapping m WHERE c.sender_id='legacy-import' AND c.receiver_id=m.old_receiver RETURNING c.id
+ FROM mapping m WHERE upper(c.sender_id)='LEGACY-IMPORT' AND c.receiver_id=m.old_receiver RETURNING c.id
 )
 SELECT count(*) FROM updated;"
 

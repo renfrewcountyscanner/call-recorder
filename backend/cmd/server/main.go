@@ -658,6 +658,20 @@ func (s *server) legacyCreateUpload(w http.ResponseWriter, r *http.Request) {
 		systemID, systemName = canonicalSender, canonicalSender
 		radioID = ""
 	}
+	// The original scanner credential is still used by an active legacy
+	// recorder. Keep that credential as a compatibility sender, but write new
+	// calls under the canonical system IDs so legacy identities do not return.
+	if canonicalSender == "SCANNER" {
+		switch strings.ToUpper(strings.TrimSpace(info.Receiver)) {
+		case "BCD996P2":
+			systemID, systemName = "SCANNER-DIGITAL", "Scanner Digital"
+		case "BCT15X":
+			systemID, systemName = "SCANNER-ANALOG", "Scanner Analog"
+		}
+	}
+	if canonicalSender == "LANARK-FIRE" && strings.EqualFold(systemID, "LANARK") {
+		systemID, systemName = "LANARK-FIRE", "lanark"
+	}
 	call := callMetadata{Imported: request.Imported, StartTime: start, DurationMS: int64(request.RecordedCall.Duration * 1000), ReceiverID: info.Receiver, SystemID: systemID, SystemName: systemName, SiteID: fmt.Sprint(info.SiteID), SiteName: info.SiteLabel, TalkgroupID: target.ID.String(), TalkgroupName: target.Label, TalkgroupTag: target.Tag, RadioID: radioID, RadioName: info.SourceLabel, RadioTag: info.SourceTag, Frequency: fmt.Sprint(info.Frequency), LCN: fmt.Sprint(info.LCN), VoiceService: info.VoiceService, CallType: fmt.Sprint(info.CallType)}
 	body, _ := json.Marshal(createUploadRequest{SenderID: canonicalSender, IdempotencyKey: "legacy-" + request.RecordedCall.StartTime + "-" + target.ID.String(), AudioFormat: strings.ToLower(request.AudioFormat), Call: call})
 	forward := r.Clone(r.Context())
@@ -738,6 +752,7 @@ func (s *server) createUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, errorResponse{"sender authentication failed"})
 		return
 	}
+	canonicalizeIncomingCall(req.SenderID, &req.Call)
 	// Charge the sender's quota only after authentication. Otherwise an
 	// unauthenticated client on the same NAT could exhaust a real receiver's
 	// upload allowance merely by claiming its sender ID.
@@ -3244,6 +3259,25 @@ func uniquePatches(values []patchMetadata) []patchMetadata {
 func contentTypeMatches(format, ct string) bool {
 	ct = strings.ToLower(strings.Split(ct, ";")[0])
 	return (format == "mp3" && (ct == "audio/mpeg" || ct == "audio/mp3")) || (format == "wav" && (ct == "audio/wav" || ct == "audio/x-wav" || ct == "audio/wave"))
+}
+
+func canonicalizeIncomingCall(sender string, call *callMetadata) {
+	if call == nil {
+		return
+	}
+	switch strings.ToUpper(strings.TrimSpace(sender)) {
+	case "SCANNER":
+		switch strings.ToUpper(strings.TrimSpace(call.ReceiverID)) {
+		case "BCD996P2":
+			call.SystemID, call.SystemName = "SCANNER-DIGITAL", "Scanner Digital"
+		case "BCT15X":
+			call.SystemID, call.SystemName = "SCANNER-ANALOG", "Scanner Analog"
+		}
+	case "LANARK-FIRE":
+		if strings.EqualFold(call.SystemID, "LANARK") {
+			call.SystemID, call.SystemName = "LANARK-FIRE", "lanark"
+		}
+	}
 }
 
 func shouldQuarantineLegacyAudio(failures int, firstFailure, now time.Time, requiredFailures int, grace time.Duration) bool {
